@@ -1,3 +1,3 @@
-# `@cpu-count/linux-x64-gnu`
+# `@cipherstash/jseql-ffi-linux-x64-gnu`
 
-Prebuilt binary package for `cpu-count` on `linux-x64-gnu`.
+Prebuilt binary package for `@cipherstash/jseql-ffi` on `linux-x64-gnu`.

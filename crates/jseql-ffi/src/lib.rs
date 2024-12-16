@@ -20,7 +20,9 @@ fn create_eql_payload(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
-fn do_encrypt(value: String, callback: Root<JsFunction>, channel: Channel) {
+fn do_encrypt<'a>(value: String, callback: Root<JsFunction>, channel: Channel) {
+    // TODO: Do the actual encryption and creation of the Eql Encrypted payload here
+    // uppercase is not a very strong cipher :)
     let result = value.to_uppercase();
 
     // Send the result back to the main thread.

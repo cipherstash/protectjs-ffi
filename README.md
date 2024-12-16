@@ -1,10 +1,10 @@
-# cpu-count
+# jseql-ffi
 
 This project was bootstrapped by [create-neon](https://www.npmjs.com/package/create-neon).
 
-## Building cpu-count
+## Building
 
-Building cpu-count requires a [supported version of Node and Rust](https://github.com/neon-bindings/neon#platform-support).
+Building requires a [supported version of Node and Rust](https://github.com/neon-bindings/neon#platform-support).
 
 To run the build, run:
 
@@ -14,16 +14,16 @@ $ npm run build
 
 This command uses the [@neon-rs/cli](https://www.npmjs.com/package/@neon-rs/cli) utility to assemble the binary Node addon from the output of `cargo`.
 
-## Exploring cpu-count
+## Exploring
 
-After building cpu-count, you can explore its exports at the Node console:
+After building `jseql-ffi`, you can explore its exports at the Node console:
 
 ```sh
 $ npm i
 $ npm run build
 $ node
-> require('.').greeting()
-{ message: 'hello node' }
+> const { createEqlPayload } = require('.')
+> let y = await createEqlPayload({value: "foo", table: "bar", column: "wee"})
 ```
 
 ## Available Scripts
@@ -65,7 +65,7 @@ Runs the unit tests by calling `cargo test`. You can learn more about [adding te
 The directory structure of this project is:
 
 ```
-cpu-count/
+jseql-ffi/
 ├── Cargo.toml
 ├── README.md
 ├── lib/
@@ -73,7 +73,7 @@ cpu-count/
 |   ├── index.mts
 |   └── index.cts
 ├── crates/
-|   └── cpu-count/
+|   └── jseql-ffi/
 |       └── src/
 |           └── lib.rs
 ├── platforms/

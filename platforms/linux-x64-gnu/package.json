@@ -1,6 +1,6 @@
 {
-  "name": "@cpu-count/linux-x64-gnu",
-  "description": "Prebuilt binary package for `cpu-count` on `linux-x64-gnu`.",
+  "name": "@cipherstash/jseql-ffi-linux-x64-gnu",
+  "description": "Prebuilt binary package for `@cipherstash/jseql-ffi` on `linux-x64-gnu`.",
   "version": "0.1.0",
   "os": [
     "linux"

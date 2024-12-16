@@ -1,5 +1,5 @@
 {
-  "name": "cpu-count",
+  "name": "jseql-ffi",
   "version": "0.1.0",
   "description": "",
   "main": "./lib/index.cjs",
@@ -37,7 +37,7 @@
   ],
   "neon": {
     "type": "library",
-    "org": "@cpu-count",
+    "org": "@cipherstash",
     "platforms": "common",
     "load": "./src/load.cts"
   },

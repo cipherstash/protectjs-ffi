@@ -1,3 +1,3 @@
-# `@cpu-count/darwin-arm64`
+# `@cipherstash/jseql-ffi-darwin-arm64`
 
-Prebuilt binary package for `cpu-count` on `darwin-arm64`.
+Prebuilt binary package for `@cipherstash/jseql-ffi` on `darwin-arm64`.
