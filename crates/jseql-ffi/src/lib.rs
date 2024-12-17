@@ -10,6 +10,25 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
     RUNTIME.get_or_try_init(|| Runtime::new().or_else(|err| cx.throw_error(err.to_string())))
 }
 
+struct Client {}
+
+impl Finalize for Client {}
+
+fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+
+    let (deferred, promise) = cx.promise();
+
+    rt.spawn(async move {
+        let client = Client {};
+
+        deferred.settle_with(&channel, move |mut cx| Ok(cx.boxed(client)));
+    });
+
+    Ok(promise)
+}
+
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let value = cx.argument::<JsString>(0)?.value(&mut cx);
 
@@ -64,6 +83,7 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
+    cx.export_function("newClient", new_client)?;
     cx.export_function("encrypt", encrypt)?;
     cx.export_function("decrypt", decrypt)?;
 

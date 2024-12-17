@@ -1,11 +1,11 @@
-const { encrypt, decrypt } = require("./index.node");
+const { encrypt, decrypt, newClient } = require("./index.node");
 //
 // Stubbed out funcs that will be implemented in Rust and live in ./lib
 //
 
-function cipherNew() {
-  return "cipher" as const;
-}
+// function cipherNew() {
+//   return "cipher" as const;
+// }
 
 // function encrypt(
 //   plaintextPayload: PlaintextEqlPayload
@@ -30,9 +30,11 @@ function cipherNew() {
 //
 
 type Eql = {
-  cipher: "cipher"; // TODO: actual Cipher
+  client: Client;
   field: (opts: FieldOpts) => EqlField;
 };
+
+type Client = {};
 
 type FieldOpts = {
   table: string;
@@ -40,7 +42,7 @@ type FieldOpts = {
 };
 
 type EqlField = {
-  cipher: any;
+  client: Client;
   table: string;
   column: string;
   plaintextPayload: (plaintext: string) => PlaintextEqlPayload;
@@ -59,12 +61,16 @@ type PlaintextEqlPayload = {
   encrypt: () => Promise<EncryptedEqlPayload>;
 };
 
-function eql(): Eql {
+function eql(): Promise<Eql> {
+  return newClient().then((client: Client) => newEql(client));
+}
+
+function newEql(client: Client): Eql {
   return {
-    cipher: cipherNew(),
+    client,
     field(opts: FieldOpts): EqlField {
       return {
-        cipher: this.cipher,
+        client: this.client,
         table: opts.table,
         column: opts.column,
         plaintextPayload(plaintext: string): PlaintextEqlPayload {
@@ -105,14 +111,14 @@ function newPlaintextPayload(
 // Example code using the new interface
 //
 
-const eqlClient = eql();
-
-export const emailField = eqlClient.field({
-  table: "users",
-  column: "email",
-});
-
 (async () => {
+  const eqlClient = await eql();
+
+  const emailField = eqlClient.field({
+    table: "users",
+    column: "email",
+  });
+
   const encryptedEmail = await emailField.plaintextPayload("abc").encrypt();
 
   console.log(encryptedEmail); // { c: "abc-encrypted" }
