@@ -1,44 +1,71 @@
 use neon::prelude::*;
+use once_cell::sync::OnceCell;
+use tokio::runtime::Runtime;
 
-fn create_eql_payload(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let value = cx.argument::<JsString>(0)?.value(&mut cx);
-    let table: Handle<JsString> = cx.argument(1)?;
-    let column: Handle<JsString> = cx.argument(2)?;
+// Return a global tokio runtime or create one if it doesn't exist.
+// Throws a JavaScript exception if the `Runtime` fails to create.
+fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
+    static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
-    let callback = cx.argument::<JsFunction>(3)?.root(&mut cx);
-    let channel = cx.channel();
-
-    println!("value: {:?}", value);
-    println!("table: {:?}", table);
-    println!("column: {:?}", column);
-
-    std::thread::spawn(move || {
-        // Do the heavy lifting inside the background thread.
-        do_encrypt(value, callback, channel);
-    });
-
-    Ok(cx.undefined())
+    RUNTIME.get_or_try_init(|| Runtime::new().or_else(|err| cx.throw_error(err.to_string())))
 }
 
-fn do_encrypt<'a>(value: String, callback: Root<JsFunction>, channel: Channel) {
-    // TODO: Do the actual encryption and creation of the Eql Encrypted payload here
-    // uppercase is not a very strong cipher :)
-    let result = value.to_uppercase();
+fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let value = cx.argument::<JsString>(0)?.value(&mut cx);
 
-    // Send the result back to the main thread.
-    channel.send(move |mut cx| {
-        let this = cx.undefined();
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
 
-        let callback = callback.into_inner(&mut cx);
-        let result = cx.string(result);
-        callback.call(&mut cx, this, vec![result.upcast::<JsValue>()])?;
+    // Create a JavaScript promise and a `deferred` handle for resolving it.
+    // It is important to be careful not to perform failable actions after
+    // creating the promise to avoid an unhandled rejection.
+    let (deferred, promise) = cx.promise();
 
-        Ok(())
+    // Spawn an `async` task on the tokio runtime. Only Rust types that are
+    // `Send` may be moved into this block. `Context` may not be passed and all
+    // JavaScript values must first be converted to Rust types.
+    //
+    // This task will _not_ block the JavaScript main thread.
+    rt.spawn(async move {
+        // Inside this block, it is possible to `await` Rust `Future`
+        let encrypted = format!("{value}-encrypted");
+
+        // Settle the promise from the result of a closure. JavaScript exceptions
+        // will be converted to a Promise rejection.
+        //
+        // This closure will execute on the JavaScript main thread. It should be
+        // limited to converting Rust types to JavaScript values. Expensive operations
+        // should be performed outside of it.
+        deferred.settle_with(&channel, move |mut cx| Ok(cx.string(encrypted)));
     });
+
+    Ok(promise)
+}
+
+fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let value = cx.argument::<JsString>(0)?.value(&mut cx);
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+
+    let (deferred, promise) = cx.promise();
+
+    rt.spawn(async move {
+        let decrypted = value
+            .strip_suffix("-encrypted")
+            .map(String::from)
+            .unwrap_or(value);
+
+        deferred.settle_with(&channel, move |mut cx| Ok(cx.string(decrypted)));
+    });
+
+    Ok(promise)
 }
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
-    cx.export_function("createEqlPayload", create_eql_payload)?;
+    cx.export_function("encrypt", encrypt)?;
+    cx.export_function("decrypt", decrypt)?;
+
     Ok(())
 }
