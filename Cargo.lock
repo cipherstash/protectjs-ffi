@@ -187,7 +187,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36915bbaca237c626689b5bd14d02f2ba7a5a359d30a2a08be697392e3718079"
 dependencies = [
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -428,7 +428,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "static_assertions",
- "thiserror",
+ "thiserror 1.0.69",
  "tracing",
  "url",
  "uuid",
@@ -444,7 +444,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30104045751da6e528e83804f4b22d0cddcb27aacce0e1c79604872ddb076bbf"
 dependencies = [
  "serde",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -459,7 +459,7 @@ dependencies = [
  "rand",
  "regex",
  "sha2",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -485,7 +485,7 @@ dependencies = [
  "postgres-types",
  "regex",
  "subtle",
- "thiserror",
+ "thiserror 1.0.69",
  "unicode-normalization",
  "vitaminc",
 ]
@@ -695,7 +695,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1287,6 +1287,7 @@ dependencies = [
  "cipherstash-client",
  "neon",
  "once_cell",
+ "thiserror 2.0.8",
  "tokio",
 ]
 
@@ -1383,7 +1384,7 @@ dependencies = [
  "supports-unicode",
  "terminal_size",
  "textwrap",
- "thiserror",
+ "thiserror 1.0.69",
  "unicode-width",
 ]
 
@@ -1641,7 +1642,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "subtle-ng",
- "thiserror",
+ "thiserror 1.0.69",
  "zeroize",
 ]
 
@@ -1829,7 +1830,7 @@ dependencies = [
  "memchr",
  "parking_lot 0.12.3",
  "protobuf",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1920,7 +1921,7 @@ dependencies = [
  "serde",
  "serde_cbor",
  "sha2",
- "thiserror",
+ "thiserror 1.0.69",
  "zeroize",
 ]
 
@@ -1950,7 +1951,7 @@ checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
 dependencies = [
  "getrandom",
  "libredox",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2041,7 +2042,7 @@ dependencies = [
  "http",
  "reqwest",
  "serde",
- "thiserror",
+ "thiserror 1.0.69",
  "tower-service",
 ]
 
@@ -2171,7 +2172,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2515,7 +2516,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2545,7 +2546,16 @@ version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08f5383f3e0071702bf93ab5ee99b52d26936be9dedd9413067cbdcddcb6141a"
+dependencies = [
+ "thiserror-impl 2.0.8",
 ]
 
 [[package]]
@@ -2553,6 +2563,17 @@ name = "thiserror-impl"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.90",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f357fcec90b3caef6623a099691be676d033b40a058ac95d2a6ade6fa0c943"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2826,7 +2847,7 @@ checksum = "a544c02ef2c1724db33d7bcb8df2c1f8c2ddab27965e57cc5373c55b8da567b6"
 dependencies = [
  "rand",
  "rand_chacha",
- "thiserror",
+ "thiserror 1.0.69",
  "vitaminc-protected",
  "zeroize",
 ]
@@ -3268,7 +3289,7 @@ dependencies = [
  "rand",
  "serde",
  "static_assertions",
- "thiserror",
+ "thiserror 1.0.69",
  "uuid",
  "zeroize",
 ]

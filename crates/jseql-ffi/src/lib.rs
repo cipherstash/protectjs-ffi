@@ -1,11 +1,15 @@
 use cipherstash_client::{
     config::{
-        console_config::ConsoleConfig, cts_config::CtsConfig, zero_kms_config::ZeroKMSConfig,
+        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
+        zero_kms_config::ZeroKMSConfig,
     },
     credentials::service_credentials::ServiceCredentials,
-    encryption::{Encrypted, Plaintext, PlaintextTarget, ReferencedPendingPipeline, ScopedCipher},
+    encryption::{
+        Encrypted, EncryptionError, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
+        ScopedCipher, TypeParseError,
+    },
     schema::ColumnConfig,
-    zerokms::EncryptedRecord,
+    zerokms::{self, EncryptedRecord},
 };
 use neon::prelude::*;
 use once_cell::sync::OnceCell;
@@ -27,6 +31,24 @@ struct Client {
 
 impl Finalize for Client {}
 
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    ZeroKMS(#[from] zerokms::Error),
+    #[error(transparent)]
+    TypeParse(#[from] TypeParseError),
+    #[error(transparent)]
+    Encryption(#[from] EncryptionError),
+    #[error("jseql-ffi invariant violation: {0}")]
+    InvariantViolation(String),
+    #[error("{0}")]
+    Base85(String),
+    #[error("unimplemented: {0} not supported yet by jseql-ffi")]
+    Unimplemented(String),
+}
+
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
 
 fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -36,35 +58,34 @@ fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        // TODO: don't unwrap
-        let console_config = ConsoleConfig::builder().with_env().build().unwrap();
+        let client_result = new_client_inner().await;
 
-        // TODO: don't unwrap
-        let cts_config = CtsConfig::builder().with_env().build().unwrap();
+        deferred.settle_with(&channel, move |mut cx| {
+            let client = client_result.or_else(|err| cx.throw_error(err.to_string()))?;
 
-        let zerokms_config = ZeroKMSConfig::builder()
-            .console_config(&console_config)
-            .cts_config(&cts_config)
-            .with_env()
-            .build_with_client_key()
-            // TODO: don't unwrap
-            .unwrap();
-
-        let zerokms = zerokms_config.create_client();
-
-        let cipher = ScopedZeroKMSNoRefresh::init(Arc::new(zerokms), None)
-            .await
-            // TODO: don't unwrap
-            .unwrap();
-
-        let client = Client {
-            cipher: Arc::new(cipher),
-        };
-
-        deferred.settle_with(&channel, move |mut cx| Ok(cx.boxed(client)));
+            Ok(cx.boxed(client))
+        })
     });
 
     Ok(promise)
+}
+
+async fn new_client_inner() -> Result<Client, Error> {
+    let console_config = ConsoleConfig::builder().with_env().build()?;
+    let cts_config = CtsConfig::builder().with_env().build()?;
+    let zerokms_config = ZeroKMSConfig::builder()
+        .console_config(&console_config)
+        .cts_config(&cts_config)
+        .with_env()
+        .build_with_client_key()?;
+
+    let zerokms = zerokms_config.create_client();
+
+    let cipher = ScopedZeroKMSNoRefresh::init(Arc::new(zerokms), None).await?;
+
+    Ok(Client {
+        cipher: Arc::new(cipher),
+    })
 }
 
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -86,22 +107,7 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     //
     // This task will _not_ block the JavaScript main thread.
     rt.spawn(async move {
-        let column_config = ColumnConfig::build(column_name);
-        let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
-        let encryptable = PlaintextTarget::new(plaintext, column_config.clone(), None);
-
-        pipeline
-            .add_with_ref::<PlaintextTarget>(encryptable, 0)
-            .unwrap();
-
-        let mut source_encrypted = pipeline.encrypt().await.unwrap();
-
-        let encrypted = source_encrypted.remove(0).unwrap();
-
-        let ciphertext = match encrypted {
-            Encrypted::Record(ciphertext, _terms) => ciphertext.to_mp_base85().unwrap(),
-            _ => todo!(),
-        };
+        let ciphertext_result = encrypt_inner(plaintext, column_name, client).await;
 
         // Settle the promise from the result of a closure. JavaScript exceptions
         // will be converted to a Promise rejection.
@@ -109,10 +115,46 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
         // This closure will execute on the JavaScript main thread. It should be
         // limited to converting Rust types to JavaScript values. Expensive operations
         // should be performed outside of it.
-        deferred.settle_with(&channel, move |mut cx| Ok(cx.string(ciphertext)));
+        deferred.settle_with(&channel, move |mut cx| {
+            let ciphertext = ciphertext_result.or_else(|err| cx.throw_error(err.to_string()))?;
+
+            Ok(cx.string(ciphertext))
+        });
     });
 
     Ok(promise)
+}
+
+async fn encrypt_inner(
+    plaintext: String,
+    column_name: String,
+    client: Client,
+) -> Result<String, Error> {
+    let column_config = ColumnConfig::build(column_name);
+    let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
+    let encryptable = PlaintextTarget::new(plaintext, column_config.clone(), None);
+
+    pipeline.add_with_ref::<PlaintextTarget>(encryptable, 0)?;
+
+    let mut source_encrypted = pipeline.encrypt().await?;
+
+    let encrypted = source_encrypted.remove(0).ok_or_else(|| {
+        Error::InvariantViolation(
+            "`encrypt` expected a single result in the pipeline, but there were none".to_string(),
+        )
+    })?;
+
+    match encrypted {
+        Encrypted::Record(ciphertext, _terms) => ciphertext
+            .to_mp_base85()
+            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+            // Instead, we use `map_err`.
+            .map_err(|err| Error::Base85(err.to_string())),
+
+        Encrypted::SteVec(_) => Err(Error::Unimplemented(
+            "`SteVec`s and encrypted JSONB columns".to_string(),
+        )),
+    }
 }
 
 fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -125,19 +167,33 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext).unwrap();
-        let decrypted = client.cipher.decrypt([encrypted_record]).await.unwrap();
-        let plaintext = Plaintext::from_slice(&decrypted[0][..]).unwrap();
+        let decrypt_result = decrypt_inner(ciphertext, client).await;
 
-        let plaintext = match plaintext {
-            Plaintext::Utf8Str(Some(ref inner)) => inner.clone(),
-            _ => todo!(),
-        };
+        deferred.settle_with(&channel, move |mut cx| {
+            let plaintext = decrypt_result.or_else(|err| cx.throw_error(err.to_string()))?;
 
-        deferred.settle_with(&channel, move |mut cx| Ok(cx.string(plaintext)));
+            Ok(cx.string(plaintext))
+        });
     });
 
     Ok(promise)
+}
+
+async fn decrypt_inner(ciphertext: String, client: Client) -> Result<String, Error> {
+    let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
+        // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+        // Instead, we use `map_err`.
+        .map_err(|err| Error::Base85(err.to_string()))?;
+
+    let decrypted = client.cipher.decrypt([encrypted_record]).await?;
+    let plaintext = Plaintext::from_slice(&decrypted[0][..])?;
+
+    match plaintext {
+        Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
+        _ => Err(Error::Unimplemented(
+            "data types other than `Utf8Str`".to_string(),
+        )),
+    }
 }
 
 #[neon::main]
