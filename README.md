@@ -16,14 +16,18 @@ This command uses the [@neon-rs/cli](https://www.npmjs.com/package/@neon-rs/cli)
 
 ## Exploring
 
-After building `jseql-ffi`, you can explore its exports at the Node console:
+After building `jseql-ffi`, you can explore its exports at the Node console.
+`CS_CLIENT_ID` and `CS_CLIENT_KEY` must be set in your environment for the call to `newClient()` to succeed.
 
 ```sh
 $ npm i
 $ npm run build
 $ node
-> const { createEqlPayload } = require('.')
-> let y = await createEqlPayload({value: "foo", table: "bar", column: "wee"})
+> const addon = require(".");
+> const client = await addon.newClient();
+> const ciphertext = await addon.encrypt("plaintext", "column_name", client);
+> const plaintext = await addon.decrypt(ciphertext, client);
+> console.log({ciphertext, plaintext});
 ```
 
 ## Available Scripts
