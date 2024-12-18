@@ -1,29 +1,4 @@
 const { encrypt, decrypt, newClient } = require("./index.node");
-//
-// Stubbed out funcs that will be implemented in Rust and live in ./lib
-//
-
-// function cipherNew() {
-//   return "cipher" as const;
-// }
-
-// function encrypt(
-//   plaintextPayload: PlaintextEqlPayload
-// ): Promise<EncryptedEqlPayload> {
-//   return new Promise((resolve) => {
-//     resolve({ c: `${plaintextPayload.plaintext}-encrypted` });
-//   });
-// }
-
-// function decrypt(
-//   field: EqlField,
-//   encryptedPayload: EncryptedEqlPayload
-// ): Promise<PlaintextEqlPayload> {
-//   return new Promise((resolve) => {
-//     const plaintext = encryptedPayload.c.replace("-encrypted", "");
-//     resolve(newPlaintextPayload(field, plaintext));
-//   });
-// }
 
 //
 // This part will live in wrapper TS code (e.g. jseql).
@@ -79,9 +54,7 @@ function newEql(client: Client): Eql {
         decrypt(
           encryptedPayload: EncryptedEqlPayload
         ): Promise<PlaintextEqlPayload> {
-          // return decrypt(this, encryptedPayload);
-
-          return decrypt(encryptedPayload.c).then((val: string) =>
+          return decrypt(encryptedPayload.c, this.client).then((val: string) =>
             newPlaintextPayload(this, val)
           );
         },
@@ -98,11 +71,11 @@ function newPlaintextPayload(
     plaintext,
     field,
     encrypt(): Promise<EncryptedEqlPayload> {
-      // return encrypt(this);
-
-      return encrypt(this.plaintext).then((val: string) => {
-        return { c: val };
-      });
+      return encrypt(this.plaintext, this.field.column, this.field.client).then(
+        (val: string) => {
+          return { c: val };
+        }
+      );
     },
   };
 }
@@ -119,13 +92,13 @@ function newPlaintextPayload(
     column: "email",
   });
 
-  const encryptedEmail = await emailField.plaintextPayload("abc").encrypt();
+  const encryptedEmail = await emailField.plaintextPayload("abcdef").encrypt();
 
-  console.log(encryptedEmail); // { c: "abc-encrypted" }
+  console.log(encryptedEmail);
 
   const decrypted = await emailField.decrypt(encryptedEmail);
 
-  console.log(decrypted.plaintext); // "abc"
+  console.log(decrypted.plaintext);
 })();
 
 //
