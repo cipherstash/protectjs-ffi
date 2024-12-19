@@ -1,5 +1,5 @@
 {
-  "name": "jseql-ffi",
+  "name": "@cipherstash/jseql-ffi",
   "version": "0.1.1-0",
   "description": "",
   "main": "./lib/index.cjs",
