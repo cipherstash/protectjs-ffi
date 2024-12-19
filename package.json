@@ -39,7 +39,8 @@
     "type": "library",
     "org": "@cipherstash",
     "platforms": "common",
-    "load": "./src/load.cts"
+    "load": "./src/load.cts",
+    "prefix": "jseql-ffi-"
   },
   "devDependencies": {
     "@neon-rs/cli": "^0.1.82",
