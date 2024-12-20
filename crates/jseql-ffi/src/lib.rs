@@ -3,13 +3,13 @@ use cipherstash_client::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
         zero_kms_config::ZeroKMSConfig,
     },
-    credentials::service_credentials::ServiceCredentials,
+    credentials::ServiceCredentials,
     encryption::{
         Encrypted, EncryptionError, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
         ScopedCipher, TypeParseError,
     },
     schema::ColumnConfig,
-    zerokms::{self, EncryptedRecord},
+    zerokms::{self, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
 };
 use neon::prelude::*;
 use once_cell::sync::OnceCell;
@@ -27,6 +27,7 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 #[derive(Clone)]
 struct Client {
     cipher: Arc<ScopedZeroKMSNoRefresh>,
+    zerokms: Arc<ZeroKMSWithClientKey<ServiceCredentials>>,
 }
 
 impl Finalize for Client {}
@@ -79,19 +80,21 @@ async fn new_client_inner() -> Result<Client, Error> {
         .with_env()
         .build_with_client_key()?;
 
-    let zerokms = zerokms_config.create_client();
+    let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(Arc::new(zerokms), None).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), None).await?;
 
     Ok(Client {
         cipher: Arc::new(cipher),
+        zerokms,
     })
 }
 
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let plaintext = cx.argument::<JsString>(0)?.value(&mut cx);
-    let column_name = cx.argument::<JsString>(1)?.value(&mut cx);
-    let client = (&**cx.argument::<JsBox<Client>>(2)?).clone();
+    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let plaintext = cx.argument::<JsString>(1)?.value(&mut cx);
+    let column_name = cx.argument::<JsString>(2)?.value(&mut cx);
+    let lock_context = encryption_context_from_js_value(cx.argument_opt(3), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -107,7 +110,7 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     //
     // This task will _not_ block the JavaScript main thread.
     rt.spawn(async move {
-        let ciphertext_result = encrypt_inner(plaintext, column_name, client).await;
+        let ciphertext_result = encrypt_inner(client, plaintext, column_name, lock_context).await;
 
         // Settle the promise from the result of a closure. JavaScript exceptions
         // will be converted to a Promise rejection.
@@ -126,13 +129,15 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
 }
 
 async fn encrypt_inner(
+    client: Client,
     plaintext: String,
     column_name: String,
-    client: Client,
+    encryption_context: Vec<zerokms::Context>,
 ) -> Result<String, Error> {
     let column_config = ColumnConfig::build(column_name);
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
-    let encryptable = PlaintextTarget::new(plaintext, column_config.clone(), None);
+    let mut encryptable = PlaintextTarget::new(plaintext, column_config.clone());
+    encryptable.context = encryption_context;
 
     pipeline.add_with_ref::<PlaintextTarget>(encryptable, 0)?;
 
@@ -158,8 +163,9 @@ async fn encrypt_inner(
 }
 
 fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let ciphertext = cx.argument::<JsString>(0)?.value(&mut cx);
-    let client = (&**cx.argument::<JsBox<Client>>(1)?).clone();
+    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let ciphertext = cx.argument::<JsString>(1)?.value(&mut cx);
+    let lock_context = encryption_context_from_js_value(cx.argument_opt(2), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -167,7 +173,7 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let decrypt_result = decrypt_inner(ciphertext, client).await;
+        let decrypt_result = decrypt_inner(client, ciphertext, lock_context).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintext = decrypt_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -179,14 +185,31 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-async fn decrypt_inner(ciphertext: String, client: Client) -> Result<String, Error> {
+async fn decrypt_inner(
+    client: Client,
+    ciphertext: String,
+    encryption_context: Vec<zerokms::Context>,
+) -> Result<String, Error> {
     let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
         // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
         // Instead, we use `map_err`.
         .map_err(|err| Error::Base85(err.to_string()))?;
 
-    let decrypted = client.cipher.decrypt([encrypted_record]).await?;
-    let plaintext = Plaintext::from_slice(&decrypted[0][..])?;
+    let with_context = WithContext {
+        record: encrypted_record,
+        context: encryption_context,
+    };
+
+    // TODO: update scoped cipher to accept `Decryptable`s so we can use it with encrypted records with context.
+    // let decrypted = client
+    //     .cipher
+    //     // TODO: don't unwrap
+    //     .decrypt([with_context])
+    //     .await?;
+
+    let decrypted = client.zerokms.decrypt_single(with_context).await?;
+
+    let plaintext = Plaintext::from_slice(&decrypted[..])?;
 
     match plaintext {
         Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
@@ -194,6 +217,33 @@ async fn decrypt_inner(ciphertext: String, client: Client) -> Result<String, Err
             "data types other than `Utf8Str`".to_string(),
         )),
     }
+}
+
+fn encryption_context_from_js_value(
+    value: Option<Handle<JsValue>>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Vec<zerokms::Context>> {
+    let mut encryption_context: Vec<zerokms::Context> = Vec::new();
+
+    if let Some(lock_context) = value {
+        let lock_context: Handle<JsObject> = lock_context.downcast_or_throw(cx)?;
+
+        let identity_claim: Option<Handle<JsArray>> = lock_context.get_opt(cx, "identityClaim")?;
+
+        if let Some(identity_claim) = identity_claim {
+            let identity_claims: Vec<Handle<JsValue>> = identity_claim.to_vec(cx)?;
+
+            for claim in identity_claims {
+                let claim = claim
+                    .downcast_or_throw::<JsString, FunctionContext>(cx)?
+                    .value(cx);
+
+                encryption_context.push(zerokms::Context::new_identity_claim(&claim));
+            }
+        }
+    }
+
+    Ok(encryption_context)
 }
 
 #[neon::main]
