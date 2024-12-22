@@ -200,13 +200,6 @@ async fn decrypt_inner(
         context: encryption_context,
     };
 
-    // TODO: update scoped cipher to accept `Decryptable`s so we can use it with encrypted records with context.
-    // let decrypted = client
-    //     .cipher
-    //     // TODO: don't unwrap
-    //     .decrypt([with_context])
-    //     .await?;
-
     let decrypted = client.zerokms.decrypt_single(with_context).await?;
 
     let plaintext = Plaintext::from_slice(&decrypted[..])?;
