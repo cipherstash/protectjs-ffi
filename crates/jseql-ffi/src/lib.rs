@@ -165,16 +165,12 @@ async fn encrypt_inner(
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
 
-    // [{plaintext: "plaintext", column: "column_name"}]
     let js_array = cx.argument::<JsArray>(1)?;
     let vec: Vec<Handle<JsValue>> = js_array.to_vec(&mut cx)?;
     let mut plaintext_targets: Vec<PlaintextTarget> = Vec::with_capacity(vec.len());
 
     for value in vec {
-        // TODO: don't unwrap
-        let obj = value
-            .downcast::<JsObject, FunctionContext>(&mut cx)
-            .unwrap();
+        let obj: Handle<JsObject> = value.downcast_or_throw(&mut cx)?;
 
         let plaintext = obj
             .get::<JsString, _, _>(&mut cx, "plaintext")?
@@ -311,16 +307,12 @@ async fn decrypt_inner(
 fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
 
-    // [{ciphertext: "ciphertext"}]
     let js_array = cx.argument::<JsArray>(1)?;
     let vec: Vec<Handle<JsValue>> = js_array.to_vec(&mut cx)?;
     let mut ciphertexts: Vec<(String, Vec<zerokms::Context>)> = Vec::with_capacity(vec.len());
 
     for value in vec {
-        // TODO: don't unwrap
-        let obj = value
-            .downcast::<JsObject, FunctionContext>(&mut cx)
-            .unwrap();
+        let obj: Handle<JsObject> = value.downcast_or_throw(&mut cx)?;
 
         let ciphertext = obj
             .get::<JsString, _, _>(&mut cx, "ciphertext")?
