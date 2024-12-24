@@ -42,7 +42,7 @@ pub enum Error {
     TypeParse(#[from] TypeParseError),
     #[error(transparent)]
     Encryption(#[from] EncryptionError),
-    #[error("jseql-ffi invariant violation: {0}. This is a bug in jseql-ffi. Please file an issue at https://github.com/cipherstash/jseql-ffi/issues.")]
+    #[error("jseql-ffi invariant violation: {0}. This is a bug in jseql-ffi. Please file an issue at https://github.com/cipherstash/jseql/issues.")]
     InvariantViolation(String),
     #[error("{0}")]
     Base85(String),
