@@ -185,10 +185,12 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
         let column = obj.get::<JsString, _, _>(&mut cx, "column")?.value(&mut cx);
 
-        // TODO: lock context
+        let lock_context = obj.get_opt::<JsValue, _, _>(&mut cx, "lockContext")?;
+        let lock_context = encryption_context_from_js_value(lock_context, &mut cx)?;
 
         let column_config = ColumnConfig::build(column);
-        let plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
+        let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
+        plaintext_target.context = lock_context;
 
         plaintext_targets.push(plaintext_target);
     }
@@ -320,7 +322,7 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     // [{ciphertext: "ciphertext"}]
     let js_array = cx.argument::<JsArray>(1)?;
     let vec: Vec<Handle<JsValue>> = js_array.to_vec(&mut cx)?;
-    let mut ciphertexts: Vec<String> = Vec::with_capacity(vec.len());
+    let mut ciphertexts: Vec<(String, Vec<zerokms::Context>)> = Vec::with_capacity(vec.len());
 
     for value in vec {
         // TODO: don't unwrap
@@ -332,9 +334,10 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .get::<JsString, _, _>(&mut cx, "ciphertext")?
             .value(&mut cx);
 
-        // TODO: lock context
+        let lock_context = obj.get_opt::<JsValue, _, _>(&mut cx, "lockContext")?;
+        let lock_context = encryption_context_from_js_value(lock_context, &mut cx)?;
 
-        ciphertexts.push(ciphertext);
+        ciphertexts.push((ciphertext, lock_context));
     }
 
     let rt = runtime(&mut cx)?;
@@ -364,19 +367,21 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
 async fn decrypt_bulk_inner(
     client: Client,
-    ciphertexts: Vec<String>,
-    // encryption_context: Vec<zerokms::Context>,
+    ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
 ) -> Result<Vec<String>, Error> {
     let len = ciphertexts.len();
-    let mut encrypted_records: Vec<EncryptedRecord> = Vec::with_capacity(ciphertexts.len());
+    let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
 
-    for ciphertext in ciphertexts {
+    for (ciphertext, context) in ciphertexts {
         let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
             // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
             // Instead, we use `map_err`.
             .map_err(|err| Error::Base85(err.to_string()))?;
 
-        encrypted_records.push(encrypted_record);
+        encrypted_records.push(WithContext {
+            record: encrypted_record,
+            context,
+        });
     }
 
     let decrypted = client.zerokms.decrypt(encrypted_records).await?;
