@@ -3,7 +3,7 @@ use cipherstash_client::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
         zero_kms_config::ZeroKMSConfig,
     },
-    credentials::ServiceCredentials,
+    credentials::{ServiceCredentials, ServiceToken},
     encryption::{
         Encrypted, EncryptionError, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
         ScopedCipher, TypeParseError,
@@ -95,6 +95,7 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let plaintext = cx.argument::<JsString>(1)?.value(&mut cx);
     let column_name = cx.argument::<JsString>(2)?.value(&mut cx);
     let lock_context = encryption_context_from_js_value(cx.argument_opt(3), &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(4), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -110,7 +111,8 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     //
     // This task will _not_ block the JavaScript main thread.
     rt.spawn(async move {
-        let ciphertext_result = encrypt_inner(client, plaintext, column_name, lock_context).await;
+        let ciphertext_result =
+            encrypt_inner(client, plaintext, column_name, lock_context, service_token).await;
 
         // Settle the promise from the result of a closure. JavaScript exceptions
         // will be converted to a Promise rejection.
@@ -133,6 +135,7 @@ async fn encrypt_inner(
     plaintext: String,
     column_name: String,
     encryption_context: Vec<zerokms::Context>,
+    service_token: Option<ServiceToken>,
 ) -> Result<String, Error> {
     let column_config = ColumnConfig::build(column_name);
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
@@ -141,7 +144,7 @@ async fn encrypt_inner(
 
     pipeline.add_with_ref::<PlaintextTarget>(encryptable, 0)?;
 
-    let mut source_encrypted = pipeline.encrypt().await?;
+    let mut source_encrypted = pipeline.encrypt(service_token).await?;
 
     let encrypted = source_encrypted.remove(0).ok_or_else(|| {
         Error::InvariantViolation(
@@ -166,6 +169,7 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertext = cx.argument::<JsString>(1)?.value(&mut cx);
     let lock_context = encryption_context_from_js_value(cx.argument_opt(2), &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(3), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -173,7 +177,7 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let decrypt_result = decrypt_inner(client, ciphertext, lock_context).await;
+        let decrypt_result = decrypt_inner(client, ciphertext, lock_context, service_token).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintext = decrypt_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -189,6 +193,7 @@ async fn decrypt_inner(
     client: Client,
     ciphertext: String,
     encryption_context: Vec<zerokms::Context>,
+    service_token: Option<ServiceToken>,
 ) -> Result<String, Error> {
     let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
         // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
@@ -200,7 +205,10 @@ async fn decrypt_inner(
         context: encryption_context,
     };
 
-    let decrypted = client.zerokms.decrypt_single(with_context).await?;
+    let decrypted = client
+        .zerokms
+        .decrypt_single(with_context, service_token)
+        .await?;
 
     let plaintext = Plaintext::from_slice(&decrypted[..])?;
 
@@ -237,6 +245,25 @@ fn encryption_context_from_js_value(
     }
 
     Ok(encryption_context)
+}
+
+fn service_token_from_js_value(
+    value: Option<Handle<JsValue>>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Option<ServiceToken>> {
+    if let Some(service_token) = value {
+        let service_token: Handle<JsObject> = service_token.downcast_or_throw(cx)?;
+
+        let token = service_token
+            .get::<JsString, _, _>(cx, "accessToken")?
+            .value(cx);
+
+        let expiry = service_token.get::<JsNumber, _, _>(cx, "expiry")?.value(cx);
+
+        Ok(Some(ServiceToken::new(token, expiry as u64)))
+    } else {
+        Ok(None)
+    }
 }
 
 #[neon::main]
