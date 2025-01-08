@@ -167,29 +167,7 @@ async fn encrypt_inner(
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
-
-    let js_array = cx.argument::<JsArray>(1)?;
-    let vec: Vec<Handle<JsValue>> = js_array.to_vec(&mut cx)?;
-    let mut plaintext_targets: Vec<PlaintextTarget> = Vec::with_capacity(vec.len());
-
-    for value in vec {
-        let obj: Handle<JsObject> = value.downcast_or_throw(&mut cx)?;
-
-        let plaintext = obj
-            .get::<JsString, _, _>(&mut cx, "plaintext")?
-            .value(&mut cx);
-
-        let column = obj.get::<JsString, _, _>(&mut cx, "column")?.value(&mut cx);
-
-        let lock_context = obj.get_opt::<JsValue, _, _>(&mut cx, "lockContext")?;
-        let lock_context = encryption_context_from_js_value(lock_context, &mut cx)?;
-
-        let column_config = ColumnConfig::build(column);
-        let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
-        plaintext_target.context = lock_context;
-
-        plaintext_targets.push(plaintext_target);
-    }
+    let plaintext_targets = plaintext_targets_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -201,15 +179,7 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
         deferred.settle_with(&channel, move |mut cx| {
             let ciphertexts = ciphertexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
-
-            let a = JsArray::new(&mut cx, ciphertexts.len());
-
-            for (i, s) in ciphertexts.iter().enumerate() {
-                let v = cx.string(s);
-                a.set(&mut cx, i as u32, v)?;
-            }
-
-            Ok(a)
+            js_array_from_string_vec(ciphertexts, &mut cx)
         });
     });
 
@@ -227,7 +197,7 @@ async fn encrypt_bulk_inner(
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
 
-    let mut source_encrypted = pipeline.encrypt().await?;
+    let mut source_encrypted = pipeline.encrypt(None).await?;
 
     let mut results: Vec<String> = Vec::with_capacity(len);
 
@@ -314,23 +284,7 @@ async fn decrypt_inner(
 
 fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
-
-    let js_array = cx.argument::<JsArray>(1)?;
-    let vec: Vec<Handle<JsValue>> = js_array.to_vec(&mut cx)?;
-    let mut ciphertexts: Vec<(String, Vec<zerokms::Context>)> = Vec::with_capacity(vec.len());
-
-    for value in vec {
-        let obj: Handle<JsObject> = value.downcast_or_throw(&mut cx)?;
-
-        let ciphertext = obj
-            .get::<JsString, _, _>(&mut cx, "ciphertext")?
-            .value(&mut cx);
-
-        let lock_context = obj.get_opt::<JsValue, _, _>(&mut cx, "lockContext")?;
-        let lock_context = encryption_context_from_js_value(lock_context, &mut cx)?;
-
-        ciphertexts.push((ciphertext, lock_context));
-    }
+    let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -342,15 +296,7 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
-
-            let a = JsArray::new(&mut cx, plaintexts.len());
-
-            for (i, s) in plaintexts.iter().enumerate() {
-                let v = cx.string(s);
-                a.set(&mut cx, i as u32, v)?;
-            }
-
-            Ok(a)
+            js_array_from_string_vec(plaintexts, &mut cx)
         });
     });
 
@@ -376,7 +322,7 @@ async fn decrypt_bulk_inner(
         });
     }
 
-    let decrypted = client.zerokms.decrypt(encrypted_records).await?;
+    let decrypted = client.zerokms.decrypt(encrypted_records, None).await?;
 
     let mut plaintexts: Vec<String> = Vec::with_capacity(len);
 
@@ -442,6 +388,68 @@ fn service_token_from_js_value(
     } else {
         Ok(None)
     }
+}
+
+fn plaintext_targets_from_js_array(
+    js_array: Handle<'_, JsArray>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Vec<PlaintextTarget>> {
+    let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
+    let mut plaintext_targets: Vec<PlaintextTarget> = Vec::with_capacity(js_values.len());
+
+    for js_value in js_values {
+        let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
+
+        let plaintext = obj.get::<JsString, _, _>(cx, "plaintext")?.value(cx);
+
+        let column = obj.get::<JsString, _, _>(cx, "column")?.value(cx);
+
+        let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
+        let lock_context = encryption_context_from_js_value(lock_context, cx)?;
+
+        let column_config = ColumnConfig::build(column);
+        let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
+        plaintext_target.context = lock_context;
+
+        plaintext_targets.push(plaintext_target);
+    }
+
+    Ok(plaintext_targets)
+}
+
+fn ciphertexts_from_js_array(
+    js_array: Handle<'_, JsArray>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Vec<(String, Vec<zerokms::Context>)>> {
+    let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
+    let mut ciphertexts: Vec<(String, Vec<zerokms::Context>)> = Vec::with_capacity(js_values.len());
+
+    for js_value in js_values {
+        let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
+
+        let ciphertext = obj.get::<JsString, _, _>(cx, "ciphertext")?.value(cx);
+
+        let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
+        let lock_context = encryption_context_from_js_value(lock_context, cx)?;
+
+        ciphertexts.push((ciphertext, lock_context));
+    }
+
+    Ok(ciphertexts)
+}
+
+fn js_array_from_string_vec<'a, C: Context<'a>>(
+    vec: Vec<String>,
+    cx: &mut C,
+) -> NeonResult<Handle<'a, JsArray>> {
+    let js_array = JsArray::new(cx, vec.len());
+
+    for (i, value) in vec.iter().enumerate() {
+        let js_string = cx.string(value);
+        js_array.set(cx, i as u32, js_string)?;
+    }
+
+    Ok(js_array)
 }
 
 #[neon::main]
