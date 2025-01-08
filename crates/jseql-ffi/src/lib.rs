@@ -42,7 +42,7 @@ pub enum Error {
     TypeParse(#[from] TypeParseError),
     #[error(transparent)]
     Encryption(#[from] EncryptionError),
-    #[error("jseql-ffi invariant violation: {0}. This is a bug in jseql-ffi. Please file an issue at https://github.com/cipherstash/jseql-ffi/issues.")]
+    #[error("jseql-ffi invariant violation: {0}. This is a bug in jseql-ffi. Please file an issue at https://github.com/cipherstash/jseql/issues.")]
     InvariantViolation(String),
     #[error("{0}")]
     Base85(String),
@@ -152,17 +152,60 @@ async fn encrypt_inner(
         )
     })?;
 
-    match encrypted {
-        Encrypted::Record(ciphertext, _terms) => ciphertext
-            .to_mp_base85()
-            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-            // Instead, we use `map_err`.
-            .map_err(|err| Error::Base85(err.to_string())),
+    mp_base85_str_from_encrypted(encrypted)
+}
 
-        Encrypted::SteVec(_) => Err(Error::Unimplemented(
-            "`SteVec`s and encrypted JSONB columns".to_string(),
-        )),
+fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let plaintext_targets = plaintext_targets_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+
+    let (deferred, promise) = cx.promise();
+
+    rt.spawn(async move {
+        let ciphertexts_result = encrypt_bulk_inner(client, plaintext_targets, service_token).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            let ciphertexts = ciphertexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            js_array_from_string_vec(ciphertexts, &mut cx)
+        });
+    });
+
+    Ok(promise)
+}
+
+async fn encrypt_bulk_inner(
+    client: Client,
+    plaintext_targets: Vec<PlaintextTarget>,
+    service_token: Option<ServiceToken>,
+) -> Result<Vec<String>, Error> {
+    let len = plaintext_targets.len();
+    let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
+
+    for (i, plaintext_target) in plaintext_targets.into_iter().enumerate() {
+        pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
+
+    let mut source_encrypted = pipeline.encrypt(service_token).await?;
+
+    let mut results: Vec<String> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let encrypted = source_encrypted.remove(i).ok_or_else(|| {
+            Error::InvariantViolation(
+                format!(
+                    "`encrypt_bulk` expected a result in the pipeline at index {i}, but there were none"
+                )
+            )
+        })?;
+
+        results.push(mp_base85_str_from_encrypted(encrypted)?);
+    }
+
+    Ok(results)
 }
 
 fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -195,29 +238,63 @@ async fn decrypt_inner(
     encryption_context: Vec<zerokms::Context>,
     service_token: Option<ServiceToken>,
 ) -> Result<String, Error> {
-    let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
-        // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-        // Instead, we use `map_err`.
-        .map_err(|err| Error::Base85(err.to_string()))?;
-
-    let with_context = WithContext {
-        record: encrypted_record,
-        context: encryption_context,
-    };
+    let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
 
     let decrypted = client
         .zerokms
-        .decrypt_single(with_context, service_token)
+        .decrypt_single(encrypted_record, service_token)
         .await?;
 
-    let plaintext = Plaintext::from_slice(&decrypted[..])?;
+    plaintext_str_from_bytes(decrypted)
+}
 
-    match plaintext {
-        Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
-        _ => Err(Error::Unimplemented(
-            "data types other than `Utf8Str`".to_string(),
-        )),
+fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+
+    let (deferred, promise) = cx.promise();
+
+    rt.spawn(async move {
+        let plaintexts_result = decrypt_bulk_inner(client, ciphertexts, service_token).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            js_array_from_string_vec(plaintexts, &mut cx)
+        });
+    });
+
+    Ok(promise)
+}
+
+async fn decrypt_bulk_inner(
+    client: Client,
+    ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
+    service_token: Option<ServiceToken>,
+) -> Result<Vec<String>, Error> {
+    let len = ciphertexts.len();
+    let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
+
+    for (ciphertext, encryption_context) in ciphertexts {
+        let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
+        encrypted_records.push(encrypted_record);
     }
+
+    let decrypted = client
+        .zerokms
+        .decrypt(encrypted_records, service_token)
+        .await?;
+
+    let mut plaintexts: Vec<String> = Vec::with_capacity(len);
+
+    for item in decrypted {
+        plaintexts.push(plaintext_str_from_bytes(item)?);
+    }
+
+    Ok(plaintexts)
 }
 
 fn encryption_context_from_js_value(
@@ -266,11 +343,117 @@ fn service_token_from_js_value(
     }
 }
 
+fn plaintext_targets_from_js_array(
+    js_array: Handle<'_, JsArray>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Vec<PlaintextTarget>> {
+    let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
+    let mut plaintext_targets: Vec<PlaintextTarget> = Vec::with_capacity(js_values.len());
+
+    for js_value in js_values {
+        let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
+
+        let plaintext = obj.get::<JsString, _, _>(cx, "plaintext")?.value(cx);
+
+        let column = obj.get::<JsString, _, _>(cx, "column")?.value(cx);
+
+        let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
+        let lock_context = encryption_context_from_js_value(lock_context, cx)?;
+
+        let column_config = ColumnConfig::build(column);
+        let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
+        plaintext_target.context = lock_context;
+
+        plaintext_targets.push(plaintext_target);
+    }
+
+    Ok(plaintext_targets)
+}
+
+fn ciphertexts_from_js_array(
+    js_array: Handle<'_, JsArray>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Vec<(String, Vec<zerokms::Context>)>> {
+    let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
+    let mut ciphertexts: Vec<(String, Vec<zerokms::Context>)> = Vec::with_capacity(js_values.len());
+
+    for js_value in js_values {
+        let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
+
+        let ciphertext = obj.get::<JsString, _, _>(cx, "ciphertext")?.value(cx);
+
+        let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
+        let lock_context = encryption_context_from_js_value(lock_context, cx)?;
+
+        ciphertexts.push((ciphertext, lock_context));
+    }
+
+    Ok(ciphertexts)
+}
+
+fn js_array_from_string_vec<'a, C: Context<'a>>(
+    vec: Vec<String>,
+    cx: &mut C,
+) -> NeonResult<Handle<'a, JsArray>> {
+    let js_array = JsArray::new(cx, vec.len());
+
+    for (i, value) in vec.iter().enumerate() {
+        let js_string = cx.string(value);
+        js_array.set(cx, i as u32, js_string)?;
+    }
+
+    Ok(js_array)
+}
+
+fn encrypted_record_from_mp_base85(
+    base85str: &str,
+    encryption_context: Vec<zerokms::Context>,
+) -> Result<WithContext, Error> {
+    let encrypted_record = EncryptedRecord::from_mp_base85(base85str)
+        // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+        // Instead, we use `map_err`.
+        .map_err(|err| Error::Base85(err.to_string()))?;
+
+    Ok(WithContext {
+        record: encrypted_record,
+        context: encryption_context,
+    })
+}
+
+fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
+    let plaintext = Plaintext::from_slice(bytes.as_slice())?;
+
+    match plaintext {
+        Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
+        _ => {
+            return Err(Error::Unimplemented(
+                "data types other than `Utf8Str`".to_string(),
+            ))
+        }
+    }
+}
+
+fn mp_base85_str_from_encrypted(encrypted: Encrypted) -> Result<String, Error> {
+    match encrypted {
+        Encrypted::Record(ciphertext, _terms) => ciphertext
+            .to_mp_base85()
+            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+            // Instead, we use `map_err`.
+            .map_err(|err| Error::Base85(err.to_string())),
+
+        Encrypted::SteVec(_) => Err(Error::Unimplemented(
+            "`SteVec`s and encrypted JSONB columns".to_string(),
+        ))?,
+    }
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("newClient", new_client)?;
     cx.export_function("encrypt", encrypt)?;
+    cx.export_function("encryptBulk", encrypt_bulk)?;
     cx.export_function("decrypt", decrypt)?;
+    cx.export_function("decryptBulk", decrypt_bulk)?;
 
     Ok(())
 }

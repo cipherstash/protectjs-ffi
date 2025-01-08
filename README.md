@@ -25,8 +25,8 @@ $ npm run build
 $ node
 > const addon = require(".");
 > const client = await addon.newClient();
-> const ciphertext = await addon.encrypt("plaintext", "column_name", client);
-> const plaintext = await addon.decrypt(ciphertext, client);
+> const ciphertext = await addon.encrypt(client, "plaintext", "column_name");
+> const plaintext = await addon.decrypt(client, ciphertext);
 > console.log({ciphertext, plaintext});
 ```
 
