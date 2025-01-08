@@ -158,6 +158,7 @@ async fn encrypt_inner(
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
     let plaintext_targets = plaintext_targets_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -165,7 +166,7 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let ciphertexts_result = encrypt_bulk_inner(client, plaintext_targets).await;
+        let ciphertexts_result = encrypt_bulk_inner(client, plaintext_targets, service_token).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let ciphertexts = ciphertexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -179,6 +180,7 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 async fn encrypt_bulk_inner(
     client: Client,
     plaintext_targets: Vec<PlaintextTarget>,
+    service_token: Option<ServiceToken>,
 ) -> Result<Vec<String>, Error> {
     let len = plaintext_targets.len();
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
@@ -187,7 +189,7 @@ async fn encrypt_bulk_inner(
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
 
-    let mut source_encrypted = pipeline.encrypt(None).await?;
+    let mut source_encrypted = pipeline.encrypt(service_token).await?;
 
     let mut results: Vec<String> = Vec::with_capacity(len);
 
@@ -249,6 +251,7 @@ async fn decrypt_inner(
 fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -256,7 +259,7 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let plaintexts_result = decrypt_bulk_inner(client, ciphertexts).await;
+        let plaintexts_result = decrypt_bulk_inner(client, ciphertexts, service_token).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -270,6 +273,7 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 async fn decrypt_bulk_inner(
     client: Client,
     ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
+    service_token: Option<ServiceToken>,
 ) -> Result<Vec<String>, Error> {
     let len = ciphertexts.len();
     let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
@@ -279,7 +283,10 @@ async fn decrypt_bulk_inner(
         encrypted_records.push(encrypted_record);
     }
 
-    let decrypted = client.zerokms.decrypt(encrypted_records, None).await?;
+    let decrypted = client
+        .zerokms
+        .decrypt(encrypted_records, service_token)
+        .await?;
 
     let mut plaintexts: Vec<String> = Vec::with_capacity(len);
 
