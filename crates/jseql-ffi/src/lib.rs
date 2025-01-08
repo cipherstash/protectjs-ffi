@@ -152,17 +152,7 @@ async fn encrypt_inner(
         )
     })?;
 
-    match encrypted {
-        Encrypted::Record(ciphertext, _terms) => ciphertext
-            .to_mp_base85()
-            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-            // Instead, we use `map_err`.
-            .map_err(|err| Error::Base85(err.to_string())),
-
-        Encrypted::SteVec(_) => Err(Error::Unimplemented(
-            "`SteVec`s and encrypted JSONB columns".to_string(),
-        )),
-    }
+    mp_base85_str_from_encrypted(encrypted)
 }
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -204,24 +194,13 @@ async fn encrypt_bulk_inner(
     for i in 0..len {
         let encrypted = source_encrypted.remove(i).ok_or_else(|| {
             Error::InvariantViolation(
-                "`encrypt` expected a single result in the pipeline, but there were none"
-                    .to_string(),
+                format!(
+                    "`encrypt_bulk` expected a result in the pipeline at index {i}, but there were none"
+                )
             )
         })?;
 
-        let encrypted = match encrypted {
-            Encrypted::Record(ciphertext, _terms) => ciphertext
-                .to_mp_base85()
-                // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-                // Instead, we use `map_err`.
-                .map_err(|err| Error::Base85(err.to_string()))?,
-
-            Encrypted::SteVec(_) => Err(Error::Unimplemented(
-                "`SteVec`s and encrypted JSONB columns".to_string(),
-            ))?,
-        };
-
-        results.push(encrypted);
+        results.push(mp_base85_str_from_encrypted(encrypted)?);
     }
 
     Ok(results)
@@ -257,29 +236,14 @@ async fn decrypt_inner(
     encryption_context: Vec<zerokms::Context>,
     service_token: Option<ServiceToken>,
 ) -> Result<String, Error> {
-    let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
-        // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-        // Instead, we use `map_err`.
-        .map_err(|err| Error::Base85(err.to_string()))?;
-
-    let with_context = WithContext {
-        record: encrypted_record,
-        context: encryption_context,
-    };
+    let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
 
     let decrypted = client
         .zerokms
-        .decrypt_single(with_context, service_token)
+        .decrypt_single(encrypted_record, service_token)
         .await?;
 
-    let plaintext = Plaintext::from_slice(&decrypted[..])?;
-
-    match plaintext {
-        Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
-        _ => Err(Error::Unimplemented(
-            "data types other than `Utf8Str`".to_string(),
-        )),
-    }
+    plaintext_str_from_bytes(decrypted)
 }
 
 fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -310,35 +274,17 @@ async fn decrypt_bulk_inner(
     let len = ciphertexts.len();
     let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
 
-    for (ciphertext, context) in ciphertexts {
-        let encrypted_record = EncryptedRecord::from_mp_base85(&ciphertext)
-            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-            // Instead, we use `map_err`.
-            .map_err(|err| Error::Base85(err.to_string()))?;
-
-        encrypted_records.push(WithContext {
-            record: encrypted_record,
-            context,
-        });
+    for (ciphertext, encryption_context) in ciphertexts {
+        let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
+        encrypted_records.push(encrypted_record);
     }
 
     let decrypted = client.zerokms.decrypt(encrypted_records, None).await?;
 
     let mut plaintexts: Vec<String> = Vec::with_capacity(len);
 
-    for entry in decrypted {
-        let plaintext = Plaintext::from_slice(entry.as_slice())?;
-
-        let s = match plaintext {
-            Plaintext::Utf8Str(Some(ref inner)) => inner.clone(),
-            _ => {
-                return Err(Error::Unimplemented(
-                    "data types other than `Utf8Str`".to_string(),
-                ))
-            }
-        };
-
-        plaintexts.push(s);
+    for item in decrypted {
+        plaintexts.push(plaintext_str_from_bytes(item)?);
     }
 
     Ok(plaintexts)
@@ -450,6 +396,48 @@ fn js_array_from_string_vec<'a, C: Context<'a>>(
     }
 
     Ok(js_array)
+}
+
+fn encrypted_record_from_mp_base85(
+    base85str: &str,
+    encryption_context: Vec<zerokms::Context>,
+) -> Result<WithContext, Error> {
+    let encrypted_record = EncryptedRecord::from_mp_base85(base85str)
+        // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+        // Instead, we use `map_err`.
+        .map_err(|err| Error::Base85(err.to_string()))?;
+
+    Ok(WithContext {
+        record: encrypted_record,
+        context: encryption_context,
+    })
+}
+
+fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
+    let plaintext = Plaintext::from_slice(bytes.as_slice())?;
+
+    match plaintext {
+        Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
+        _ => {
+            return Err(Error::Unimplemented(
+                "data types other than `Utf8Str`".to_string(),
+            ))
+        }
+    }
+}
+
+fn mp_base85_str_from_encrypted(encrypted: Encrypted) -> Result<String, Error> {
+    match encrypted {
+        Encrypted::Record(ciphertext, _terms) => ciphertext
+            .to_mp_base85()
+            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+            // Instead, we use `map_err`.
+            .map_err(|err| Error::Base85(err.to_string())),
+
+        Encrypted::SteVec(_) => Err(Error::Unimplemented(
+            "`SteVec`s and encrypted JSONB columns".to_string(),
+        ))?,
+    }
 }
 
 #[neon::main]
