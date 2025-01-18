@@ -1,6 +1,6 @@
 {
   "name": "@cipherstash/jseql-ffi",
-  "version": "1.0.0",
+  "version": "2.0.0-0",
   "description": "",
   "main": "./lib/index.cjs",
   "scripts": {
@@ -32,7 +32,9 @@
     }
   },
   "types": "./lib/index.d.cts",
-  "files": ["lib/**/*.?({c,m}){t,j}s"],
+  "files": [
+    "lib/**/*.?({c,m}){t,j}s"
+  ],
   "neon": {
     "type": "library",
     "org": "@cipherstash",

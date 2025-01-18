@@ -1,7 +1,7 @@
 {
   "name": "@cipherstash/jseql-ffi-linux-x64-gnu",
   "description": "Prebuilt binary package for `@cipherstash/jseql-ffi` on `linux-x64-gnu`.",
-  "version": "1.0.0",
+  "version": "2.0.0-0",
   "os": [
     "linux"
   ],
