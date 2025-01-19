@@ -1,6 +1,9 @@
 # jseql-ffi
 
-This project was bootstrapped by [create-neon](https://www.npmjs.com/package/create-neon).
+> [!IMPORTANT]  
+> If you are looking to implement this package into your application please use the official [jseql package](https://github.com/cipherstash/jseql).
+
+This project provides the JS bindings for the CipherStash Client Rust SDK and is bootstrapped by [create-neon](https://www.npmjs.com/package/create-neon).
 
 ## Building
 
