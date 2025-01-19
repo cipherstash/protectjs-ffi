@@ -1,7 +1,7 @@
 {
   "name": "@cipherstash/jseql-ffi-darwin-arm64",
   "description": "Prebuilt binary package for `@cipherstash/jseql-ffi` on `darwin-arm64`.",
-  "version": "2.1.0-0",
+  "version": "0.4.0",
   "os": [
     "darwin"
   ],
