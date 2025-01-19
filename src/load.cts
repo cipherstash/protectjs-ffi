@@ -11,7 +11,7 @@ module.exports = require('@neon-rs/load').proxy({
     'darwin-x64': () => require('@cipherstash/jseql-ffi-darwin-x64'),
     'darwin-arm64': () => require('@cipherstash/jseql-ffi-darwin-arm64'),
     'linux-x64-gnu': () => require('@cipherstash/jseql-ffi-linux-x64-gnu'),
-    'linux-arm64-gnu': () => require('@cipherstash/jseql-ffi-linux-arm64-gnu')
+    'linux-arm64-gnu': () => require('@cipherstash/jseql-ffi-linux-arm64-gnu'),
   },
-  debug: () => require('../index.node')
-});
+  debug: () => require('../index.node'),
+})
