@@ -1,3 +1,4 @@
+use cipherstash_cli::{CliContext, SetupCommand};
 use cipherstash_client::{
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
@@ -447,6 +448,24 @@ fn mp_base85_str_from_encrypted(encrypted: Encrypted) -> Result<String, Error> {
     }
 }
 
+fn run_setup(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+    let (deferred, promise) = cx.promise();
+    rt.spawn(async move {
+        let context = CliContext::new();
+        let command = SetupCommand::default();
+        let result = command.run(&context).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            result.or_else(|err| cx.throw_error(err.to_string()))?;
+            Ok(cx.undefined())
+        });
+    });
+
+    Ok(promise)
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("newClient", new_client)?;
@@ -454,6 +473,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("encryptBulk", encrypt_bulk)?;
     cx.export_function("decrypt", decrypt)?;
     cx.export_function("decryptBulk", decrypt_bulk)?;
+    cx.export_function("setup", run_setup)?;
 
     Ok(())
 }

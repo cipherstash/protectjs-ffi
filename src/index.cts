@@ -32,6 +32,7 @@ declare module './load.cjs' {
     ciphertexts: BulkDecryptPayload[],
     ctsToken?: CtsToken,
   ): Promise<string[]>
+  function setup(): Promise<undefined>
 }
 
 export function newClient(): Promise<addon.Client> {
@@ -95,6 +96,10 @@ export function decryptBulk(
   }
 
   return addon.decryptBulk(client, ciphertexts)
+}
+
+export function setup(): Promise<undefined> {
+  return addon.setup()
 }
 
 export type BulkEncryptPayload = {
