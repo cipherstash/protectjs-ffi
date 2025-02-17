@@ -1,6 +1,6 @@
 {
-  "name": "@cipherstash/jseql-ffi",
-  "version": "0.5.0",
+  "name": "@cipherstash/protect-ffi",
+  "version": "0.5.2",
   "description": "",
   "main": "./lib/index.cjs",
   "scripts": {
@@ -40,7 +40,7 @@
     "org": "@cipherstash",
     "platforms": "common",
     "load": "./src/load.cts",
-    "prefix": "jseql-ffi-"
+    "prefix": "protect-ffi-"
   },
   "devDependencies": {
     "@neon-rs/cli": "^0.1.82",

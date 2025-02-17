@@ -42,11 +42,11 @@ pub enum Error {
     TypeParse(#[from] TypeParseError),
     #[error(transparent)]
     Encryption(#[from] EncryptionError),
-    #[error("jseql-ffi invariant violation: {0}. This is a bug in jseql-ffi. Please file an issue at https://github.com/cipherstash/jseql/issues.")]
+    #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs/issues.")]
     InvariantViolation(String),
     #[error("{0}")]
     Base85(String),
-    #[error("unimplemented: {0} not supported yet by jseql-ffi")]
+    #[error("unimplemented: {0} not supported yet by protect-ffi")]
     Unimplemented(String),
 }
 

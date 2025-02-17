@@ -7,11 +7,12 @@
 
 module.exports = require('@neon-rs/load').proxy({
   platforms: {
-    'win32-x64-msvc': () => require('@cipherstash/jseql-ffi-win32-x64-msvc'),
-    'darwin-x64': () => require('@cipherstash/jseql-ffi-darwin-x64'),
-    'darwin-arm64': () => require('@cipherstash/jseql-ffi-darwin-arm64'),
-    'linux-x64-gnu': () => require('@cipherstash/jseql-ffi-linux-x64-gnu'),
-    'linux-arm64-gnu': () => require('@cipherstash/jseql-ffi-linux-arm64-gnu'),
+    'win32-x64-msvc': () => require('@cipherstash/protect-ffi-win32-x64-msvc'),
+    'darwin-x64': () => require('@cipherstash/protect-ffi-darwin-x64'),
+    'darwin-arm64': () => require('@cipherstash/protect-ffi-darwin-arm64'),
+    'linux-x64-gnu': () => require('@cipherstash/protect-ffi-linux-x64-gnu'),
+    'linux-arm64-gnu': () =>
+      require('@cipherstash/protect-ffi-linux-arm64-gnu'),
   },
   debug: () => require('../index.node'),
 })
