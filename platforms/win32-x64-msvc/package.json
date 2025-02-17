@@ -1,6 +1,6 @@
 {
-  "name": "@cipherstash/jseql-ffi-win32-x64-msvc",
-  "description": "Prebuilt binary package for `@cipherstash/jseql-ffi` on `win32-x64-msvc`.",
+  "name": "@cipherstash/protect-ffi-win32-x64-msvc",
+  "description": "Prebuilt binary package for `@cipherstash/protect-ffi` on `win32-x64-msvc`.",
   "version": "0.5.2",
   "os": [
     "win32"

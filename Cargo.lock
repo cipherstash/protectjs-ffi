@@ -1281,17 +1281,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jseql-ffi"
-version = "0.1.0"
-dependencies = [
- "cipherstash-client",
- "neon",
- "once_cell",
- "thiserror 2.0.8",
- "tokio",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1831,6 +1820,17 @@ dependencies = [
  "parking_lot 0.12.3",
  "protobuf",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "protect-ffi"
+version = "0.1.0"
+dependencies = [
+ "cipherstash-client",
+ "neon",
+ "once_cell",
+ "thiserror 2.0.8",
+ "tokio",
 ]
 
 [[package]]
