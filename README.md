@@ -17,6 +17,17 @@ $ npm run build
 
 This command uses the [@neon-rs/cli](https://www.npmjs.com/package/@neon-rs/cli) utility to assemble the binary Node addon from the output of `cargo`.
 
+## Local setup
+
+You can use the `stash` CLI tool to set up your local environment.
+
+You will be prompted to sign in or create an account and follow steps to create a keyset and client key.
+
+```sh
+brew install cipherstash/tap/stash
+stash setup
+```
+
 ## Exploring
 
 After building `protect-ffi`, you can explore its exports at the Node console.

@@ -1,7 +1,6 @@
 use cipherstash_client::{
     config::{
-        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig,
+        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError, zero_kms_config::ZeroKMSConfig, EnvSource, CIPHERSTASH_SECRET_TOML, CIPHERSTASH_TOML
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
@@ -75,9 +74,11 @@ async fn new_client_inner() -> Result<Client, Error> {
     let console_config = ConsoleConfig::builder().with_env().build()?;
     let cts_config = CtsConfig::builder().with_env().build()?;
     let zerokms_config = ZeroKMSConfig::builder()
+        .add_source(EnvSource::default())
+        .add_source(CIPHERSTASH_SECRET_TOML)
+        .add_source(CIPHERSTASH_TOML)
         .console_config(&console_config)
         .cts_config(&cts_config)
-        .with_env()
         .build_with_client_key()?;
 
     let zerokms = Arc::new(zerokms_config.create_client());
