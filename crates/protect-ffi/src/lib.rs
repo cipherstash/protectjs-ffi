@@ -1,6 +1,7 @@
 use cipherstash_client::{
     config::{
-        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError, zero_kms_config::ZeroKMSConfig, EnvSource, CIPHERSTASH_SECRET_TOML, CIPHERSTASH_TOML
+        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
+        zero_kms_config::ZeroKMSConfig, EnvSource, CIPHERSTASH_SECRET_TOML, CIPHERSTASH_TOML,
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
@@ -426,11 +427,9 @@ fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
 
     match plaintext {
         Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
-        _ => {
-            Err(Error::Unimplemented(
-                "data types other than `Utf8Str`".to_string(),
-            ))
-        }
+        _ => Err(Error::Unimplemented(
+            "data types other than `Utf8Str`".to_string(),
+        )),
     }
 }
 
