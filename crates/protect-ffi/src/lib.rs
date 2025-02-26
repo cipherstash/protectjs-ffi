@@ -1,7 +1,7 @@
 use cipherstash_client::{
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig,
+        zero_kms_config::ZeroKMSConfig, EnvSource, CIPHERSTASH_SECRET_TOML, CIPHERSTASH_TOML,
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
@@ -75,9 +75,11 @@ async fn new_client_inner() -> Result<Client, Error> {
     let console_config = ConsoleConfig::builder().with_env().build()?;
     let cts_config = CtsConfig::builder().with_env().build()?;
     let zerokms_config = ZeroKMSConfig::builder()
+        .add_source(EnvSource::default())
+        .add_source(CIPHERSTASH_SECRET_TOML)
+        .add_source(CIPHERSTASH_TOML)
         .console_config(&console_config)
         .cts_config(&cts_config)
-        .with_env()
         .build_with_client_key()?;
 
     let zerokms = Arc::new(zerokms_config.create_client());
@@ -91,7 +93,7 @@ async fn new_client_inner() -> Result<Client, Error> {
 }
 
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let plaintext = cx.argument::<JsString>(1)?.value(&mut cx);
     let column_name = cx.argument::<JsString>(2)?.value(&mut cx);
     let lock_context = encryption_context_from_js_value(cx.argument_opt(3), &mut cx)?;
@@ -156,7 +158,7 @@ async fn encrypt_inner(
 }
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let plaintext_targets = plaintext_targets_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
@@ -209,7 +211,7 @@ async fn encrypt_bulk_inner(
 }
 
 fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertext = cx.argument::<JsString>(1)?.value(&mut cx);
     let lock_context = encryption_context_from_js_value(cx.argument_opt(2), &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(3), &mut cx)?;
@@ -249,7 +251,7 @@ async fn decrypt_inner(
 }
 
 fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
@@ -425,11 +427,9 @@ fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
 
     match plaintext {
         Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
-        _ => {
-            return Err(Error::Unimplemented(
-                "data types other than `Utf8Str`".to_string(),
-            ))
-        }
+        _ => Err(Error::Unimplemented(
+            "data types other than `Utf8Str`".to_string(),
+        )),
     }
 }
 
