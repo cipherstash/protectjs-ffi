@@ -76,8 +76,8 @@ async fn new_client_inner() -> Result<Client, Error> {
     let cts_config = CtsConfig::builder().with_env().build()?;
     let zerokms_config = ZeroKMSConfig::builder()
         .add_source(EnvSource::default())
-        .add_source(CIPHERSTASH_SECRET_TOML)
-        .add_source(CIPHERSTASH_TOML)
+        .add_source(CIPHERSTASH_SECRET_TOML.optional())
+        .add_source(CIPHERSTASH_TOML.optional())
         .console_config(&console_config)
         .cts_config(&cts_config)
         .build_with_client_key()?;
