@@ -8,7 +8,7 @@ import * as addon from './load.cjs'
 declare module './load.cjs' {
   interface Client {}
 
-  function newClient(): Promise<Client>
+  function newClient(encryptSchema?: string): Promise<Client>
   function encrypt(
     client: Client,
     plaintext: string,
@@ -34,8 +34,8 @@ declare module './load.cjs' {
   ): Promise<string[]>
 }
 
-export function newClient(): Promise<addon.Client> {
-  return addon.newClient()
+export function newClient(encryptSchema?: string): Promise<addon.Client> {
+  return addon.newClient(encryptSchema)
 }
 
 export function encrypt(

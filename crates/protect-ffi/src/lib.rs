@@ -5,16 +5,21 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        Encrypted, EncryptionError, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
-        ScopedCipher, TypeParseError,
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
+        ScopedCipher, SteVec, TypeParseError,
     },
     schema::ColumnConfig,
-    zerokms::{self, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
+    zerokms::{self, encrypted_record, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
 };
+use encrypt_config::{EncryptConfig, Identifier};
 use neon::prelude::*;
 use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::{collections::HashMap, str::FromStr};
 use tokio::runtime::Runtime;
+
+mod encrypt_config;
 
 // Return a global tokio runtime or create one if it doesn't exist.
 // Throws a JavaScript exception if the `Runtime` fails to create.
@@ -28,9 +33,39 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 struct Client {
     cipher: Arc<ScopedZeroKMSNoRefresh>,
     zerokms: Arc<ZeroKMSWithClientKey<ServiceCredentials>>,
+    encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
 impl Finalize for Client {}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "k")]
+pub enum Encrypted {
+    #[serde(rename = "ct")]
+    Ciphertext {
+        #[serde(rename = "c", with = "encrypted_record::formats::mp_base85")]
+        ciphertext: EncryptedRecord,
+        #[serde(rename = "o")]
+        ore_index: Option<Vec<String>>,
+        #[serde(rename = "m")]
+        match_index: Option<Vec<u16>>,
+        #[serde(rename = "u")]
+        unique_index: Option<String>,
+        #[serde(rename = "i")]
+        identifier: Identifier,
+        #[serde(rename = "v")]
+        version: u16,
+    },
+    #[serde(rename = "sv")]
+    SteVec {
+        #[serde(rename = "sv")]
+        ste_vec_index: SteVec<16>,
+        #[serde(rename = "i")]
+        identifier: Identifier,
+        #[serde(rename = "v")]
+        version: u16,
+    },
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -48,18 +83,34 @@ pub enum Error {
     Base85(String),
     #[error("unimplemented: {0} not supported yet by protect-ffi")]
     Unimplemented(String),
+    #[error(transparent)]
+    Parse(#[from] serde_json::Error),
+    #[error("column {}.{} not found in Encrypt config", _0.column, _0.table)]
+    UnknownColumn(Identifier),
 }
 
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
 
 fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let encrypt_config: EncryptConfig = {
+        if let Some(schema) = cx.argument_opt(0) {
+            let schema_str = schema
+                .downcast_or_throw::<JsString, FunctionContext>(&mut cx)?
+                .value(&mut cx);
+
+            EncryptConfig::from_str(&schema_str).or_else(|err| cx.throw_error(err.to_string()))?
+        } else {
+            todo!("handle missing encrypt config arg")
+        }
+    };
+
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
 
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let client_result = new_client_inner().await;
+        let client_result = new_client_inner(encrypt_config).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let client = client_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -71,7 +122,7 @@ fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-async fn new_client_inner() -> Result<Client, Error> {
+async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error> {
     let console_config = ConsoleConfig::builder().with_env().build()?;
     let cts_config = CtsConfig::builder().with_env().build()?;
     let zerokms_config = ZeroKMSConfig::builder()
@@ -90,15 +141,19 @@ async fn new_client_inner() -> Result<Client, Error> {
     Ok(Client {
         cipher: Arc::new(cipher),
         zerokms,
+        encrypt_config: Arc::new(encrypt_config.to_config_map()),
     })
 }
 
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let plaintext = cx.argument::<JsString>(1)?.value(&mut cx);
+    // TODO: consider making column config an arg instead.
     let column_name = cx.argument::<JsString>(2)?.value(&mut cx);
-    let lock_context = encryption_context_from_js_value(cx.argument_opt(3), &mut cx)?;
-    let service_token = service_token_from_js_value(cx.argument_opt(4), &mut cx)?;
+    let table_name = cx.argument::<JsString>(3)?.value(&mut cx);
+
+    let lock_context = encryption_context_from_js_value(cx.argument_opt(5), &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(6), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -114,8 +169,15 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     //
     // This task will _not_ block the JavaScript main thread.
     rt.spawn(async move {
-        let ciphertext_result =
-            encrypt_inner(client, plaintext, column_name, lock_context, service_token).await;
+        let ciphertext_result = encrypt_inner(
+            client,
+            plaintext,
+            column_name,
+            table_name,
+            lock_context,
+            service_token,
+        )
+        .await;
 
         // Settle the promise from the result of a closure. JavaScript exceptions
         // will be converted to a Promise rejection.
@@ -137,10 +199,17 @@ async fn encrypt_inner(
     client: Client,
     plaintext: String,
     column_name: String,
+    table_name: String,
     encryption_context: Vec<zerokms::Context>,
     service_token: Option<ServiceToken>,
 ) -> Result<String, Error> {
-    let column_config = ColumnConfig::build(column_name);
+    let ident = Identifier::new(table_name, column_name);
+
+    let column_config = client
+        .encrypt_config
+        .get(&ident)
+        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
     let mut encryptable = PlaintextTarget::new(plaintext, column_config.clone());
     encryptable.context = encryption_context;
@@ -155,7 +224,9 @@ async fn encrypt_inner(
         )
     })?;
 
-    mp_base85_str_from_encrypted(encrypted)
+    let eql_payload = to_eql_encrypted(encrypted, &ident).unwrap();
+
+    Ok(serde_json::to_string(&eql_payload).unwrap())
 }
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -194,10 +265,10 @@ async fn encrypt_bulk_inner(
 
     let mut source_encrypted = pipeline.encrypt(service_token).await?;
 
-    let mut results: Vec<String> = Vec::with_capacity(len);
+    // let results: Vec<String> = Vec::with_capacity(len);
 
     for i in 0..len {
-        let encrypted = source_encrypted.remove(i).ok_or_else(|| {
+        let _encrypted = source_encrypted.remove(i).ok_or_else(|| {
             Error::InvariantViolation(
                 format!(
                     "`encrypt_bulk` expected a result in the pipeline at index {i}, but there were none"
@@ -205,10 +276,11 @@ async fn encrypt_bulk_inner(
             )
         })?;
 
-        results.push(mp_base85_str_from_encrypted(encrypted)?);
+        // results.push(mp_base85_str_from_encrypted(encrypted)?);
     }
 
-    Ok(results)
+    todo!("implement bulk encryption")
+    // Ok(results)
 }
 
 fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -434,18 +506,102 @@ fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
     }
 }
 
-fn mp_base85_str_from_encrypted(encrypted: Encrypted) -> Result<String, Error> {
-    match encrypted {
-        Encrypted::Record(ciphertext, _terms) => ciphertext
-            .to_mp_base85()
-            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-            // Instead, we use `map_err`.
-            .map_err(|err| Error::Base85(err.to_string())),
+// fn mp_base85_str_from_encrypted(encrypted: Encrypted) -> Result<String, Error> {
+//     match encrypted {
+//         Encrypted::Record(ciphertext, _terms) => ciphertext
+//             .to_mp_base85()
+//             // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+//             // Instead, we use `map_err`.
+//             .map_err(|err| Error::Base85(err.to_string())),
 
-        Encrypted::SteVec(_) => Err(Error::Unimplemented(
-            "`SteVec`s and encrypted JSONB columns".to_string(),
-        ))?,
+//         Encrypted::SteVec(_) => Err(Error::Unimplemented(
+//             "`SteVec`s and encrypted JSONB columns".to_string(),
+//         ))?,
+//     }
+// }
+
+fn to_eql_encrypted(
+    encrypted: encryption::Encrypted,
+    identifier: &Identifier,
+) -> Result<Encrypted, Error> {
+    match encrypted {
+        encryption::Encrypted::Record(ciphertext, terms) => {
+            // debug!(target: ENCRYPT, ciphertext = ?ciphertext);
+            // debug!(target: ENCRYPT, terms = ?terms);
+
+            struct Indexes {
+                match_index: Option<Vec<u16>>,
+                ore_index: Option<Vec<String>>,
+                unique_index: Option<String>,
+            }
+
+            let mut indexes = Indexes {
+                match_index: None,
+                ore_index: None,
+                unique_index: None,
+            };
+
+            for index_term in terms {
+                match index_term {
+                    IndexTerm::Binary(bytes) => {
+                        indexes.unique_index = Some(format_index_term_binary(&bytes))
+                    }
+                    IndexTerm::BitMap(inner) => indexes.match_index = Some(inner),
+                    IndexTerm::OreArray(vec_of_bytes) => {
+                        indexes.ore_index = Some(format_index_term_ore_array(&vec_of_bytes));
+                    }
+                    IndexTerm::OreFull(bytes) => {
+                        indexes.ore_index = Some(format_index_term_ore(&bytes));
+                    }
+                    IndexTerm::OreLeft(bytes) => {
+                        indexes.ore_index = Some(format_index_term_ore(&bytes));
+                    }
+                    IndexTerm::Null => {}
+                    // _ => return Err(EncryptError::UnknownIndexTerm(identifier.to_owned()).into()),
+                    _ => todo!("unhandled index terms"),
+                };
+            }
+
+            Ok(Encrypted::Ciphertext {
+                ciphertext,
+                identifier: identifier.to_owned(),
+                match_index: indexes.match_index,
+                ore_index: indexes.ore_index,
+                unique_index: indexes.unique_index,
+                version: 1,
+            })
+        }
+        encryption::Encrypted::SteVec(ste_vec_index) => Ok(Encrypted::SteVec {
+            identifier: identifier.to_owned(),
+            ste_vec_index,
+            version: 1,
+        }),
     }
+}
+
+fn format_index_term_binary(bytes: &Vec<u8>) -> String {
+    hex::encode(bytes)
+}
+
+fn format_index_term_ore_bytea(bytes: &Vec<u8>) -> String {
+    hex::encode(bytes)
+}
+
+///
+/// Formats a Vec<Vec<u8>> into a Vec<String>
+///
+fn format_index_term_ore_array(vec_of_bytes: &[Vec<u8>]) -> Vec<String> {
+    vec_of_bytes
+        .iter()
+        .map(format_index_term_ore_bytea)
+        .collect()
+}
+
+///
+/// Formats a Vec<Vec<u8>> into a single elenent Vec<String>
+///
+fn format_index_term_ore(bytes: &Vec<u8>) -> Vec<String> {
+    vec![format_index_term_ore_bytea(bytes)]
 }
 
 #[neon::main]

@@ -1,6 +1,6 @@
 # Protect.js CipherStash Client FFI
 
-> [!IMPORTANT]  
+> [!IMPORTANT]
 > If you are looking to implement this package into your application please use the official [protect package](https://github.com/cipherstash/protectjs).
 
 This project provides the JS bindings for the CipherStash Client Rust SDK and is bootstrapped by [create-neon](https://www.npmjs.com/package/create-neon).
@@ -38,9 +38,9 @@ $ npm i
 $ npm run build
 $ node
 > const addon = require(".");
-> const client = await addon.newClient();
-> const ciphertext = await addon.encrypt(client, "plaintext", "column_name");
-> const plaintext = await addon.decrypt(client, ciphertext);
+> const client = await addon.newClient(JSON.stringify({v: 1, tables: {users: {email: {indexes: {ore: {}, match: {}, unique: {}}}}}}));
+> const ciphertext = await addon.encrypt(client, "plaintext", "email", "users");
+> const plaintext = await addon.decrypt(client, JSON.parse(ciphertext).c);
 > console.log({ciphertext, plaintext});
 ```
 
