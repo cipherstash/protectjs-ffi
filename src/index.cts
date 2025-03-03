@@ -13,6 +13,7 @@ declare module './load.cjs' {
     client: Client,
     plaintext: string,
     columnName: string,
+    tableName?: string,
     context?: Context,
     ctsToken?: CtsToken,
   ): Promise<string>
@@ -42,18 +43,26 @@ export function encrypt(
   client: addon.Client,
   plaintext: string,
   columnName: string,
+  tableName?: string,
   lockContext?: Context,
   ctsToken?: CtsToken,
 ): Promise<string> {
   if (ctsToken) {
-    return addon.encrypt(client, plaintext, columnName, lockContext, ctsToken)
+    return addon.encrypt(
+      client,
+      plaintext,
+      columnName,
+      tableName,
+      lockContext,
+      ctsToken,
+    )
   }
 
   if (lockContext) {
-    return addon.encrypt(client, plaintext, columnName, lockContext)
+    return addon.encrypt(client, plaintext, columnName, tableName, lockContext)
   }
 
-  return addon.encrypt(client, plaintext, columnName)
+  return addon.encrypt(client, plaintext, columnName, tableName)
 }
 
 export function decrypt(
@@ -100,6 +109,7 @@ export function decryptBulk(
 export type BulkEncryptPayload = {
   plaintext: string
   column: string
+  table?: string
   lockContext?: Context
 }
 
