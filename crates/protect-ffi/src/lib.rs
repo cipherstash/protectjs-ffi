@@ -92,17 +92,9 @@ pub enum Error {
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
 
 fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let encrypt_config: EncryptConfig = {
-        if let Some(schema) = cx.argument_opt(0) {
-            let schema_str = schema
-                .downcast_or_throw::<JsString, FunctionContext>(&mut cx)?
-                .value(&mut cx);
-
-            EncryptConfig::from_str(&schema_str).or_else(|err| cx.throw_error(err.to_string()))?
-        } else {
-            todo!("handle missing encrypt config arg")
-        }
-    };
+    let encrypt_config_str = cx.argument::<JsString>(0)?.value(&mut cx);
+    let encrypt_config = EncryptConfig::from_str(&encrypt_config_str)
+        .or_else(|err| cx.throw_error(err.to_string()))?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -224,10 +216,9 @@ async fn encrypt_inner(
         )
     })?;
 
-    // TODO: don't unwrap
-    let eql_payload = to_eql_encrypted(encrypted, &ident).unwrap();
+    let eql_payload = to_eql_encrypted(encrypted, &ident)?;
 
-    Ok(serde_json::to_string(&eql_payload).unwrap())
+    eql_encrypted_to_json_string(&eql_payload)
 }
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -281,11 +272,15 @@ async fn encrypt_bulk_inner(
             ))
         })?;
 
-        let ident = identifiers.get(i).unwrap();
+        let ident = identifiers.get(i).ok_or_else(|| {
+            Error::InvariantViolation(format!(
+                "`encrypt_bulk` expected an identifier to exist for index {i}, but there was none"
+            ))
+        })?;
 
-        let eql_payload = to_eql_encrypted(encrypted, ident).unwrap();
+        let eql_payload = to_eql_encrypted(encrypted, ident)?;
 
-        results.push(serde_json::to_string(&eql_payload).unwrap());
+        results.push(eql_encrypted_to_json_string(&eql_payload)?);
     }
 
     Ok(results)
@@ -574,8 +569,7 @@ fn to_eql_encrypted(
                         indexes.ore_index = Some(format_index_term_ore(&bytes));
                     }
                     IndexTerm::Null => {}
-                    // _ => return Err(EncryptError::UnknownIndexTerm(identifier.to_owned()).into()),
-                    _ => todo!("unhandled index terms"),
+                    term => return Err(Error::Unimplemented(format!("index term `{term:?}`"))),
                 };
             }
 
@@ -619,6 +613,15 @@ fn format_index_term_ore_array(vec_of_bytes: &[Vec<u8>]) -> Vec<String> {
 ///
 fn format_index_term_ore(bytes: &Vec<u8>) -> Vec<String> {
     vec![format_index_term_ore_bytea(bytes)]
+}
+
+fn eql_encrypted_to_json_string(encrypted: &Encrypted) -> Result<String, Error> {
+    serde_json::to_string(encrypted).map_err(|_| {
+        Error::InvariantViolation(
+            "expected EQL payload to be serialiable as JSON, but it could not be serialized"
+                .to_string(),
+        )
+    })
 }
 
 #[neon::main]
