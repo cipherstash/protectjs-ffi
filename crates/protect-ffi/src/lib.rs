@@ -85,7 +85,7 @@ pub enum Error {
     Unimplemented(String),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
-    #[error("column {}.{} not found in Encrypt config", _0.column, _0.table)]
+    #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
     UnknownColumn(Identifier),
 }
 
@@ -224,6 +224,7 @@ async fn encrypt_inner(
         )
     })?;
 
+    // TODO: don't unwrap
     let eql_payload = to_eql_encrypted(encrypted, &ident).unwrap();
 
     Ok(serde_json::to_string(&eql_payload).unwrap())
@@ -231,7 +232,11 @@ async fn encrypt_inner(
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
-    let plaintext_targets = plaintext_targets_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
+    let plaintext_targets = plaintext_targets_from_js_array(
+        client.encrypt_config.clone(),
+        cx.argument::<JsArray>(1)?,
+        &mut cx,
+    )?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
@@ -253,11 +258,13 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
 async fn encrypt_bulk_inner(
     client: Client,
-    plaintext_targets: Vec<PlaintextTarget>,
+    plaintext_targets: Vec<(PlaintextTarget, Identifier)>,
     service_token: Option<ServiceToken>,
 ) -> Result<Vec<String>, Error> {
     let len = plaintext_targets.len();
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
+    let (plaintext_targets, identifiers): (Vec<PlaintextTarget>, Vec<Identifier>) =
+        plaintext_targets.into_iter().unzip();
 
     for (i, plaintext_target) in plaintext_targets.into_iter().enumerate() {
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
@@ -265,22 +272,23 @@ async fn encrypt_bulk_inner(
 
     let mut source_encrypted = pipeline.encrypt(service_token).await?;
 
-    // let results: Vec<String> = Vec::with_capacity(len);
+    let mut results: Vec<String> = Vec::with_capacity(len);
 
     for i in 0..len {
-        let _encrypted = source_encrypted.remove(i).ok_or_else(|| {
-            Error::InvariantViolation(
-                format!(
-                    "`encrypt_bulk` expected a result in the pipeline at index {i}, but there were none"
-                )
-            )
+        let encrypted = source_encrypted.remove(i).ok_or_else(|| {
+            Error::InvariantViolation(format!(
+                "`encrypt_bulk` expected a result in the pipeline at index {i}, but there was none"
+            ))
         })?;
 
-        // results.push(mp_base85_str_from_encrypted(encrypted)?);
+        let ident = identifiers.get(i).unwrap();
+
+        let eql_payload = to_eql_encrypted(encrypted, ident).unwrap();
+
+        results.push(serde_json::to_string(&eql_payload).unwrap());
     }
 
-    todo!("implement bulk encryption")
-    // Ok(results)
+    Ok(results)
 }
 
 fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -419,11 +427,13 @@ fn service_token_from_js_value(
 }
 
 fn plaintext_targets_from_js_array(
+    encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
     js_array: Handle<'_, JsArray>,
     cx: &mut FunctionContext,
-) -> NeonResult<Vec<PlaintextTarget>> {
+) -> NeonResult<Vec<(PlaintextTarget, Identifier)>> {
     let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
-    let mut plaintext_targets: Vec<PlaintextTarget> = Vec::with_capacity(js_values.len());
+    let mut plaintext_targets: Vec<(PlaintextTarget, Identifier)> =
+        Vec::with_capacity(js_values.len());
 
     for js_value in js_values {
         let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
@@ -431,15 +441,22 @@ fn plaintext_targets_from_js_array(
         let plaintext = obj.get::<JsString, _, _>(cx, "plaintext")?.value(cx);
 
         let column = obj.get::<JsString, _, _>(cx, "column")?.value(cx);
+        let table = obj.get::<JsString, _, _>(cx, "table")?.value(cx);
 
         let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
         let lock_context = encryption_context_from_js_value(lock_context, cx)?;
 
-        let column_config = ColumnConfig::build(column);
+        let ident = Identifier::new(table, column);
+
+        let column_config = encrypt_config
+            .get(&ident)
+            .ok_or_else(|| Error::UnknownColumn(ident.clone()))
+            .or_else(|err| cx.throw_error(err.to_string()))?;
+
         let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
         plaintext_target.context = lock_context;
 
-        plaintext_targets.push(plaintext_target);
+        plaintext_targets.push((plaintext_target, ident));
     }
 
     Ok(plaintext_targets)
