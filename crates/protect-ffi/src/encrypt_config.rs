@@ -24,14 +24,6 @@ impl Identifier {
 
         Self { table, column }
     }
-
-    pub fn table(&self) -> &String {
-        &self.table
-    }
-
-    pub fn column(&self) -> &String {
-        &self.column
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
