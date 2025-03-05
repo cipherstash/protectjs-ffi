@@ -516,29 +516,12 @@ fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
     }
 }
 
-// fn mp_base85_str_from_encrypted(encrypted: Encrypted) -> Result<String, Error> {
-//     match encrypted {
-//         Encrypted::Record(ciphertext, _terms) => ciphertext
-//             .to_mp_base85()
-//             // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-//             // Instead, we use `map_err`.
-//             .map_err(|err| Error::Base85(err.to_string())),
-
-//         Encrypted::SteVec(_) => Err(Error::Unimplemented(
-//             "`SteVec`s and encrypted JSONB columns".to_string(),
-//         ))?,
-//     }
-// }
-
 fn to_eql_encrypted(
     encrypted: encryption::Encrypted,
     identifier: &Identifier,
 ) -> Result<Encrypted, Error> {
     match encrypted {
         encryption::Encrypted::Record(ciphertext, terms) => {
-            // debug!(target: ENCRYPT, ciphertext = ?ciphertext);
-            // debug!(target: ENCRYPT, terms = ?terms);
-
             struct Indexes {
                 match_index: Option<Vec<u16>>,
                 ore_index: Option<Vec<String>>,
