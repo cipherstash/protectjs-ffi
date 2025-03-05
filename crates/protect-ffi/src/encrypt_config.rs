@@ -8,7 +8,9 @@ use std::{collections::HashMap, str::FromStr};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct Identifier {
+    #[serde(rename = "t")]
     pub table: String,
+    #[serde(rename = "c")]
     pub column: String,
 }
 
