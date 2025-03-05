@@ -140,12 +140,10 @@ async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let plaintext = cx.argument::<JsString>(1)?.value(&mut cx);
-    // TODO: consider making column config an arg instead.
     let column_name = cx.argument::<JsString>(2)?.value(&mut cx);
     let table_name = cx.argument::<JsString>(3)?.value(&mut cx);
-
-    let lock_context = encryption_context_from_js_value(cx.argument_opt(5), &mut cx)?;
-    let service_token = service_token_from_js_value(cx.argument_opt(6), &mut cx)?;
+    let lock_context = encryption_context_from_js_value(cx.argument_opt(4), &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(5), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
