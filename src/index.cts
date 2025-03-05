@@ -8,11 +8,12 @@ import * as addon from './load.cjs'
 declare module './load.cjs' {
   interface Client {}
 
-  function newClient(): Promise<Client>
+  function newClient(encryptSchema?: string): Promise<Client>
   function encrypt(
     client: Client,
     plaintext: string,
     columnName: string,
+    tableName?: string,
     context?: Context,
     ctsToken?: CtsToken,
   ): Promise<string>
@@ -34,26 +35,34 @@ declare module './load.cjs' {
   ): Promise<string[]>
 }
 
-export function newClient(): Promise<addon.Client> {
-  return addon.newClient()
+export function newClient(encryptSchema?: string): Promise<addon.Client> {
+  return addon.newClient(encryptSchema)
 }
 
 export function encrypt(
   client: addon.Client,
   plaintext: string,
   columnName: string,
+  tableName?: string,
   lockContext?: Context,
   ctsToken?: CtsToken,
 ): Promise<string> {
   if (ctsToken) {
-    return addon.encrypt(client, plaintext, columnName, lockContext, ctsToken)
+    return addon.encrypt(
+      client,
+      plaintext,
+      columnName,
+      tableName,
+      lockContext,
+      ctsToken,
+    )
   }
 
   if (lockContext) {
-    return addon.encrypt(client, plaintext, columnName, lockContext)
+    return addon.encrypt(client, plaintext, columnName, tableName, lockContext)
   }
 
-  return addon.encrypt(client, plaintext, columnName)
+  return addon.encrypt(client, plaintext, columnName, tableName)
 }
 
 export function decrypt(
@@ -100,6 +109,7 @@ export function decryptBulk(
 export type BulkEncryptPayload = {
   plaintext: string
   column: string
+  table?: string
   lockContext?: Context
 }
 
