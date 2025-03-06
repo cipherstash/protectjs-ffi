@@ -49,8 +49,8 @@ jobs:
       update-version: true
       github-release: false
 
-  unit-tests:
-    name: Unit Tests
+  tests:
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -62,10 +62,18 @@ jobs:
           platform: linux-x64-gnu
       - name: Build
         shell: bash
-        env:
-          CARGO_BUILD_TARGET: ${{ steps.neon.outputs.target }}
-          NEON_BUILD_PLATFORM: linux-x64-gnu
         run: npm run debug
-      - name: Test
+      - name: Test (unit)
         shell: bash
         run: npm test
+      - name: Install integration test dependencies
+        run: npm ci
+        working-directory: ./integration-tests
+      - name: Test (integration)
+        env:
+          CS_WORKSPACE_ID: ${{ secrets.CS_WORKSPACE_ID }}
+          CS_CLIENT_ACCESS_KEY: ${{ secrets.CS_CLIENT_ACCESS_KEY }}
+          CS_CLIENT_ID: ${{ secrets.CS_CLIENT_ID }}
+          CS_CLIENT_KEY: ${{ secrets.CS_CLIENT_KEY }}
+        run: npm test
+        working-directory: ./integration-tests
