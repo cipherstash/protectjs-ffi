@@ -4,7 +4,15 @@
   "description": "",
   "main": "./lib/index.cjs",
   "scripts": {
-    "test": "tsc &&cargo test",
+    "test": "npm run test:typecheck && npm run test:lint && npm run test:format && npm run test:rust",
+    "test:typecheck": "tsc",
+    "test:rust": "cargo test",
+    "test:lint": "npm run test:lint:rust && npm run test:lint:ts",
+    "test:lint:ts": "biome lint",
+    "test:lint:rust": "cargo clippy --all --no-deps --all-targets --all-features -- -D warnings",
+    "test:format": "npm run test:format:rust && npm run test:format:ts",
+    "test:format:ts": "biome format",
+    "test:format:rust": "cargo fmt --check",
     "cargo-build": "tsc &&cargo build --message-format=json-render-diagnostics > cargo.log",
     "cross-build": "tsc &&cross build --message-format=json-render-diagnostics > cross.log",
     "postcargo-build": "neon dist < cargo.log",
@@ -43,6 +51,7 @@
     "prefix": "protect-ffi-"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
     "@neon-rs/cli": "^0.1.82",
     "@tsconfig/node20": "^20.1.4",
     "@types/node": "^20.11.16",

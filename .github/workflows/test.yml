@@ -63,7 +63,7 @@ jobs:
       - name: Build
         shell: bash
         run: npm run debug
-      - name: Test (unit)
+      - name: Test (typecheck, lint, & Rust)
         shell: bash
         run: npm test
       - name: Install integration test dependencies
