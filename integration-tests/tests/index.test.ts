@@ -1,8 +1,8 @@
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest'
 
-import { newClient, encrypt, decrypt } from "@cipherstash/protect-ffi"
+import { decrypt, encrypt, newClient } from '@cipherstash/protect-ffi'
 
-test("can round-trip encrypt and decrypt", async () => {
+test('can round-trip encrypt and decrypt', async () => {
   const encryptConfig = {
     v: 1,
     tables: {
@@ -16,15 +16,13 @@ test("can round-trip encrypt and decrypt", async () => {
         },
       },
     },
-  };
+  }
 
-  const client = await newClient(
-    JSON.stringify(encryptConfig)
-  );
+  const client = await newClient(JSON.stringify(encryptConfig))
 
-  const ciphertext = await encrypt(client, "abc", "email", "users");
+  const ciphertext = await encrypt(client, 'abc', 'email', 'users')
 
-  const plaintext = await decrypt(client, JSON.parse(ciphertext).c);
+  const plaintext = await decrypt(client, JSON.parse(ciphertext).c)
 
-  expect(plaintext).toBe("abc");
-});
+  expect(plaintext).toBe('abc')
+})
