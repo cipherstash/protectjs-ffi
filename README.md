@@ -157,7 +157,7 @@ To perform a release:
 1. Navigate to the ["Release" workflow page](https://github.com/cipherstash/protect-ffi/actions/workflows/release.yml) in GitHub.
 1. Click on "Run workflow".
 1. Select the branch to release from.
-   Use the default of "main" unless you want to do a pre-release version or dry run from a branch.
+   Use the default of `main` unless you want to do a pre-release version or dry run from a branch.
 1. Select whether or not to do a dry run.
    Dry runs are useful for verifying that the build will succeed for all platforms before doing a full run with a publish.
 1. Choose a version to publish.
