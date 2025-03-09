@@ -133,7 +133,7 @@ async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error
     Ok(Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(encrypt_config.to_config_map()),
+        encrypt_config: Arc::new(encrypt_config.into_config_map()),
     })
 }
 
