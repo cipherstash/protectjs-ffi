@@ -72,12 +72,3 @@ export type CtsToken = {
 export type Context = {
   identityClaim: string[]
 }
-
-export type EncryptedEqlPayload = {
-  c: string
-}
-
-export type BulkEncryptedEqlPayload = {
-  c: string
-  id: string
-}[]
