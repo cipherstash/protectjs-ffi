@@ -1,39 +1,106 @@
-import { expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 
-import { decrypt, encrypt, newClient } from '@cipherstash/protect-ffi'
+import {
+  decrypt,
+  decryptBulk,
+  encrypt,
+  encryptBulk,
+  newClient,
+} from '@cipherstash/protect-ffi'
 
-test('can round-trip encrypt and decrypt', async () => {
-  const client = await newClient(encryptConfig())
-  const originalPlaintext = 'abc'
+describe('encrypt and decrypt', async () => {
+  test('can round-trip encrypt and decrypt', async () => {
+    const client = await newClient(encryptConfig())
+    const originalPlaintext = 'abc'
 
-  const ciphertext = await encrypt(client, {
-    plaintext: originalPlaintext,
-    column: 'email',
-    table: 'users',
-  })
-
-  const decrypted = await decrypt(client, JSON.parse(ciphertext).c)
-
-  expect(decrypted).toBe(originalPlaintext)
-})
-
-test('can pass in undefined for ctsToken', async () => {
-  const client = await newClient(encryptConfig())
-  const originalPlaintext = 'abc'
-
-  const ciphertext = await encrypt(
-    client,
-    {
+    const ciphertext = await encrypt(client, {
       plaintext: originalPlaintext,
       column: 'email',
       table: 'users',
-    },
-    undefined,
-  )
+    })
 
-  const decrypted = await decrypt(client, JSON.parse(ciphertext).c, undefined)
+    const decrypted = await decrypt(client, JSON.parse(ciphertext).c)
 
-  expect(decrypted).toBe(originalPlaintext)
+    expect(decrypted).toBe(originalPlaintext)
+  })
+
+  test('can pass in undefined for ctsToken', async () => {
+    const client = await newClient(encryptConfig())
+    const originalPlaintext = 'abc'
+
+    const ciphertext = await encrypt(
+      client,
+      {
+        plaintext: originalPlaintext,
+        column: 'email',
+        table: 'users',
+      },
+      undefined,
+    )
+
+    const decrypted = await decrypt(client, JSON.parse(ciphertext).c, undefined)
+
+    expect(decrypted).toBe(originalPlaintext)
+  })
+})
+
+describe('encryptBulk and decryptBulk', async () => {
+  test('can round-trip encrypt and decrypt', async () => {
+    const client = await newClient(encryptConfig())
+    const plaintextOne = 'abc'
+    const plaintextTwo = 'def'
+
+    const ciphertexts = await encryptBulk(client, [
+      {
+        plaintext: plaintextOne,
+        column: 'email',
+        table: 'users',
+      },
+      {
+        plaintext: plaintextTwo,
+        column: 'email',
+        table: 'users',
+      },
+    ])
+
+    const decrypted = await decryptBulk(
+      client,
+      ciphertexts.map((ct) => ({ ciphertext: JSON.parse(ct).c })),
+    )
+
+    expect(decrypted).toEqual([plaintextOne, plaintextTwo])
+  })
+
+  test('can pass in undefined for ctsToken', async () => {
+    const client = await newClient(encryptConfig())
+    const plaintextOne = 'abc'
+    const plaintextTwo = 'def'
+
+    const ciphertexts = await encryptBulk(
+      client,
+      [
+        {
+          plaintext: plaintextOne,
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: plaintextTwo,
+          column: 'email',
+          table: 'users',
+        },
+      ],
+      undefined,
+    )
+
+    const decrypted = await decryptBulk(
+      client,
+      ciphertexts.map((ct) => ({ ciphertext: JSON.parse(ct).c })),
+      undefined,
+    )
+
+    expect(decrypted).toEqual([plaintextOne, plaintextTwo])
+  })
 })
 
 function encryptConfig() {
