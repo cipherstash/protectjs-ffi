@@ -11,10 +11,7 @@ declare module './load.cjs' {
   function newClient(encryptSchema?: string): Promise<Client>
   function encrypt(
     client: Client,
-    plaintext: string,
-    columnName: string,
-    tableName?: string,
-    context?: Context,
+    plaintext: EncryptPayload,
     ctsToken?: CtsToken,
   ): Promise<string>
   function decrypt(
@@ -25,7 +22,7 @@ declare module './load.cjs' {
   ): Promise<string>
   function encryptBulk(
     client: Client,
-    plaintextTargets: BulkEncryptPayload[],
+    plaintextTargets: EncryptPayload[],
     ctsToken?: CtsToken,
   ): Promise<string[]>
   function decryptBulk(
@@ -39,31 +36,7 @@ export function newClient(encryptSchema?: string): Promise<addon.Client> {
   return addon.newClient(encryptSchema)
 }
 
-export function encrypt(
-  client: addon.Client,
-  plaintext: string,
-  columnName: string,
-  tableName?: string,
-  lockContext?: Context,
-  ctsToken?: CtsToken,
-): Promise<string> {
-  if (ctsToken) {
-    return addon.encrypt(
-      client,
-      plaintext,
-      columnName,
-      tableName,
-      lockContext,
-      ctsToken,
-    )
-  }
-
-  if (lockContext) {
-    return addon.encrypt(client, plaintext, columnName, tableName, lockContext)
-  }
-
-  return addon.encrypt(client, plaintext, columnName, tableName)
-}
+export const encrypt = addon.encrypt
 
 export function decrypt(
   client: addon.Client,
@@ -84,7 +57,7 @@ export function decrypt(
 
 export function encryptBulk(
   client: addon.Client,
-  plaintextTargets: BulkEncryptPayload[],
+  plaintextTargets: EncryptPayload[],
   ctsToken?: CtsToken,
 ): Promise<string[]> {
   if (ctsToken) {
@@ -106,10 +79,10 @@ export function decryptBulk(
   return addon.decryptBulk(client, ciphertexts)
 }
 
-export type BulkEncryptPayload = {
+export type EncryptPayload = {
   plaintext: string
   column: string
-  table?: string
+  table: string
   lockContext?: Context
 }
 
