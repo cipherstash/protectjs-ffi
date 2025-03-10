@@ -139,11 +139,12 @@ async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error
 
 fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
-    let plaintext = cx.argument::<JsString>(1)?.value(&mut cx);
-    let column_name = cx.argument::<JsString>(2)?.value(&mut cx);
-    let table_name = cx.argument::<JsString>(3)?.value(&mut cx);
-    let lock_context = encryption_context_from_js_value(cx.argument_opt(4), &mut cx)?;
-    let service_token = service_token_from_js_value(cx.argument_opt(5), &mut cx)?;
+    let (plaintext_target, ident) = plaintext_target_from_js_object(
+        cx.argument::<JsObject>(1)?,
+        &client.encrypt_config,
+        &mut cx,
+    )?;
+    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -159,15 +160,7 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     //
     // This task will _not_ block the JavaScript main thread.
     rt.spawn(async move {
-        let ciphertext_result = encrypt_inner(
-            client,
-            plaintext,
-            column_name,
-            table_name,
-            lock_context,
-            service_token,
-        )
-        .await;
+        let ciphertext_result = encrypt_inner(client, plaintext_target, ident, service_token).await;
 
         // Settle the promise from the result of a closure. JavaScript exceptions
         // will be converted to a Promise rejection.
@@ -187,24 +180,13 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
 async fn encrypt_inner(
     client: Client,
-    plaintext: String,
-    column_name: String,
-    table_name: String,
-    encryption_context: Vec<zerokms::Context>,
+    plaintext_target: PlaintextTarget,
+    ident: Identifier,
     service_token: Option<ServiceToken>,
 ) -> Result<String, Error> {
-    let ident = Identifier::new(table_name, column_name);
-
-    let column_config = client
-        .encrypt_config
-        .get(&ident)
-        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
-    let mut encryptable = PlaintextTarget::new(plaintext, column_config.clone());
-    encryptable.context = encryption_context;
 
-    pipeline.add_with_ref::<PlaintextTarget>(encryptable, 0)?;
+    pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, 0)?;
 
     let mut source_encrypted = pipeline.encrypt(service_token).await?;
 
@@ -404,18 +386,19 @@ fn service_token_from_js_value(
     value: Option<Handle<JsValue>>,
     cx: &mut FunctionContext,
 ) -> NeonResult<Option<ServiceToken>> {
-    if let Some(service_token) = value {
-        let service_token: Handle<JsObject> = service_token.downcast_or_throw(cx)?;
+    match value {
+        Some(service_token) if is_defined(service_token, cx) => {
+            let service_token: Handle<JsObject> = service_token.downcast_or_throw(cx)?;
 
-        let token = service_token
-            .get::<JsString, _, _>(cx, "accessToken")?
-            .value(cx);
+            let token = service_token
+                .get::<JsString, _, _>(cx, "accessToken")?
+                .value(cx);
 
-        let expiry = service_token.get::<JsNumber, _, _>(cx, "expiry")?.value(cx);
+            let expiry = service_token.get::<JsNumber, _, _>(cx, "expiry")?.value(cx);
 
-        Ok(Some(ServiceToken::new(token, expiry as u64)))
-    } else {
-        Ok(None)
+            Ok(Some(ServiceToken::new(token, expiry as u64)))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -430,29 +413,38 @@ fn plaintext_targets_from_js_array(
 
     for js_value in js_values {
         let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
-
-        let plaintext = obj.get::<JsString, _, _>(cx, "plaintext")?.value(cx);
-
-        let column = obj.get::<JsString, _, _>(cx, "column")?.value(cx);
-        let table = obj.get::<JsString, _, _>(cx, "table")?.value(cx);
-
-        let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
-        let lock_context = encryption_context_from_js_value(lock_context, cx)?;
-
-        let ident = Identifier::new(table, column);
-
-        let column_config = encrypt_config
-            .get(&ident)
-            .ok_or_else(|| Error::UnknownColumn(ident.clone()))
-            .or_else(|err| cx.throw_error(err.to_string()))?;
-
-        let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
-        plaintext_target.context = lock_context;
+        let (plaintext_target, ident) = plaintext_target_from_js_object(obj, &encrypt_config, cx)?;
 
         plaintext_targets.push((plaintext_target, ident));
     }
 
     Ok(plaintext_targets)
+}
+
+fn plaintext_target_from_js_object(
+    value: Handle<'_, JsObject>,
+    encrypt_config: &Arc<HashMap<Identifier, ColumnConfig>>,
+    cx: &mut FunctionContext,
+) -> NeonResult<(PlaintextTarget, Identifier)> {
+    let plaintext = value.get::<JsString, _, _>(cx, "plaintext")?.value(cx);
+
+    let column = value.get::<JsString, _, _>(cx, "column")?.value(cx);
+    let table = value.get::<JsString, _, _>(cx, "table")?.value(cx);
+
+    let lock_context = value.get_opt::<JsValue, _, _>(cx, "lockContext")?;
+    let lock_context = encryption_context_from_js_value(lock_context, cx)?;
+
+    let ident = Identifier::new(table, column);
+
+    let column_config = encrypt_config
+        .get(&ident)
+        .ok_or_else(|| Error::UnknownColumn(ident.clone()))
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+    let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
+    plaintext_target.context = lock_context;
+
+    Ok((plaintext_target, ident))
 }
 
 fn ciphertexts_from_js_array(
@@ -603,6 +595,10 @@ fn eql_encrypted_to_json_string(encrypted: &Encrypted) -> Result<String, Error> 
                 .to_string(),
         )
     })
+}
+
+fn is_defined(js_value: Handle<'_, JsValue>, cx: &mut FunctionContext) -> bool {
+    !js_value.is_a::<JsUndefined, _>(cx)
 }
 
 #[neon::main]

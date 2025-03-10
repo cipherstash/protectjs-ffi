@@ -1,20 +1,20 @@
 // This module is the CJS entry point for the library.
 
-// The Rust addon.
-import * as addon from './load.cjs'
+export { encrypt, encryptBulk, newClient, decryptBulk } from './load.cjs'
+import { decrypt as ffiDecrypt } from './load.cjs'
+
+declare const sym: unique symbol
+
+// Poor man's opaque type.
+export type Client = { readonly [sym]: unknown }
 
 // Use this declaration to assign types to the jseql's exports,
 // which otherwise by default are `any`.
 declare module './load.cjs' {
-  interface Client {}
-
   function newClient(encryptSchema?: string): Promise<Client>
   function encrypt(
     client: Client,
-    plaintext: string,
-    columnName: string,
-    tableName?: string,
-    context?: Context,
+    plaintext: EncryptPayload,
     ctsToken?: CtsToken,
   ): Promise<string>
   function decrypt(
@@ -25,7 +25,7 @@ declare module './load.cjs' {
   ): Promise<string>
   function encryptBulk(
     client: Client,
-    plaintextTargets: BulkEncryptPayload[],
+    plaintextTargets: EncryptPayload[],
     ctsToken?: CtsToken,
   ): Promise<string[]>
   function decryptBulk(
@@ -35,81 +35,27 @@ declare module './load.cjs' {
   ): Promise<string[]>
 }
 
-export function newClient(encryptSchema?: string): Promise<addon.Client> {
-  return addon.newClient(encryptSchema)
-}
-
-export function encrypt(
-  client: addon.Client,
-  plaintext: string,
-  columnName: string,
-  tableName?: string,
-  lockContext?: Context,
-  ctsToken?: CtsToken,
-): Promise<string> {
-  if (ctsToken) {
-    return addon.encrypt(
-      client,
-      plaintext,
-      columnName,
-      tableName,
-      lockContext,
-      ctsToken,
-    )
-  }
-
-  if (lockContext) {
-    return addon.encrypt(client, plaintext, columnName, tableName, lockContext)
-  }
-
-  return addon.encrypt(client, plaintext, columnName, tableName)
-}
-
 export function decrypt(
-  client: addon.Client,
+  client: Client,
   ciphertext: string,
   lockContext?: Context,
   ctsToken?: CtsToken,
 ): Promise<string> {
   if (ctsToken) {
-    return addon.decrypt(client, ciphertext, lockContext, ctsToken)
+    return ffiDecrypt(client, ciphertext, lockContext, ctsToken)
   }
 
   if (lockContext) {
-    return addon.decrypt(client, ciphertext, lockContext)
+    return ffiDecrypt(client, ciphertext, lockContext)
   }
 
-  return addon.decrypt(client, ciphertext)
+  return ffiDecrypt(client, ciphertext)
 }
 
-export function encryptBulk(
-  client: addon.Client,
-  plaintextTargets: BulkEncryptPayload[],
-  ctsToken?: CtsToken,
-): Promise<string[]> {
-  if (ctsToken) {
-    return addon.encryptBulk(client, plaintextTargets, ctsToken)
-  }
-
-  return addon.encryptBulk(client, plaintextTargets)
-}
-
-export function decryptBulk(
-  client: addon.Client,
-  ciphertexts: BulkDecryptPayload[],
-  ctsToken?: CtsToken,
-): Promise<string[]> {
-  if (ctsToken) {
-    return addon.decryptBulk(client, ciphertexts, ctsToken)
-  }
-
-  return addon.decryptBulk(client, ciphertexts)
-}
-
-export type BulkEncryptPayload = {
+export type EncryptPayload = {
   plaintext: string
   column: string
-  table?: string
+  table: string
   lockContext?: Context
 }
 
@@ -126,12 +72,3 @@ export type CtsToken = {
 export type Context = {
   identityClaim: string[]
 }
-
-export type EncryptedEqlPayload = {
-  c: string
-}
-
-export type BulkEncryptedEqlPayload = {
-  c: string
-  id: string
-}[]
