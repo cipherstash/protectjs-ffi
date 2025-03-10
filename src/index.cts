@@ -3,11 +3,14 @@
 // The Rust addon.
 import * as addon from './load.cjs'
 
+declare const sym: unique symbol
+
+// Poor man's opaque type.
+export type Client = { readonly [sym]: unknown }
+
 // Use this declaration to assign types to the jseql's exports,
 // which otherwise by default are `any`.
 declare module './load.cjs' {
-  interface Client {}
-
   function newClient(encryptSchema?: string): Promise<Client>
   function encrypt(
     client: Client,
@@ -32,14 +35,14 @@ declare module './load.cjs' {
   ): Promise<string[]>
 }
 
-export function newClient(encryptSchema?: string): Promise<addon.Client> {
+export function newClient(encryptSchema?: string): Promise<Client> {
   return addon.newClient(encryptSchema)
 }
 
 export const encrypt = addon.encrypt
 
 export function decrypt(
-  client: addon.Client,
+  client: Client,
   ciphertext: string,
   lockContext?: Context,
   ctsToken?: CtsToken,
@@ -56,7 +59,7 @@ export function decrypt(
 }
 
 export function encryptBulk(
-  client: addon.Client,
+  client: Client,
   plaintextTargets: EncryptPayload[],
   ctsToken?: CtsToken,
 ): Promise<string[]> {
@@ -68,7 +71,7 @@ export function encryptBulk(
 }
 
 export function decryptBulk(
-  client: addon.Client,
+  client: Client,
   ciphertexts: BulkDecryptPayload[],
   ctsToken?: CtsToken,
 ): Promise<string[]> {
