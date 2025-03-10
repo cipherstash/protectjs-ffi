@@ -1,7 +1,7 @@
 // This module is the CJS entry point for the library.
 
-// The Rust addon.
-import * as addon from './load.cjs'
+export { encrypt, encryptBulk, newClient, decryptBulk } from './load.cjs'
+import { decrypt as ffiDecrypt } from './load.cjs'
 
 declare const sym: unique symbol
 
@@ -35,12 +35,6 @@ declare module './load.cjs' {
   ): Promise<string[]>
 }
 
-export function newClient(encryptSchema?: string): Promise<Client> {
-  return addon.newClient(encryptSchema)
-}
-
-export const encrypt = addon.encrypt
-
 export function decrypt(
   client: Client,
   ciphertext: string,
@@ -48,38 +42,14 @@ export function decrypt(
   ctsToken?: CtsToken,
 ): Promise<string> {
   if (ctsToken) {
-    return addon.decrypt(client, ciphertext, lockContext, ctsToken)
+    return ffiDecrypt(client, ciphertext, lockContext, ctsToken)
   }
 
   if (lockContext) {
-    return addon.decrypt(client, ciphertext, lockContext)
+    return ffiDecrypt(client, ciphertext, lockContext)
   }
 
-  return addon.decrypt(client, ciphertext)
-}
-
-export function encryptBulk(
-  client: Client,
-  plaintextTargets: EncryptPayload[],
-  ctsToken?: CtsToken,
-): Promise<string[]> {
-  if (ctsToken) {
-    return addon.encryptBulk(client, plaintextTargets, ctsToken)
-  }
-
-  return addon.encryptBulk(client, plaintextTargets)
-}
-
-export function decryptBulk(
-  client: Client,
-  ciphertexts: BulkDecryptPayload[],
-  ctsToken?: CtsToken,
-): Promise<string[]> {
-  if (ctsToken) {
-    return addon.decryptBulk(client, ciphertexts, ctsToken)
-  }
-
-  return addon.decryptBulk(client, ciphertexts)
+  return ffiDecrypt(client, ciphertext)
 }
 
 export type EncryptPayload = {
