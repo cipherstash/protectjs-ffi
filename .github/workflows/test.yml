@@ -52,6 +52,16 @@ jobs:
   tests:
     name: Tests
     runs-on: ubuntu-latest
+    env:
+      CS_WORKSPACE_ID: ${{ secrets.CS_WORKSPACE_ID }}
+      CS_CLIENT_ACCESS_KEY: ${{ secrets.CS_CLIENT_ACCESS_KEY }}
+      CS_CLIENT_ID: ${{ secrets.CS_CLIENT_ID }}
+      CS_CLIENT_KEY: ${{ secrets.CS_CLIENT_KEY }}
+      PGPORT: 5432
+      PGDATABASE: cipherstash
+      PGUSER: cipherstash
+      PGPASSWORD: password
+      PGHOST: localhost
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -69,11 +79,12 @@ jobs:
       - name: Install integration test dependencies
         run: npm ci
         working-directory: ./integration-tests
+      - name: Set up integration test DB
+        run: |
+          docker compose up --detach --wait
+          npm run eql:download
+          npm run eql:install
+        working-directory: ./integration-tests
       - name: Test (integration)
-        env:
-          CS_WORKSPACE_ID: ${{ secrets.CS_WORKSPACE_ID }}
-          CS_CLIENT_ACCESS_KEY: ${{ secrets.CS_CLIENT_ACCESS_KEY }}
-          CS_CLIENT_ID: ${{ secrets.CS_CLIENT_ID }}
-          CS_CLIENT_KEY: ${{ secrets.CS_CLIENT_KEY }}
         run: npm test
         working-directory: ./integration-tests
