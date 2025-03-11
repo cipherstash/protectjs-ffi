@@ -3,15 +3,19 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "tsc && vitest test"
+    "test": "tsc && vitest test",
+    "eql:download": "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/latest/download/cipherstash-encrypt.sql",
+    "eql:install": "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
   },
   "author": "",
   "license": "MIT",
   "description": "",
   "dependencies": {
-    "@cipherstash/protect-ffi": ".."
+    "@cipherstash/protect-ffi": "..",
+    "pg": "^8.13.3"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.11",
     "typescript": "^5.3.3",
     "vitest": "^3.0.7"
   }

@@ -8,3 +8,4 @@ cargo.log
 cross.log
 mise.local.toml
 cipherstash.secret.toml
+cipherstash-*.sql
