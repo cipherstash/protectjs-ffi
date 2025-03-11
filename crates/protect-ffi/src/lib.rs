@@ -9,7 +9,7 @@ use cipherstash_client::{
         ScopedCipher, SteVec, TypeParseError,
     },
     schema::ColumnConfig,
-    zerokms::{self, encrypted_record, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
+    zerokms::{self, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
 };
 use encrypt_config::{EncryptConfig, Identifier};
 use neon::prelude::*;
@@ -43,8 +43,8 @@ impl Finalize for Client {}
 pub enum Encrypted {
     #[serde(rename = "ct")]
     Ciphertext {
-        #[serde(rename = "c", with = "encrypted_record::formats::mp_base85")]
-        ciphertext: EncryptedRecord,
+        #[serde(rename = "c")]
+        ciphertext: String,
         #[serde(rename = "o")]
         ore_index: Option<Vec<String>>,
         #[serde(rename = "m")]
@@ -170,8 +170,7 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
         // should be performed outside of it.
         deferred.settle_with(&channel, move |mut cx| {
             let ciphertext = ciphertext_result.or_else(|err| cx.throw_error(err.to_string()))?;
-
-            Ok(cx.string(ciphertext))
+            eql_encrypted_to_js(ciphertext, &mut cx)
         });
     });
 
@@ -183,7 +182,7 @@ async fn encrypt_inner(
     plaintext_target: PlaintextTarget,
     ident: Identifier,
     service_token: Option<ServiceToken>,
-) -> Result<String, Error> {
+) -> Result<Encrypted, Error> {
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
 
     pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, 0)?;
@@ -196,9 +195,7 @@ async fn encrypt_inner(
         )
     })?;
 
-    let eql_payload = to_eql_encrypted(encrypted, &ident)?;
-
-    eql_encrypted_to_json_string(&eql_payload)
+    to_eql_encrypted(encrypted, &ident)
 }
 
 fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -220,7 +217,7 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
         deferred.settle_with(&channel, move |mut cx| {
             let ciphertexts = ciphertexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            js_array_from_string_vec(ciphertexts, &mut cx)
+            js_array_from_eql_encrypted_vec(ciphertexts, &mut cx)
         });
     });
 
@@ -231,7 +228,7 @@ async fn encrypt_bulk_inner(
     client: Client,
     plaintext_targets: Vec<(PlaintextTarget, Identifier)>,
     service_token: Option<ServiceToken>,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<Encrypted>, Error> {
     let len = plaintext_targets.len();
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
     let (plaintext_targets, identifiers): (Vec<PlaintextTarget>, Vec<Identifier>) =
@@ -243,7 +240,7 @@ async fn encrypt_bulk_inner(
 
     let mut source_encrypted = pipeline.encrypt(service_token).await?;
 
-    let mut results: Vec<String> = Vec::with_capacity(len);
+    let mut results: Vec<Encrypted> = Vec::with_capacity(len);
 
     for i in 0..len {
         let encrypted = source_encrypted.remove(i).ok_or_else(|| {
@@ -260,7 +257,7 @@ async fn encrypt_bulk_inner(
 
         let eql_payload = to_eql_encrypted(encrypted, ident)?;
 
-        results.push(eql_encrypted_to_json_string(&eql_payload)?);
+        results.push(eql_payload);
     }
 
     Ok(results)
@@ -482,6 +479,34 @@ fn js_array_from_string_vec<'a, C: Context<'a>>(
     Ok(js_array)
 }
 
+fn js_array_from_u16_vec<'a, C: Context<'a>>(
+    vec: Vec<u16>,
+    cx: &mut C,
+) -> NeonResult<Handle<'a, JsArray>> {
+    let js_array = JsArray::new(cx, vec.len());
+
+    for (i, value) in vec.iter().enumerate() {
+        let js_number = cx.number(*value);
+        js_array.set(cx, i as u32, js_number)?;
+    }
+
+    Ok(js_array)
+}
+
+fn js_array_from_eql_encrypted_vec<'a, C: Context<'a>>(
+    vec: Vec<Encrypted>,
+    cx: &mut C,
+) -> NeonResult<Handle<'a, JsArray>> {
+    let js_array = JsArray::new(cx, vec.len());
+
+    for (i, value) in vec.into_iter().enumerate() {
+        let js_obj = eql_encrypted_to_js(value, cx)?;
+        js_array.set(cx, i as u32, js_obj)?;
+    }
+
+    Ok(js_array)
+}
+
 fn encrypted_record_from_mp_base85(
     base85str: &str,
     encryption_context: Vec<zerokms::Context>,
@@ -546,6 +571,12 @@ fn to_eql_encrypted(
                 };
             }
 
+            let ciphertext = ciphertext
+                .to_mp_base85()
+                // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+                // Instead, we use `map_err`.
+                .map_err(|err| Error::Base85(err.to_string()))?;
+
             Ok(Encrypted::Ciphertext {
                 ciphertext,
                 identifier: identifier.to_owned(),
@@ -561,6 +592,71 @@ fn to_eql_encrypted(
             version: 1,
         }),
     }
+}
+
+fn eql_encrypted_to_js<'cx, C: Context<'cx>>(
+    encrypted: Encrypted,
+    cx: &mut C,
+) -> NeonResult<Handle<'cx, JsObject>> {
+    let obj: Handle<JsObject> = cx.empty_object();
+
+    let Encrypted::Ciphertext {
+        ciphertext,
+        ore_index,
+        match_index,
+        unique_index,
+        identifier,
+        version,
+    } = encrypted
+    else {
+        return cx
+            .throw_error(Error::Unimplemented("encrypted JSON columns".to_string()).to_string());
+    };
+
+    let k = cx.string("ct");
+    obj.set(cx, "k", k)?;
+
+    let c = cx.string(ciphertext);
+    obj.set(cx, "c", c)?;
+
+    if let Some(ore_index) = ore_index {
+        let o = js_array_from_string_vec(ore_index, cx)?;
+        obj.set(cx, "o", o)?;
+    } else {
+        let o = cx.null();
+        obj.set(cx, "o", o)?;
+    }
+
+    if let Some(match_index) = match_index {
+        let m = js_array_from_u16_vec(match_index, cx)?;
+        obj.set(cx, "m", m)?;
+    } else {
+        let m = cx.null();
+        obj.set(cx, "m", m)?;
+    }
+
+    if let Some(unique_index) = unique_index {
+        let u = cx.string(unique_index);
+        obj.set(cx, "u", u)?;
+    } else {
+        let u = cx.null();
+        obj.set(cx, "u", u)?;
+    }
+
+    let i = cx.empty_object();
+
+    let col = cx.string(identifier.column);
+    i.set(cx, "c", col)?;
+
+    let t = cx.string(identifier.table);
+    i.set(cx, "t", t)?;
+
+    obj.set(cx, "i", i)?;
+
+    let v = cx.number(version);
+    obj.set(cx, "v", v)?;
+
+    Ok(obj)
 }
 
 fn format_index_term_binary(bytes: &Vec<u8>) -> String {
@@ -586,15 +682,6 @@ fn format_index_term_ore_array(vec_of_bytes: &[Vec<u8>]) -> Vec<String> {
 ///
 fn format_index_term_ore(bytes: &Vec<u8>) -> Vec<String> {
     vec![format_index_term_ore_bytea(bytes)]
-}
-
-fn eql_encrypted_to_json_string(encrypted: &Encrypted) -> Result<String, Error> {
-    serde_json::to_string(encrypted).map_err(|_| {
-        Error::InvariantViolation(
-            "expected EQL payload to be serialiable as JSON, but it could not be serialized"
-                .to_string(),
-        )
-    })
 }
 
 fn is_defined(js_value: Handle<'_, JsValue>, cx: &mut FunctionContext) -> bool {

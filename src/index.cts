@@ -16,7 +16,7 @@ declare module './load.cjs' {
     client: Client,
     plaintext: EncryptPayload,
     ctsToken?: CtsToken,
-  ): Promise<string>
+  ): Promise<Encrypted>
   function decrypt(
     client: Client,
     ciphertext: string,
@@ -27,7 +27,7 @@ declare module './load.cjs' {
     client: Client,
     plaintextTargets: EncryptPayload[],
     ctsToken?: CtsToken,
-  ): Promise<string[]>
+  ): Promise<Encrypted[]>
   function decryptBulk(
     client: Client,
     ciphertexts: BulkDecryptPayload[],
@@ -71,4 +71,17 @@ export type CtsToken = {
 
 export type Context = {
   identityClaim: string[]
+}
+
+export type Encrypted = {
+  k: string
+  c: string
+  o: string[] | null
+  m: number[] | null
+  u: string | null
+  i: {
+    c: string
+    t: string
+  }
+  v: number
 }
