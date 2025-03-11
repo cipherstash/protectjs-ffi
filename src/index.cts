@@ -8,10 +8,10 @@ declare const sym: unique symbol
 // Poor man's opaque type.
 export type Client = { readonly [sym]: unknown }
 
-// Use this declaration to assign types to the jseql's exports,
-// which otherwise by default are `any`.
+// Use this declaration to assign types to the protect-ffi's exports,
+// which otherwise default to `any`.
 declare module './load.cjs' {
-  function newClient(encryptSchema?: string): Promise<Client>
+  function newClient(encryptSchema: string): Promise<Client>
   function encrypt(
     client: Client,
     plaintext: EncryptPayload,
