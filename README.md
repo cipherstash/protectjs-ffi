@@ -124,7 +124,10 @@ protect-ffi/
 Integration tests live in the `./integration-tests` directory.
 These tests use the local build of Rust and JavaScript artifacts to test `@cipherstash/protect-ffi` as API consumers would.
 
-These tests rely on CipherStash to be configured (via `.toml` config or environment variables) and for environment variables for Postgres to be set.
+These tests rely on:
+
+- CipherStash to be configured (via `.toml` config or environment variables), and 
+- Environment variables for Postgres to be set
 
 Example environment variables:
 ```
