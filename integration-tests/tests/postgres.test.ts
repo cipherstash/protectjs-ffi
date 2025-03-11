@@ -42,12 +42,11 @@ describe('postgres', async () => {
   test('can round-trip encrypt and decrypt', async () => {
     const originalPlaintext = 'abc'
 
-    const ciphertext = await encrypt(
-      protectClient,
-      originalPlaintext,
-      'email',
-      'users',
-    )
+    const ciphertext = await encrypt(protectClient, {
+      plaintext: originalPlaintext,
+      column: 'email',
+      table: 'users',
+    })
 
     await pg.query('INSERT INTO encrypted (encrypted_text) VALUES ($1)', [
       ciphertext,
@@ -123,7 +122,13 @@ describe('postgres', async () => {
       SELECT encrypted_text FROM encrypted
       WHERE cs_match_v1(encrypted_text) @> cs_match_v1($1)
       `,
-      [await encrypt(protectClient, 'ccc', 'email', 'users')],
+      [
+        await encrypt(protectClient, {
+          plaintext: 'ccc',
+          column: 'email',
+          table: 'users',
+        }),
+      ],
     )
 
     const decrypted = await decryptBulk(
@@ -158,7 +163,13 @@ describe('postgres', async () => {
       SELECT encrypted_text FROM encrypted
       WHERE cs_unique_v1(encrypted_text) = cs_unique_v1($1)
       `,
-      [await encrypt(protectClient, 'b', 'email', 'users')],
+      [
+        await encrypt(protectClient, {
+          plaintext: 'b',
+          column: 'email',
+          table: 'users',
+        }),
+      ],
     )
 
     const decrypted = await decryptBulk(
