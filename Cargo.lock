@@ -389,9 +389,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-client"
-version = "0.17.0-pre.1"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcdce4a724b6baff891144200947b83c67b70eac6eae150ee437034bf2da96ae"
+checksum = "f099b1db6cf37b0ca36e9c8e0c2dade20f2035804e225f52475d44e750dd5dd5"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -405,7 +405,6 @@ dependencies = [
  "chrono",
  "cipherstash-config",
  "cipherstash-core",
- "cipherstash-stats",
  "cllw-ore",
  "derive_more",
  "dirs",
@@ -469,16 +468,6 @@ dependencies = [
  "regex",
  "sha2",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "cipherstash-stats"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10da9699454e308aeb16b30800282bbb175c28c073d4f7114d1c731c20a5c00"
-dependencies = [
- "lazy_static",
- "prometheus",
 ]
 
 [[package]]
@@ -1799,21 +1788,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prometheus"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
-dependencies = [
- "cfg-if",
- "fnv",
- "lazy_static",
- "memchr",
- "parking_lot 0.12.3",
- "protobuf",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "protect-ffi"
 version = "0.1.0"
 dependencies = [
@@ -1826,12 +1800,6 @@ dependencies = [
  "thiserror 2.0.8",
  "tokio",
 ]
-
-[[package]]
-name = "protobuf"
-version = "2.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
 
 [[package]]
 name = "ptr_meta"
