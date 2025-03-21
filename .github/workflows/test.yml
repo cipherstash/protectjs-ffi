@@ -18,6 +18,9 @@ on:
     branches:
       - main
 
+  # Event: manual invocation of the workflow
+  workflow_dispatch:
+
 jobs:
   pr:
     name: Pull Request Details
