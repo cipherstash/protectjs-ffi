@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { describe, expect, test, beforeAll, beforeEach } from 'vitest'
 import {
   decrypt,

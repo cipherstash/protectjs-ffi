@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
@@ -8,9 +9,24 @@ import {
   newClient,
 } from '@cipherstash/protect-ffi'
 
+const encryptConfig = JSON.stringify({
+  v: 1,
+  tables: {
+    users: {
+      email: {
+        indexes: {
+          ore: {},
+          match: {},
+          unique: {},
+        },
+      },
+    },
+  },
+})
+
 describe('encrypt and decrypt', async () => {
   test('can round-trip encrypt and decrypt', async () => {
-    const client = await newClient(encryptConfig())
+    const client = await newClient(encryptConfig)
     const originalPlaintext = 'abc'
 
     const ciphertext = await encrypt(client, {
@@ -25,7 +41,7 @@ describe('encrypt and decrypt', async () => {
   })
 
   test('can pass in undefined for ctsToken', async () => {
-    const client = await newClient(encryptConfig())
+    const client = await newClient(encryptConfig)
     const originalPlaintext = 'abc'
 
     const ciphertext = await encrypt(
@@ -46,7 +62,7 @@ describe('encrypt and decrypt', async () => {
 
 describe('encryptBulk and decryptBulk', async () => {
   test('can round-trip encrypt and decrypt', async () => {
-    const client = await newClient(encryptConfig())
+    const client = await newClient(encryptConfig)
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 
@@ -72,7 +88,7 @@ describe('encryptBulk and decryptBulk', async () => {
   })
 
   test('can pass in undefined for ctsToken', async () => {
-    const client = await newClient(encryptConfig())
+    const client = await newClient(encryptConfig)
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 
@@ -102,20 +118,3 @@ describe('encryptBulk and decryptBulk', async () => {
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
   })
 })
-
-function encryptConfig() {
-  return JSON.stringify({
-    v: 1,
-    tables: {
-      users: {
-        email: {
-          indexes: {
-            ore: {},
-            match: {},
-            unique: {},
-          },
-        },
-      },
-    },
-  })
-}
