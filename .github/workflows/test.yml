@@ -88,6 +88,13 @@ jobs:
           npm run eql:download
           npm run eql:install
         working-directory: ./integration-tests
+      - name: Create .env file in ./integration-tests/
+        run: |
+          touch ./integration-tests/.env
+          echo "CS_WORKSPACE_ID=${{ secrets.CS_WORKSPACE_ID }}" >> ./integration-tests/.env
+          echo "CS_CLIENT_ID=${{ secrets.CS_CLIENT_ID }}" >> ./integration-tests/.env
+          echo "CS_CLIENT_KEY=${{ secrets.CS_CLIENT_KEY }}" >> ./integration-tests/.env
+          echo "CS_CLIENT_ACCESS_KEY=${{ secrets.CS_CLIENT_ACCESS_KEY }}" >> ./integration-tests/.env
       - name: Test (integration)
         run: npm test
         working-directory: ./integration-tests
