@@ -14,14 +14,20 @@ describe('postgres', async () => {
   const pg = new Client()
   await pg.connect()
 
+  // called once before all tests run
   beforeAll(async () => {
-    // called once before all tests run
+    await pg.query('DROP TABLE IF EXISTS encrypted')
+
     await pg.query(`
       CREATE TABLE encrypted (
         id SERIAL PRIMARY KEY,
-        encrypted_text cs_encrypted_v1
+        encrypted_text eql_v2_encrypted
       )
     `)
+
+    await pg.query(
+      "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_text')",
+    )
 
     // clean up function, called once after all tests run
     return async () => {
@@ -49,11 +55,12 @@ describe('postgres', async () => {
       table: 'users',
     })
 
-    await pg.query('INSERT INTO encrypted (encrypted_text) VALUES ($1)', [
-      ciphertext,
-    ])
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb)',
+      [ciphertext],
+    )
 
-    const res = await pg.query('SELECT * FROM encrypted')
+    const res = await pg.query('SELECT encrypted_text::jsonb FROM encrypted')
 
     expect(res.rowCount).toBe(1)
 
@@ -82,13 +89,13 @@ describe('postgres', async () => {
     ])
 
     await pg.query(
-      'INSERT INTO encrypted (encrypted_text) VALUES ($1), ($2), ($3)',
+      'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
       ciphertexts,
     )
 
     const res = await pg.query(`
-      SELECT encrypted_text FROM encrypted
-      ORDER BY cs_ore_64_8_v1(encrypted_text)
+      SELECT encrypted_text::jsonb FROM encrypted
+      ORDER BY eql_v2.order_by(encrypted_text) ASC
     `)
 
     const decrypted = await decryptBulk(
@@ -114,22 +121,22 @@ describe('postgres', async () => {
     ])
 
     await pg.query(
-      'INSERT INTO encrypted (encrypted_text) VALUES ($1), ($2)',
+      'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb)',
       ciphertexts,
     )
 
+    const search = await encrypt(protectClient, {
+      plaintext: 'ccc',
+      column: 'email',
+      table: 'users',
+    })
+
     const res = await pg.query(
       `
-      SELECT encrypted_text FROM encrypted
-      WHERE cs_match_v1(encrypted_text) @> cs_match_v1($1)
+      SELECT encrypted_text::jsonb FROM encrypted
+      WHERE encrypted_text LIKE $1::jsonb
       `,
-      [
-        await encrypt(protectClient, {
-          plaintext: 'ccc',
-          column: 'email',
-          table: 'users',
-        }),
-      ],
+      [search],
     )
 
     const decrypted = await decryptBulk(
@@ -155,14 +162,14 @@ describe('postgres', async () => {
     ])
 
     await pg.query(
-      'INSERT INTO encrypted (encrypted_text) VALUES ($1), ($2)',
+      'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb)',
       ciphertexts,
     )
 
     const res = await pg.query(
       `
-      SELECT encrypted_text FROM encrypted
-      WHERE cs_unique_v1(encrypted_text) = cs_unique_v1($1)
+      SELECT encrypted_text::jsonb FROM encrypted
+      WHERE encrypted_text = $1::jsonb
       `,
       [
         await encrypt(protectClient, {

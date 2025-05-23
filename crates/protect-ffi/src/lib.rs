@@ -1,7 +1,8 @@
 use cipherstash_client::{
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig, EnvSource, CIPHERSTASH_SECRET_TOML, CIPHERSTASH_TOML,
+        zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
+        EnvSource, FileSource,
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
@@ -45,11 +46,11 @@ pub enum Encrypted {
     Ciphertext {
         #[serde(rename = "c")]
         ciphertext: String,
-        #[serde(rename = "o")]
+        #[serde(rename = "ob")]
         ore_index: Option<Vec<String>>,
-        #[serde(rename = "m")]
+        #[serde(rename = "bf")]
         match_index: Option<Vec<u16>>,
-        #[serde(rename = "u")]
+        #[serde(rename = "hm")]
         unique_index: Option<String>,
         #[serde(rename = "i")]
         identifier: Identifier,
@@ -120,8 +121,8 @@ async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error
     let zerokms_config = ZeroKMSConfig::builder()
         .add_source(EnvSource::default())
         // Both files are optional and ignored if the file doesn't exist
-        .add_source(CIPHERSTASH_SECRET_TOML.optional())
-        .add_source(CIPHERSTASH_TOML.optional())
+        .add_source(FileSource::<CipherStashSecretConfigFile>::default().optional())
+        .add_source(FileSource::<CipherStashConfigFile>::default().optional())
         .console_config(&console_config)
         .cts_config(&cts_config)
         .build_with_client_key()?;
@@ -583,13 +584,13 @@ fn to_eql_encrypted(
                 match_index: indexes.match_index,
                 ore_index: indexes.ore_index,
                 unique_index: indexes.unique_index,
-                version: 1,
+                version: 2,
             })
         }
         encryption::Encrypted::SteVec(ste_vec_index) => Ok(Encrypted::SteVec {
             identifier: identifier.to_owned(),
             ste_vec_index,
-            version: 1,
+            version: 2,
         }),
     }
 }
@@ -621,26 +622,26 @@ fn eql_encrypted_to_js<'cx, C: Context<'cx>>(
 
     if let Some(ore_index) = ore_index {
         let o = js_array_from_string_vec(ore_index, cx)?;
-        obj.set(cx, "o", o)?;
+        obj.set(cx, "ob", o)?;
     } else {
         let o = cx.null();
-        obj.set(cx, "o", o)?;
+        obj.set(cx, "ob", o)?;
     }
 
     if let Some(match_index) = match_index {
         let m = js_array_from_u16_vec(match_index, cx)?;
-        obj.set(cx, "m", m)?;
+        obj.set(cx, "bf", m)?;
     } else {
         let m = cx.null();
-        obj.set(cx, "m", m)?;
+        obj.set(cx, "bf", m)?;
     }
 
     if let Some(unique_index) = unique_index {
         let u = cx.string(unique_index);
-        obj.set(cx, "u", u)?;
+        obj.set(cx, "hm", u)?;
     } else {
         let u = cx.null();
-        obj.set(cx, "u", u)?;
+        obj.set(cx, "hm", u)?;
     }
 
     let i = cx.empty_object();

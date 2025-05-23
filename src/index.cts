@@ -76,9 +76,9 @@ export type Context = {
 export type Encrypted = {
   k: string
   c: string
-  o: string[] | null
-  m: number[] | null
-  u: string | null
+  ob: string[] | null
+  bf: number[] | null
+  hm: string | null
   i: {
     c: string
     t: string

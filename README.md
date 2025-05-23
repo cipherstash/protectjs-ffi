@@ -126,7 +126,7 @@ These tests use the local build of Rust and JavaScript artifacts to test `@ciphe
 
 These tests rely on:
 
-- CipherStash to be configured (via `.toml` config or environment variables), and 
+- CipherStash to be configured (via `.toml` config or environment variables), and
 - Environment variables for Postgres to be set
 
 Example environment variables:
@@ -134,7 +134,7 @@ Example environment variables:
 CS_CLIENT_ID=
 CS_CLIENT_KEY=
 CS_CLIENT_ACCESS_KEY=
-CS_WORKSPACE_ID=
+CS_WORKSPACE_CRN=
 PGPORT=5432
 PGDATABASE=cipherstash
 PGUSER=cipherstash
