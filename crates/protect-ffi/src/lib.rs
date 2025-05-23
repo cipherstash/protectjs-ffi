@@ -1,7 +1,8 @@
 use cipherstash_client::{
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig, EnvSource, CIPHERSTASH_SECRET_TOML, CIPHERSTASH_TOML,
+        zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
+        EnvSource, FileSource,
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
@@ -120,8 +121,8 @@ async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error
     let zerokms_config = ZeroKMSConfig::builder()
         .add_source(EnvSource::default())
         // Both files are optional and ignored if the file doesn't exist
-        .add_source(CIPHERSTASH_SECRET_TOML.optional())
-        .add_source(CIPHERSTASH_TOML.optional())
+        .add_source(FileSource::<CipherStashSecretConfigFile>::default().optional())
+        .add_source(FileSource::<CipherStashConfigFile>::default().optional())
         .console_config(&console_config)
         .cts_config(&cts_config)
         .build_with_client_key()?;
