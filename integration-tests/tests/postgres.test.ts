@@ -14,10 +14,10 @@ describe('postgres', async () => {
   const pg = new Client()
   await pg.connect()
 
+  // called once before all tests run
   beforeAll(async () => {
     await pg.query('DROP TABLE IF EXISTS encrypted')
 
-    // called once before all tests run
     await pg.query(`
       CREATE TABLE encrypted (
         id SERIAL PRIMARY KEY,
@@ -25,7 +25,9 @@ describe('postgres', async () => {
       )
     `)
 
-    // TODO: add check constraint or use domain type inside composite type.
+    await pg.query(
+      "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_text')",
+    )
 
     // clean up function, called once after all tests run
     return async () => {
