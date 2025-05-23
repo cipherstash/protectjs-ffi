@@ -656,10 +656,7 @@ fn eql_encrypted_to_js<'cx, C: Context<'cx>>(
     let v = cx.number(version);
     obj.set(cx, "v", v)?;
 
-    let composite: Handle<JsObject> = cx.empty_object();
-
-    composite.set(cx, "data", obj)?;
-    Ok(composite)
+    Ok(obj)
 }
 
 fn format_index_term_binary(bytes: &Vec<u8>) -> String {

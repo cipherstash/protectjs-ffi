@@ -74,16 +74,14 @@ export type Context = {
 }
 
 export type Encrypted = {
-  data: {
-    k: string
+  k: string
+  c: string
+  ob: string[] | null
+  bf: number[] | null
+  hm: string | null
+  i: {
     c: string
-    ob: string[] | null
-    bf: number[] | null
-    hm: string | null
-    i: {
-      c: string
-      t: string
-    }
-    v: number
+    t: string
   }
+  v: number
 }

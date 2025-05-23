@@ -35,7 +35,7 @@ describe('encrypt and decrypt', async () => {
       table: 'users',
     })
 
-    const decrypted = await decrypt(client, ciphertext.data.c)
+    const decrypted = await decrypt(client, ciphertext.c)
 
     expect(decrypted).toBe(originalPlaintext)
   })
@@ -54,7 +54,7 @@ describe('encrypt and decrypt', async () => {
       undefined,
     )
 
-    const decrypted = await decrypt(client, ciphertext.data.c, undefined)
+    const decrypted = await decrypt(client, ciphertext.c, undefined)
 
     expect(decrypted).toBe(originalPlaintext)
   })
@@ -81,7 +81,7 @@ describe('encryptBulk and decryptBulk', async () => {
 
     const decrypted = await decryptBulk(
       client,
-      ciphertexts.map(({ data }) => ({ ciphertext: data.c })),
+      ciphertexts.map(({ c }) => ({ ciphertext: c })),
     )
 
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
@@ -111,7 +111,7 @@ describe('encryptBulk and decryptBulk', async () => {
 
     const decrypted = await decryptBulk(
       client,
-      ciphertexts.map(({ data }) => ({ ciphertext: data.c })),
+      ciphertexts.map(({ c }) => ({ ciphertext: c })),
       undefined,
     )
 
