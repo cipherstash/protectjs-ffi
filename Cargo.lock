@@ -1970,6 +1970,7 @@ name = "protect-ffi"
 version = "0.1.0"
 dependencies = [
  "cipherstash-client",
+ "cts-common",
  "hex",
  "neon",
  "once_cell",

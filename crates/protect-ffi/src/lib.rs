@@ -12,6 +12,7 @@ use cipherstash_client::{
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
 };
+use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
 use neon::prelude::*;
 use once_cell::sync::OnceCell;
@@ -92,10 +93,20 @@ pub enum Error {
 
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
 
+#[derive(Debug, Deserialize, Serialize, Default)]
+struct ClientOpts {
+    workspace_crn: Option<Crn>,
+    access_key: Option<String>,
+    client_id: Option<String>,
+    client_key: Option<String>,
+}
+
 fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let encrypt_config_str = cx.argument::<JsString>(0)?.value(&mut cx);
     let encrypt_config = EncryptConfig::from_str(&encrypt_config_str)
         .or_else(|err| cx.throw_error(err.to_string()))?;
+
+    let client_opts = client_opts_from_js_value(cx.argument_opt(1), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -103,7 +114,7 @@ fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let client_result = new_client_inner(encrypt_config).await;
+        let client_result = new_client_inner(encrypt_config, client_opts).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let client = client_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -115,17 +126,42 @@ fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-async fn new_client_inner(encrypt_config: EncryptConfig) -> Result<Client, Error> {
+async fn new_client_inner(
+    encrypt_config: EncryptConfig,
+    client_opts: ClientOpts,
+) -> Result<Client, Error> {
     let console_config = ConsoleConfig::builder().with_env().build()?;
     let cts_config = CtsConfig::builder().with_env().build()?;
-    let zerokms_config = ZeroKMSConfig::builder()
-        .add_source(EnvSource::default())
-        // Both files are optional and ignored if the file doesn't exist
-        .add_source(FileSource::<CipherStashSecretConfigFile>::default().optional())
-        .add_source(FileSource::<CipherStashConfigFile>::default().optional())
-        .console_config(&console_config)
-        .cts_config(&cts_config)
-        .build_with_client_key()?;
+
+    let zerokms_config_builder = {
+        let mut zerokms_config_builder = ZeroKMSConfig::builder()
+            .add_source(EnvSource::default())
+            // Both files are optional and ignored if the file doesn't exist
+            .add_source(FileSource::<CipherStashSecretConfigFile>::default().optional())
+            .add_source(FileSource::<CipherStashConfigFile>::default().optional())
+            .console_config(&console_config)
+            .cts_config(&cts_config);
+
+        if let Some(workspace_crn) = client_opts.workspace_crn {
+            zerokms_config_builder = zerokms_config_builder.workspace_crn(workspace_crn);
+        }
+
+        if let Some(access_key) = client_opts.access_key {
+            zerokms_config_builder = zerokms_config_builder.access_key(access_key);
+        }
+
+        if let Some(client_id) = client_opts.client_id {
+            zerokms_config_builder = zerokms_config_builder.try_with_client_id(&client_id)?;
+        }
+
+        if let Some(client_key) = client_opts.client_key {
+            zerokms_config_builder = zerokms_config_builder.try_with_client_key(&client_key)?;
+        }
+
+        zerokms_config_builder
+    };
+
+    let zerokms_config = zerokms_config_builder.build_with_client_key()?;
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
@@ -397,6 +433,24 @@ fn service_token_from_js_value(
             Ok(Some(ServiceToken::new(token, expiry as u64)))
         }
         _ => Ok(None),
+    }
+}
+
+fn client_opts_from_js_value(
+    value: Option<Handle<JsValue>>,
+    cx: &mut FunctionContext,
+) -> NeonResult<ClientOpts> {
+    match value {
+        Some(client_opts) if is_defined(client_opts, cx) => {
+            let client_opts_str = client_opts.downcast_or_throw::<JsString, _>(cx)?.value(cx);
+
+            let parsed_opts: ClientOpts = serde_json::from_str(&client_opts_str)
+                .map_err(Error::Parse)
+                .or_else(|err| cx.throw_error(err.to_string()))?;
+
+            Ok(parsed_opts)
+        }
+        _ => Ok(ClientOpts::default()),
     }
 }
 
