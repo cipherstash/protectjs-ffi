@@ -11,7 +11,10 @@ export type Client = { readonly [sym]: unknown }
 // Use this declaration to assign types to the protect-ffi's exports,
 // which otherwise default to `any`.
 declare module './load.cjs' {
-  function newClient(encryptSchema: string): Promise<Client>
+  function newClient(
+    encryptSchema: string,
+    clientOpts?: string,
+  ): Promise<Client>
   function encrypt(
     client: Client,
     plaintext: EncryptPayload,
