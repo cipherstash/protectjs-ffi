@@ -297,6 +297,56 @@ async fn decrypt_bulk_inner(
     Ok(plaintexts)
 }
 
+fn decrypt_bulk_fallible(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
+    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+
+    let (deferred, promise) = cx.promise();
+
+    rt.spawn(async move {
+        let plaintexts_result =
+            decrypt_bulk_fallible_inner(client, ciphertexts, service_token).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            js_array_decrypt_results_from_string_vec(plaintexts, &mut cx)
+        });
+    });
+
+    Ok(promise)
+}
+
+async fn decrypt_bulk_fallible_inner(
+    client: Client,
+    ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
+    service_token: Option<ServiceToken>,
+) -> Result<Vec<String>, Error> {
+    let len = ciphertexts.len();
+    let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
+
+    for (ciphertext, encryption_context) in ciphertexts {
+        let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
+        encrypted_records.push(encrypted_record);
+    }
+
+    let decrypted = client
+        .zerokms
+        .decrypt(encrypted_records, service_token)
+        .await?;
+
+    let mut plaintexts: Vec<String> = Vec::with_capacity(len);
+
+    for item in decrypted {
+        plaintexts.push(plaintext_str_from_bytes(item)?);
+    }
+
+    Ok(plaintexts)
+}
+
 fn encryption_context_from_js_value(
     value: Option<Handle<JsValue>>,
     cx: &mut FunctionContext,
@@ -405,6 +455,24 @@ fn js_array_from_string_vec<'a, C: Context<'a>>(
     Ok(js_array)
 }
 
+fn js_array_decrypt_results_from_string_vec<'a, C: Context<'a>>(
+    vec: Vec<String>,
+    cx: &mut C,
+) -> NeonResult<Handle<'a, JsArray>> {
+    let js_array = JsArray::new(cx, vec.len());
+
+    for (i, value) in vec.iter().enumerate() {
+        let obj: Handle<JsObject> = cx.empty_object();
+
+        let js_string = cx.string(value);
+        obj.set(cx, "data", js_string)?;
+
+        js_array.set(cx, i as u32, obj)?;
+    }
+
+    Ok(js_array)
+}
+
 fn encrypted_record_from_mp_base85(
     base85str: &str,
     encryption_context: Vec<zerokms::Context>,
@@ -454,6 +522,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("encryptBulk", encrypt_bulk)?;
     cx.export_function("decrypt", decrypt)?;
     cx.export_function("decryptBulk", decrypt_bulk)?;
+    cx.export_function("decryptBulkFallible", decrypt_bulk_fallible)?;
 
     Ok(())
 }

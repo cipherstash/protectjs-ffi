@@ -32,7 +32,14 @@ declare module './load.cjs' {
     ciphertexts: BulkDecryptPayload[],
     ctsToken?: CtsToken,
   ): Promise<string[]>
+  function decryptBulkFallible(
+    client: Client,
+    ciphertexts: BulkDecryptPayload[],
+    ctsToken?: CtsToken,
+  ): Promise<DecryptResult[]>
 }
+
+export type DecryptResult = { data: string } | { error: string }
 
 export function newClient(): Promise<addon.Client> {
   return addon.newClient()
@@ -95,6 +102,18 @@ export function decryptBulk(
   }
 
   return addon.decryptBulk(client, ciphertexts)
+}
+
+export function decryptBulkFallible(
+  client: addon.Client,
+  ciphertexts: BulkDecryptPayload[],
+  ctsToken?: CtsToken,
+): Promise<DecryptResult[]> {
+  if (ctsToken) {
+    return addon.decryptBulkFallible(client, ciphertexts, ctsToken)
+  }
+
+  return addon.decryptBulkFallible(client, ciphertexts)
 }
 
 export type BulkEncryptPayload = {
