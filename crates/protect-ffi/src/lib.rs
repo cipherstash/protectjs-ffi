@@ -10,7 +10,7 @@ use cipherstash_client::{
         ScopedCipher, TypeParseError,
     },
     schema::ColumnConfig,
-    zerokms::{self, EncryptedRecord, WithContext, ZeroKMSWithClientKey},
+    zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
 };
 use neon::prelude::*;
 use once_cell::sync::OnceCell;
@@ -49,6 +49,8 @@ pub enum Error {
     Base85(String),
     #[error("unimplemented: {0} not supported yet by protect-ffi")]
     Unimplemented(String),
+    #[error(transparent)]
+    RecordDecryptError(#[from] RecordDecryptError),
 }
 
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
@@ -327,7 +329,7 @@ async fn decrypt_bulk_fallible_inner(
     client: Client,
     ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
     service_token: Option<ServiceToken>,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<Result<String, Error>>, Error> {
     let len = ciphertexts.len();
     let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
 
@@ -338,13 +340,13 @@ async fn decrypt_bulk_fallible_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt(encrypted_records, service_token)
+        .decrypt_fallible(encrypted_records, service_token)
         .await?;
 
-    let mut plaintexts: Vec<String> = Vec::with_capacity(len);
+    let mut plaintexts = Vec::with_capacity(len);
 
     for item in decrypted {
-        plaintexts.push(plaintext_str_from_bytes(item)?);
+        plaintexts.push(item.map_err(Error::from).and_then(plaintext_str_from_bytes));
     }
 
     Ok(plaintexts)
@@ -459,7 +461,7 @@ fn js_array_from_string_vec<'a, C: Context<'a>>(
 }
 
 fn js_array_decrypt_results_from_string_vec<'a, C: Context<'a>>(
-    vec: Vec<String>,
+    vec: Vec<Result<String, Error>>,
     cx: &mut C,
 ) -> NeonResult<Handle<'a, JsArray>> {
     let js_array = JsArray::new(cx, vec.len());
@@ -467,8 +469,16 @@ fn js_array_decrypt_results_from_string_vec<'a, C: Context<'a>>(
     for (i, value) in vec.iter().enumerate() {
         let obj: Handle<JsObject> = cx.empty_object();
 
-        let js_string = cx.string(value);
-        obj.set(cx, "data", js_string)?;
+        match value {
+            Ok(decrypted) => {
+                let js_string = cx.string(decrypted);
+                obj.set(cx, "data", js_string)?;
+            }
+            Err(e) => {
+                let message = cx.string(e.to_string());
+                obj.set(cx, "error", message)?;
+            }
+        }
 
         js_array.set(cx, i as u32, obj)?;
     }
