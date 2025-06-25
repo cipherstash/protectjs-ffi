@@ -392,7 +392,7 @@ async fn decrypt_bulk_inner(
 }
 
 fn decrypt_bulk_fallible(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (&**cx.argument::<JsBox<Client>>(0)?).clone();
+    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
