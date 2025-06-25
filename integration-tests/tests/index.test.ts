@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest'
 import {
   decrypt,
   decryptBulk,
+  decryptBulkFallible,
   encrypt,
   encryptBulk,
   newClient,
@@ -116,5 +117,31 @@ describe('encryptBulk and decryptBulk', async () => {
     )
 
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
+  })
+
+  test('can use decryptBulkFallible', async () => {
+    const client = await newClient(encryptConfig)
+    const plaintextOne = 'abc'
+    const plaintextTwo = 'def'
+
+    const ciphertexts = await encryptBulk(client, [
+      {
+        plaintext: plaintextOne,
+        column: 'email',
+        table: 'users',
+      },
+      {
+        plaintext: plaintextTwo,
+        column: 'email',
+        table: 'users',
+      },
+    ])
+
+    const decrypted = await decryptBulkFallible(
+      client,
+      ciphertexts.map((c) => ({ ciphertext: c.c })),
+    )
+
+    expect(decrypted).toEqual([{ data: plaintextOne }, { data: plaintextTwo }])
   })
 })
