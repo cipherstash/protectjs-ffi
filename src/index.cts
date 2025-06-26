@@ -1,7 +1,10 @@
 // This module is the CJS entry point for the library.
 
 export { encrypt, encryptBulk, newClient, decryptBulk } from './load.cjs'
-import { decrypt as ffiDecrypt } from './load.cjs'
+import {
+  decrypt as ffiDecrypt,
+  decryptBulkFallible as ffiDecryptBulkFallible,
+} from './load.cjs'
 
 declare const sym: unique symbol
 
@@ -36,6 +39,11 @@ declare module './load.cjs' {
     ciphertexts: BulkDecryptPayload[],
     ctsToken?: CtsToken,
   ): Promise<string[]>
+  function decryptBulkFallible(
+    client: Client,
+    ciphertexts: BulkDecryptPayload[],
+    ctsToken?: CtsToken,
+  ): Promise<DecryptResult[]>
 }
 
 export function decrypt(
@@ -54,6 +62,20 @@ export function decrypt(
 
   return ffiDecrypt(client, ciphertext)
 }
+
+export function decryptBulkFallible(
+  client: Client,
+  ciphertexts: BulkDecryptPayload[],
+  ctsToken?: CtsToken,
+): Promise<DecryptResult[]> {
+  if (ctsToken) {
+    return ffiDecryptBulkFallible(client, ciphertexts, ctsToken)
+  }
+
+  return ffiDecryptBulkFallible(client, ciphertexts)
+}
+
+export type DecryptResult = { data: string } | { error: string }
 
 export type EncryptPayload = {
   plaintext: string
