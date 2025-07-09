@@ -11,6 +11,7 @@ use cipherstash_client::{
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
+    PrimaryKey,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -468,6 +469,40 @@ fn encryption_context_from_js_value(
     Ok(encryption_context)
 }
 
+fn primary_key_from_js_value(
+    value: Option<Handle<JsValue>>,
+    cx: &mut FunctionContext,
+) -> NeonResult<Option<PrimaryKey>> {
+    let mut key_strings: Vec<String> = Vec::new();
+
+    if let Some(primary_key) = value {
+        let keys: Handle<JsArray> = primary_key.downcast_or_throw(cx)?;
+
+        let keys: Vec<Handle<JsValue>> = keys.to_vec(cx)?;
+
+        for key in keys {
+            let key = key
+                .downcast_or_throw::<JsString, FunctionContext>(cx)?
+                .value(cx);
+
+            key_strings.push(key);
+        }
+    } else {
+        return Ok(None);
+    }
+
+    if key_strings.len() == 1 {
+        Ok(Some(PrimaryKey::Single(key_strings[0].clone())))
+    } else if key_strings.len() == 2 {
+        Ok(Some(PrimaryKey::Composite(
+            key_strings[0].clone(),
+            key_strings[1].clone(),
+        )))
+    } else {
+        todo!("handle invalid pk");
+    }
+}
+
 fn service_token_from_js_value(
     value: Option<Handle<JsValue>>,
     cx: &mut FunctionContext,
@@ -538,14 +573,23 @@ fn plaintext_target_from_js_object(
     let lock_context = value.get_opt::<JsValue, _, _>(cx, "lockContext")?;
     let lock_context = encryption_context_from_js_value(lock_context, cx)?;
 
-    let ident = Identifier::new(table, column);
+    let primary_key = value.get_opt::<JsValue, _, _>(cx, "primaryKey")?;
+    let primary_key = primary_key_from_js_value(primary_key, cx)?;
+
+    let ident = Identifier::new(table.clone(), column);
 
     let column_config = encrypt_config
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))
         .or_else(|err| cx.throw_error(err.to_string()))?;
 
-    let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
+    let mut plaintext_target = PlaintextTarget::new_with_primary_key(
+        plaintext,
+        column_config.clone(),
+        Some(table),
+        primary_key,
+    );
+
     plaintext_target.context = lock_context;
 
     Ok((plaintext_target, ident))
