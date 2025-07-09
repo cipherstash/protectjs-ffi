@@ -59,6 +59,48 @@ describe('encrypt and decrypt', async () => {
 
     expect(decrypted).toBe(originalPlaintext)
   })
+
+  test('can pass in primary key', async () => {
+    const client = await newClient(encryptConfig)
+    const originalPlaintext = 'abc'
+
+    const ciphertext = await encrypt(
+      client,
+      {
+        plaintext: originalPlaintext,
+        column: 'email',
+        table: 'users',
+        // TODO: maybe allow for non-tuple? Or at least handle error when a string is passed in.
+        primaryKey: ['123'],
+      },
+      undefined,
+    )
+
+    const decrypted = await decrypt(client, ciphertext.c, undefined)
+
+    expect(decrypted).toBe(originalPlaintext)
+  })
+
+  test('can pass in composite primary key', async () => {
+    const client = await newClient(encryptConfig)
+    const originalPlaintext = 'abc'
+
+    const ciphertext = await encrypt(
+      client,
+      {
+        plaintext: originalPlaintext,
+        column: 'email',
+        table: 'users',
+        // TODO: maybe allow for non-tuple?
+        primaryKey: ['keyOne', 'keyTwo'],
+      },
+      undefined,
+    )
+
+    const decrypted = await decrypt(client, ciphertext.c, undefined)
+
+    expect(decrypted).toBe(originalPlaintext)
+  })
 })
 
 describe('encryptBulk and decryptBulk', async () => {

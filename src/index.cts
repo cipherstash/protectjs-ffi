@@ -82,6 +82,7 @@ export type EncryptPayload = {
   column: string
   table: string
   lockContext?: Context
+  primaryKey?: [string] | [string, string]
 }
 
 export type BulkDecryptPayload = {
