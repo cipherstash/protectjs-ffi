@@ -188,15 +188,7 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
         &mut cx,
     )?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
-
-    let unverified_context = match cx.argument_opt(3) {
-        Some(unverified_context) => Some(
-            Json::<UnverifiedContext>::try_from_js(&mut cx, unverified_context)?
-                .or_else(|err| cx.throw_error(err.to_string()))?
-                .0,
-        ),
-        None => None,
-    };
+    let unverified_context = unverified_context_from_js_value(cx.argument_opt(3), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -266,6 +258,7 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
         &mut cx,
     )?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+    let unverified_context = unverified_context_from_js_value(cx.argument_opt(3), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -273,7 +266,8 @@ fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let ciphertexts_result = encrypt_bulk_inner(client, plaintext_targets, service_token).await;
+        let ciphertexts_result =
+            encrypt_bulk_inner(client, plaintext_targets, service_token, unverified_context).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let ciphertexts = ciphertexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -288,6 +282,7 @@ async fn encrypt_bulk_inner(
     client: Client,
     plaintext_targets: Vec<(PlaintextTarget, Identifier)>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 ) -> Result<Vec<Encrypted>, Error> {
     let len = plaintext_targets.len();
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
@@ -298,7 +293,7 @@ async fn encrypt_bulk_inner(
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
 
-    let mut source_encrypted = pipeline.encrypt(service_token, None).await?;
+    let mut source_encrypted = pipeline.encrypt(service_token, unverified_context).await?;
 
     let mut results: Vec<Encrypted> = Vec::with_capacity(len);
 
@@ -328,6 +323,7 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let ciphertext = cx.argument::<JsString>(1)?.value(&mut cx);
     let lock_context = encryption_context_from_js_value(cx.argument_opt(2), &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(3), &mut cx)?;
+    let unverified_context = unverified_context_from_js_value(cx.argument_opt(4), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -335,7 +331,14 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let decrypt_result = decrypt_inner(client, ciphertext, lock_context, service_token).await;
+        let decrypt_result = decrypt_inner(
+            client,
+            ciphertext,
+            lock_context,
+            service_token,
+            unverified_context,
+        )
+        .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintext = decrypt_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -352,12 +355,13 @@ async fn decrypt_inner(
     ciphertext: String,
     encryption_context: Vec<zerokms::Context>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 ) -> Result<String, Error> {
     let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
 
     let decrypted = client
         .zerokms
-        .decrypt_single(encrypted_record, service_token, None)
+        .decrypt_single(encrypted_record, service_token, unverified_context)
         .await?;
 
     plaintext_str_from_bytes(decrypted)
@@ -367,6 +371,7 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+    let unverified_context = unverified_context_from_js_value(cx.argument_opt(3), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -374,7 +379,8 @@ fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let plaintexts_result = decrypt_bulk_inner(client, ciphertexts, service_token).await;
+        let plaintexts_result =
+            decrypt_bulk_inner(client, ciphertexts, service_token, unverified_context).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -389,6 +395,7 @@ async fn decrypt_bulk_inner(
     client: Client,
     ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 ) -> Result<Vec<String>, Error> {
     let len = ciphertexts.len();
     let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
@@ -400,7 +407,7 @@ async fn decrypt_bulk_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt(encrypted_records, service_token, None)
+        .decrypt(encrypted_records, service_token, unverified_context)
         .await?;
 
     let mut plaintexts: Vec<String> = Vec::with_capacity(len);
@@ -416,6 +423,7 @@ fn decrypt_bulk_fallible(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
     let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+    let unverified_context = unverified_context_from_js_value(cx.argument_opt(3), &mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -424,7 +432,8 @@ fn decrypt_bulk_fallible(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     rt.spawn(async move {
         let plaintexts_result =
-            decrypt_bulk_fallible_inner(client, ciphertexts, service_token).await;
+            decrypt_bulk_fallible_inner(client, ciphertexts, service_token, unverified_context)
+                .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -439,6 +448,7 @@ async fn decrypt_bulk_fallible_inner(
     client: Client,
     ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 ) -> Result<Vec<Result<String, Error>>, Error> {
     let len = ciphertexts.len();
     let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
@@ -450,7 +460,7 @@ async fn decrypt_bulk_fallible_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt_fallible(encrypted_records, service_token, None)
+        .decrypt_fallible(encrypted_records, service_token, unverified_context)
         .await?;
 
     let mut plaintexts = Vec::with_capacity(len);
@@ -469,19 +479,22 @@ fn encryption_context_from_js_value(
     let mut encryption_context: Vec<zerokms::Context> = Vec::new();
 
     if let Some(lock_context) = value {
-        let lock_context: Handle<JsObject> = lock_context.downcast_or_throw(cx)?;
+        if is_defined(lock_context, cx) {
+            let lock_context: Handle<JsObject> = lock_context.downcast_or_throw(cx)?;
 
-        let identity_claim: Option<Handle<JsArray>> = lock_context.get_opt(cx, "identityClaim")?;
+            let identity_claim: Option<Handle<JsArray>> =
+                lock_context.get_opt(cx, "identityClaim")?;
 
-        if let Some(identity_claim) = identity_claim {
-            let identity_claims: Vec<Handle<JsValue>> = identity_claim.to_vec(cx)?;
+            if let Some(identity_claim) = identity_claim {
+                let identity_claims: Vec<Handle<JsValue>> = identity_claim.to_vec(cx)?;
 
-            for claim in identity_claims {
-                let claim = claim
-                    .downcast_or_throw::<JsString, FunctionContext>(cx)?
-                    .value(cx);
+                for claim in identity_claims {
+                    let claim = claim
+                        .downcast_or_throw::<JsString, FunctionContext>(cx)?
+                        .value(cx);
 
-                encryption_context.push(zerokms::Context::new_identity_claim(&claim));
+                    encryption_context.push(zerokms::Context::new_identity_claim(&claim));
+                }
             }
         }
     }
@@ -506,6 +519,21 @@ fn service_token_from_js_value(
             Ok(Some(ServiceToken::new(token, expiry as u64)))
         }
         _ => Ok(None),
+    }
+}
+
+fn unverified_context_from_js_value<'a>(
+    value: Option<Handle<'a, JsValue>>,
+    cx: &mut FunctionContext<'a>,
+) -> NeonResult<Option<UnverifiedContext>> {
+    if let Some(arg) = value {
+        Ok(Some(
+            Json::<UnverifiedContext>::try_from_js(cx, arg)?
+                .or_else(|err| cx.throw_error(err.to_string()))?
+                .0,
+        ))
+    } else {
+        Ok(None)
     }
 }
 
