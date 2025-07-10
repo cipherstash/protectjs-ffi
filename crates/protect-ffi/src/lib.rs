@@ -11,10 +11,14 @@ use cipherstash_client::{
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
+    UnverifiedContext,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
-use neon::prelude::*;
+use neon::{
+    prelude::*,
+    types::extract::{Json, TryFromJs},
+};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -185,6 +189,15 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     )?;
     let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
 
+    let unverified_context = match cx.argument_opt(3) {
+        Some(unverified_context) => Some(
+            Json::<UnverifiedContext>::try_from_js(&mut cx, unverified_context)?
+                .or_else(|err| cx.throw_error(err.to_string()))?
+                .0,
+        ),
+        None => None,
+    };
+
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
 
@@ -199,7 +212,14 @@ fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     //
     // This task will _not_ block the JavaScript main thread.
     rt.spawn(async move {
-        let ciphertext_result = encrypt_inner(client, plaintext_target, ident, service_token).await;
+        let ciphertext_result = encrypt_inner(
+            client,
+            plaintext_target,
+            ident,
+            service_token,
+            unverified_context,
+        )
+        .await;
 
         // Settle the promise from the result of a closure. JavaScript exceptions
         // will be converted to a Promise rejection.
@@ -221,12 +241,13 @@ async fn encrypt_inner(
     plaintext_target: PlaintextTarget,
     ident: Identifier,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 ) -> Result<Encrypted, Error> {
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
 
     pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, 0)?;
 
-    let mut source_encrypted = pipeline.encrypt(service_token).await?;
+    let mut source_encrypted = pipeline.encrypt(service_token, unverified_context).await?;
 
     let encrypted = source_encrypted.remove(0).ok_or_else(|| {
         Error::InvariantViolation(
@@ -277,7 +298,7 @@ async fn encrypt_bulk_inner(
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
 
-    let mut source_encrypted = pipeline.encrypt(service_token).await?;
+    let mut source_encrypted = pipeline.encrypt(service_token, None).await?;
 
     let mut results: Vec<Encrypted> = Vec::with_capacity(len);
 
@@ -336,7 +357,7 @@ async fn decrypt_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt_single(encrypted_record, service_token)
+        .decrypt_single(encrypted_record, service_token, None)
         .await?;
 
     plaintext_str_from_bytes(decrypted)
@@ -379,7 +400,7 @@ async fn decrypt_bulk_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt(encrypted_records, service_token)
+        .decrypt(encrypted_records, service_token, None)
         .await?;
 
     let mut plaintexts: Vec<String> = Vec::with_capacity(len);
@@ -429,7 +450,7 @@ async fn decrypt_bulk_fallible_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt_fallible(encrypted_records, service_token)
+        .decrypt_fallible(encrypted_records, service_token, None)
         .await?;
 
     let mut plaintexts = Vec::with_capacity(len);

@@ -59,6 +59,28 @@ describe('encrypt and decrypt', async () => {
 
     expect(decrypted).toBe(originalPlaintext)
   })
+
+  test('can pass in unverified context', async () => {
+    const client = await newClient(encryptConfig)
+    const originalPlaintext = 'abc'
+
+    const ciphertext = await encrypt(
+      client,
+      {
+        plaintext: originalPlaintext,
+        column: 'email',
+        table: 'users',
+      },
+      undefined,
+      {
+        sub: 'user_123',
+      },
+    )
+
+    const decrypted = await decrypt(client, ciphertext.c, undefined)
+
+    expect(decrypted).toBe(originalPlaintext)
+  })
 })
 
 describe('encryptBulk and decryptBulk', async () => {

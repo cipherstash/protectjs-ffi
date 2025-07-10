@@ -22,26 +22,31 @@ declare module './load.cjs' {
     client: Client,
     plaintext: EncryptPayload,
     ctsToken?: CtsToken,
+    unverifiedContext?: Record<string, unknown>,
   ): Promise<Encrypted>
   function decrypt(
     client: Client,
     ciphertext: string,
+    // unverifiedContext?: Record<string, unknown>,
     context?: Context,
     ctsToken?: CtsToken,
   ): Promise<string>
   function encryptBulk(
     client: Client,
     plaintextTargets: EncryptPayload[],
+    // unverifiedContext?: Record<string, unknown>,
     ctsToken?: CtsToken,
   ): Promise<Encrypted[]>
   function decryptBulk(
     client: Client,
     ciphertexts: BulkDecryptPayload[],
+    // unverifiedContext?: Record<string, unknown>,
     ctsToken?: CtsToken,
   ): Promise<string[]>
   function decryptBulkFallible(
     client: Client,
     ciphertexts: BulkDecryptPayload[],
+    // unverifiedContext?: Record<string, unknown>,
     ctsToken?: CtsToken,
   ): Promise<DecryptResult[]>
 }
@@ -49,30 +54,43 @@ declare module './load.cjs' {
 export function decrypt(
   client: Client,
   ciphertext: string,
+  // unverifiedContext: Record<string, unknown> = {},
   lockContext?: Context,
   ctsToken?: CtsToken,
 ): Promise<string> {
   if (ctsToken) {
-    return ffiDecrypt(client, ciphertext, lockContext, ctsToken)
+    return ffiDecrypt(
+      client,
+      ciphertext,
+      // unverifiedContext,
+      lockContext,
+      ctsToken,
+    )
   }
 
   if (lockContext) {
-    return ffiDecrypt(client, ciphertext, lockContext)
+    return ffiDecrypt(client, ciphertext, /* unverifiedContext, */ lockContext)
   }
 
-  return ffiDecrypt(client, ciphertext)
+  return ffiDecrypt(client, ciphertext /*, unverifiedContext */)
 }
 
 export function decryptBulkFallible(
   client: Client,
   ciphertexts: BulkDecryptPayload[],
+  // unverifiedContext: Record<string, unknown> = {},
   ctsToken?: CtsToken,
 ): Promise<DecryptResult[]> {
   if (ctsToken) {
-    return ffiDecryptBulkFallible(client, ciphertexts, ctsToken)
+    return ffiDecryptBulkFallible(
+      client,
+      ciphertexts,
+      // unverifiedContext,
+      ctsToken,
+    )
   }
 
-  return ffiDecryptBulkFallible(client, ciphertexts)
+  return ffiDecryptBulkFallible(client, ciphertexts /* , unverifiedContext */)
 }
 
 export type DecryptResult = { data: string } | { error: string }
