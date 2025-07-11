@@ -4,11 +4,9 @@ export {
   newClient,
   encrypt,
   encryptBulk,
+  decrypt,
   decryptBulk,
-} from './load.cjs'
-import {
-  decrypt as ffiDecrypt,
-  decryptBulkFallible as ffiDecryptBulkFallible,
+  decryptBulkFallible,
 } from './load.cjs'
 
 declare const sym: unique symbol
@@ -40,20 +38,6 @@ declare module './load.cjs' {
     client: Client,
     opts: DecryptBulkOptions,
   ): Promise<DecryptResult[]>
-}
-
-export function decrypt(
-  client: Client,
-  opts: DecryptOptions,
-): Promise<string> {
-  return ffiDecrypt(client, opts)
-}
-
-export function decryptBulkFallible(
-  client: Client,
-  opts: DecryptBulkOptions,
-): Promise<DecryptResult[]> {
-  return ffiDecryptBulkFallible(client, opts)
 }
 
 export type DecryptResult = { data: string } | { error: string }
