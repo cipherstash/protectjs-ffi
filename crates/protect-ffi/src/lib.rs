@@ -228,8 +228,9 @@ async fn encrypt(
     Json(opts): Json<EncryptOptions>,
 ) -> Result<Json<Encrypted>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table, opts.column);
-    
-    let column_config = client.encrypt_config
+
+    let column_config = client
+        .encrypt_config
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
@@ -267,20 +268,21 @@ async fn encrypt_bulk(
     Json(opts): Json<EncryptBulkOptions>,
 ) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
     let mut plaintext_targets = Vec::with_capacity(opts.plaintexts.len());
-    
+
     for payload in opts.plaintexts {
         let ident = Identifier::new(payload.table, payload.column);
-        
-        let column_config = client.encrypt_config
+
+        let column_config = client
+            .encrypt_config
             .get(&ident)
             .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
         let mut plaintext_target = PlaintextTarget::new(payload.plaintext, column_config.clone());
         plaintext_target.context = payload.lock_context.unwrap_or_default();
-        
+
         plaintext_targets.push((plaintext_target, ident));
     }
-    
+
     let encrypted_vec = encrypt_bulk_inner(client, plaintext_targets, opts.service_token).await?;
     Ok(Json(encrypted_vec))
 }
@@ -330,7 +332,8 @@ async fn decrypt(
     Json(opts): Json<DecryptOptions>,
 ) -> Result<String, neon::types::extract::Error> {
     let lock_context = opts.lock_context.unwrap_or_default();
-    let plaintext = decrypt_inner(client, opts.ciphertext, lock_context, opts.service_token).await?;
+    let plaintext =
+        decrypt_inner(client, opts.ciphertext, lock_context, opts.service_token).await?;
     Ok(plaintext)
 }
 
@@ -356,12 +359,12 @@ async fn decrypt_bulk(
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<String>>, neon::types::extract::Error> {
     let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
-    
+
     for payload in opts.ciphertexts {
         let lock_context = payload.lock_context.unwrap_or_default();
         ciphertexts.push((payload.ciphertext, lock_context));
     }
-    
+
     let plaintexts = decrypt_bulk_inner(client, ciphertexts, opts.service_token).await?;
     Ok(Json(plaintexts))
 }
@@ -399,23 +402,25 @@ async fn decrypt_bulk_fallible(
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
     let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
-    
+
     for payload in opts.ciphertexts {
         let lock_context = payload.lock_context.unwrap_or_default();
         ciphertexts.push((payload.ciphertext, lock_context));
     }
-    
+
     let results = decrypt_bulk_fallible_inner(client, ciphertexts, opts.service_token).await?;
-    
+
     // Convert Result<String, Error> to DecryptResult enum for TypeScript compatibility
     let json_results: Vec<DecryptResult> = results
         .into_iter()
         .map(|result| match result {
             Ok(data) => DecryptResult::Success { data },
-            Err(err) => DecryptResult::Error { error: err.to_string() },
+            Err(err) => DecryptResult::Error {
+                error: err.to_string(),
+            },
         })
         .collect();
-    
+
     Ok(Json(json_results))
 }
 
@@ -444,187 +449,6 @@ async fn decrypt_bulk_fallible_inner(
     }
 
     Ok(plaintexts)
-}
-
-fn encryption_context_from_js_value(
-    value: Option<Handle<JsValue>>,
-    cx: &mut FunctionContext,
-) -> NeonResult<Vec<zerokms::Context>> {
-    let mut encryption_context: Vec<zerokms::Context> = Vec::new();
-
-    if let Some(lock_context) = value {
-        let lock_context: Handle<JsObject> = lock_context.downcast_or_throw(cx)?;
-
-        let identity_claim: Option<Handle<JsArray>> = lock_context.get_opt(cx, "identityClaim")?;
-
-        if let Some(identity_claim) = identity_claim {
-            let identity_claims: Vec<Handle<JsValue>> = identity_claim.to_vec(cx)?;
-
-            for claim in identity_claims {
-                let claim = claim
-                    .downcast_or_throw::<JsString, FunctionContext>(cx)?
-                    .value(cx);
-
-                encryption_context.push(zerokms::Context::new_identity_claim(&claim));
-            }
-        }
-    }
-
-    Ok(encryption_context)
-}
-
-fn service_token_from_js_value(
-    value: Option<Handle<JsValue>>,
-    cx: &mut FunctionContext,
-) -> NeonResult<Option<ServiceToken>> {
-    match value {
-        Some(service_token) if is_defined(service_token, cx) => {
-            let service_token: Handle<JsObject> = service_token.downcast_or_throw(cx)?;
-
-            let token = service_token
-                .get::<JsString, _, _>(cx, "accessToken")?
-                .value(cx);
-
-            let expiry = service_token.get::<JsNumber, _, _>(cx, "expiry")?.value(cx);
-
-            Ok(Some(ServiceToken::new(token, expiry as u64)))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn plaintext_targets_from_js_array(
-    encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
-    js_array: Handle<'_, JsArray>,
-    cx: &mut FunctionContext,
-) -> NeonResult<Vec<(PlaintextTarget, Identifier)>> {
-    let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
-    let mut plaintext_targets: Vec<(PlaintextTarget, Identifier)> =
-        Vec::with_capacity(js_values.len());
-
-    for js_value in js_values {
-        let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
-        let (plaintext_target, ident) = plaintext_target_from_js_object(obj, &encrypt_config, cx)?;
-
-        plaintext_targets.push((plaintext_target, ident));
-    }
-
-    Ok(plaintext_targets)
-}
-
-fn plaintext_target_from_js_object(
-    value: Handle<'_, JsObject>,
-    encrypt_config: &Arc<HashMap<Identifier, ColumnConfig>>,
-    cx: &mut FunctionContext,
-) -> NeonResult<(PlaintextTarget, Identifier)> {
-    let plaintext = value.get::<JsString, _, _>(cx, "plaintext")?.value(cx);
-
-    let column = value.get::<JsString, _, _>(cx, "column")?.value(cx);
-    let table = value.get::<JsString, _, _>(cx, "table")?.value(cx);
-
-    let lock_context = value.get_opt::<JsValue, _, _>(cx, "lockContext")?;
-    let lock_context = encryption_context_from_js_value(lock_context, cx)?;
-
-    let ident = Identifier::new(table, column);
-
-    let column_config = encrypt_config
-        .get(&ident)
-        .ok_or_else(|| Error::UnknownColumn(ident.clone()))
-        .or_else(|err| cx.throw_error(err.to_string()))?;
-
-    let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
-    plaintext_target.context = lock_context;
-
-    Ok((plaintext_target, ident))
-}
-
-fn ciphertexts_from_js_array(
-    js_array: Handle<'_, JsArray>,
-    cx: &mut FunctionContext,
-) -> NeonResult<Vec<(String, Vec<zerokms::Context>)>> {
-    let js_values: Vec<Handle<JsValue>> = js_array.to_vec(cx)?;
-    let mut ciphertexts: Vec<(String, Vec<zerokms::Context>)> = Vec::with_capacity(js_values.len());
-
-    for js_value in js_values {
-        let obj: Handle<JsObject> = js_value.downcast_or_throw(cx)?;
-
-        let ciphertext = obj.get::<JsString, _, _>(cx, "ciphertext")?.value(cx);
-
-        let lock_context = obj.get_opt::<JsValue, _, _>(cx, "lockContext")?;
-        let lock_context = encryption_context_from_js_value(lock_context, cx)?;
-
-        ciphertexts.push((ciphertext, lock_context));
-    }
-
-    Ok(ciphertexts)
-}
-
-fn js_array_decrypt_results_from_string_vec<'a, C: Context<'a>>(
-    vec: Vec<Result<String, Error>>,
-    cx: &mut C,
-) -> NeonResult<Handle<'a, JsArray>> {
-    let js_array = JsArray::new(cx, vec.len());
-
-    for (i, value) in vec.iter().enumerate() {
-        let obj: Handle<JsObject> = cx.empty_object();
-
-        match value {
-            Ok(decrypted) => {
-                let js_string = cx.string(decrypted);
-                obj.set(cx, "data", js_string)?;
-            }
-            Err(e) => {
-                let message = cx.string(e.to_string());
-                obj.set(cx, "error", message)?;
-            }
-        }
-
-        js_array.set(cx, i as u32, obj)?;
-    }
-
-    Ok(js_array)
-}
-
-fn js_array_from_string_vec<'a, C: Context<'a>>(
-    vec: Vec<String>,
-    cx: &mut C,
-) -> NeonResult<Handle<'a, JsArray>> {
-    let js_array = JsArray::new(cx, vec.len());
-
-    for (i, value) in vec.iter().enumerate() {
-        let js_string = cx.string(value);
-        js_array.set(cx, i as u32, js_string)?;
-    }
-
-    Ok(js_array)
-}
-
-fn js_array_from_u16_vec<'a, C: Context<'a>>(
-    vec: Vec<u16>,
-    cx: &mut C,
-) -> NeonResult<Handle<'a, JsArray>> {
-    let js_array = JsArray::new(cx, vec.len());
-
-    for (i, value) in vec.iter().enumerate() {
-        let js_number = cx.number(*value);
-        js_array.set(cx, i as u32, js_number)?;
-    }
-
-    Ok(js_array)
-}
-
-fn js_array_from_eql_encrypted_vec<'a, C: Context<'a>>(
-    vec: Vec<Encrypted>,
-    cx: &mut C,
-) -> NeonResult<Handle<'a, JsArray>> {
-    let js_array = JsArray::new(cx, vec.len());
-
-    for (i, value) in vec.into_iter().enumerate() {
-        let js_obj = eql_encrypted_to_js(value, cx)?;
-        js_array.set(cx, i as u32, js_obj)?;
-    }
-
-    Ok(js_array)
 }
 
 fn encrypted_record_from_mp_base85(
@@ -714,71 +538,6 @@ fn to_eql_encrypted(
     }
 }
 
-fn eql_encrypted_to_js<'cx, C: Context<'cx>>(
-    encrypted: Encrypted,
-    cx: &mut C,
-) -> NeonResult<Handle<'cx, JsObject>> {
-    let obj: Handle<JsObject> = cx.empty_object();
-
-    let Encrypted::Ciphertext {
-        ciphertext,
-        ore_index,
-        match_index,
-        unique_index,
-        identifier,
-        version,
-    } = encrypted
-    else {
-        return cx
-            .throw_error(Error::Unimplemented("encrypted JSON columns".to_string()).to_string());
-    };
-
-    let k = cx.string("ct");
-    obj.set(cx, "k", k)?;
-
-    let c = cx.string(ciphertext);
-    obj.set(cx, "c", c)?;
-
-    if let Some(ore_index) = ore_index {
-        let o = js_array_from_string_vec(ore_index, cx)?;
-        obj.set(cx, "ob", o)?;
-    } else {
-        let o = cx.null();
-        obj.set(cx, "ob", o)?;
-    }
-
-    if let Some(match_index) = match_index {
-        let m = js_array_from_u16_vec(match_index, cx)?;
-        obj.set(cx, "bf", m)?;
-    } else {
-        let m = cx.null();
-        obj.set(cx, "bf", m)?;
-    }
-
-    if let Some(unique_index) = unique_index {
-        let u = cx.string(unique_index);
-        obj.set(cx, "hm", u)?;
-    } else {
-        let u = cx.null();
-        obj.set(cx, "hm", u)?;
-    }
-
-    let i = cx.empty_object();
-
-    let col = cx.string(identifier.column);
-    i.set(cx, "c", col)?;
-
-    let t = cx.string(identifier.table);
-    i.set(cx, "t", t)?;
-
-    obj.set(cx, "i", i)?;
-
-    let v = cx.number(version);
-    obj.set(cx, "v", v)?;
-
-    Ok(obj)
-}
-
 fn format_index_term_binary(bytes: &Vec<u8>) -> String {
     hex::encode(bytes)
 }
@@ -804,17 +563,12 @@ fn format_index_term_ore(bytes: &Vec<u8>) -> Vec<String> {
     vec![format_index_term_ore_bytea(bytes)]
 }
 
-fn is_defined(js_value: Handle<'_, JsValue>, cx: &mut FunctionContext) -> bool {
-    !js_value.is_a::<JsUndefined, _>(cx)
-}
-
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     let runtime = runtime(&mut cx)?;
     let _ = neon::set_global_executor(&mut cx, runtime);
 
     neon::registered().export(&mut cx)?;
-
 
     Ok(())
 }
