@@ -27,7 +27,7 @@ const encryptConfig = JSON.stringify({
 
 describe('encrypt and decrypt', async () => {
   test('can round-trip encrypt and decrypt', async () => {
-    const client = await newClient(encryptConfig)
+    const client = await newClient({ encryptConfig })
     const originalPlaintext = 'abc'
 
     const ciphertext = await encrypt(client, {
@@ -42,7 +42,7 @@ describe('encrypt and decrypt', async () => {
   })
 
   test('can pass in undefined for ctsToken', async () => {
-    const client = await newClient(encryptConfig)
+    const client = await newClient({ encryptConfig })
     const originalPlaintext = 'abc'
 
     const ciphertext = await encrypt(
@@ -63,7 +63,7 @@ describe('encrypt and decrypt', async () => {
 
 describe('encryptBulk and decryptBulk', async () => {
   test('can round-trip encrypt and decrypt', async () => {
-    const client = await newClient(encryptConfig)
+    const client = await newClient({ encryptConfig })
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 
@@ -89,7 +89,7 @@ describe('encryptBulk and decryptBulk', async () => {
   })
 
   test('can pass in undefined for ctsToken', async () => {
-    const client = await newClient(encryptConfig)
+    const client = await newClient({ encryptConfig })
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 
@@ -120,7 +120,7 @@ describe('encryptBulk and decryptBulk', async () => {
   })
 
   test('can use decryptBulkFallible', async () => {
-    const client = await newClient(encryptConfig)
+    const client = await newClient({ encryptConfig })
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 

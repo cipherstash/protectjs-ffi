@@ -14,7 +14,10 @@ use cipherstash_client::{
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
-use neon::prelude::*;
+use neon::{
+    prelude::*,
+    types::extract::{Boxed, Json},
+};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -103,29 +106,65 @@ struct ClientOpts {
     client_key: Option<String>,
 }
 
-fn new_client(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let encrypt_config_str = cx.argument::<JsString>(0)?.value(&mut cx);
-    let encrypt_config = EncryptConfig::from_str(&encrypt_config_str)
-        .or_else(|err| cx.throw_error(err.to_string()))?;
+// Option structs for the new export macro-based functions
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NewClientOptions {
+    encrypt_config: String,
+    client_opts: Option<ClientOpts>,
+}
 
-    let client_opts = client_opts_from_js_value(cx.argument_opt(1), &mut cx)?;
+#[derive(Deserialize)]
+struct EncryptOptions {
+    plaintext: String,
+    column: String,
+    table: String,
+    lock_context: Option<Vec<zerokms::Context>>,
+    service_token: Option<ServiceToken>,
+}
 
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
+#[derive(Deserialize)]
+struct EncryptBulkOptions {
+    plaintexts: Vec<PlaintextPayload>,
+    service_token: Option<ServiceToken>,
+}
 
-    let (deferred, promise) = cx.promise();
+#[derive(Debug, Deserialize)]
+struct PlaintextPayload {
+    plaintext: String,
+    column: String,
+    table: String,
+    lock_context: Option<Vec<zerokms::Context>>,
+}
 
-    rt.spawn(async move {
-        let client_result = new_client_inner(encrypt_config, client_opts).await;
+#[derive(Deserialize)]
+struct DecryptOptions {
+    ciphertext: String,
+    lock_context: Option<Vec<zerokms::Context>>,
+    service_token: Option<ServiceToken>,
+}
 
-        deferred.settle_with(&channel, move |mut cx| {
-            let client = client_result.or_else(|err| cx.throw_error(err.to_string()))?;
+#[derive(Deserialize)]
+struct DecryptBulkOptions {
+    ciphertexts: Vec<BulkDecryptPayload>,
+    service_token: Option<ServiceToken>,
+}
 
-            Ok(cx.boxed(client))
-        })
-    });
+#[derive(Debug, Deserialize)]
+struct BulkDecryptPayload {
+    ciphertext: String,
+    lock_context: Option<Vec<zerokms::Context>>,
+}
 
-    Ok(promise)
+#[neon::export]
+async fn new_client(
+    Json(opts): Json<NewClientOptions>,
+) -> Result<Boxed<Client>, neon::types::extract::Error> {
+    // TODO: pass in EncryptConfig object instead of string.
+    let encrypt_config = EncryptConfig::from_str(&opts.encrypt_config)?;
+    let client = new_client_inner(encrypt_config, opts.client_opts.unwrap_or_default()).await?;
+
+    Ok(Boxed(client))
 }
 
 async fn new_client_inner(
@@ -488,24 +527,6 @@ fn service_token_from_js_value(
     }
 }
 
-fn client_opts_from_js_value(
-    value: Option<Handle<JsValue>>,
-    cx: &mut FunctionContext,
-) -> NeonResult<ClientOpts> {
-    match value {
-        Some(client_opts) if is_defined(client_opts, cx) => {
-            let client_opts_str = client_opts.downcast_or_throw::<JsString, _>(cx)?.value(cx);
-
-            let parsed_opts: ClientOpts = serde_json::from_str(&client_opts_str)
-                .map_err(Error::Parse)
-                .or_else(|err| cx.throw_error(err.to_string()))?;
-
-            Ok(parsed_opts)
-        }
-        _ => Ok(ClientOpts::default()),
-    }
-}
-
 fn plaintext_targets_from_js_array(
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
     js_array: Handle<'_, JsArray>,
@@ -823,7 +844,11 @@ fn is_defined(js_value: Handle<'_, JsValue>, cx: &mut FunctionContext) -> bool {
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
-    cx.export_function("newClient", new_client)?;
+    let runtime = runtime(&mut cx)?;
+    let _ = neon::set_global_executor(&mut cx, runtime);
+
+    neon::registered().export(&mut cx)?;
+
     cx.export_function("encrypt", encrypt)?;
     cx.export_function("encryptBulk", encrypt_bulk)?;
     cx.export_function("decrypt", decrypt)?;

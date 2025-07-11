@@ -10,7 +10,7 @@ import {
 import { Client } from 'pg'
 
 describe('postgres', async () => {
-  const protectClient = await newClient(encryptConfig())
+  const protectClient = await newClient({ encryptConfig: encryptConfig() })
   const pg = new Client()
   await pg.connect()
 

@@ -1,6 +1,11 @@
 // This module is the CJS entry point for the library.
 
-export { encrypt, encryptBulk, newClient, decryptBulk } from './load.cjs'
+export {
+  newClient,
+  encrypt,
+  encryptBulk,
+  decryptBulk,
+} from './load.cjs'
 import {
   decrypt as ffiDecrypt,
   decryptBulkFallible as ffiDecryptBulkFallible,
@@ -14,10 +19,7 @@ export type Client = { readonly [sym]: unknown }
 // Use this declaration to assign types to the protect-ffi's exports,
 // which otherwise default to `any`.
 declare module './load.cjs' {
-  function newClient(
-    encryptSchema: string,
-    clientOpts?: string,
-  ): Promise<Client>
+  function newClient(opts: NewClientOptions): Promise<Client>
   function encrypt(
     client: Client,
     plaintext: EncryptPayload,
@@ -109,4 +111,16 @@ export type Encrypted = {
     t: string
   }
   v: number
+}
+
+export type NewClientOptions = {
+  encryptConfig: string
+  clientOpts?: ClientOpts
+}
+
+export type ClientOpts = {
+  workspaceCrn?: string
+  accessKey?: string
+  clientId?: string
+  clientKey?: string
 }
