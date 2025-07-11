@@ -114,6 +114,13 @@ struct NewClientOptions {
     client_opts: Option<ClientOpts>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum DecryptResult {
+    Success { data: String },
+    Error { error: String },
+}
+
 #[derive(Deserialize)]
 struct EncryptOptions {
     plaintext: String,
@@ -386,27 +393,30 @@ async fn decrypt_bulk_inner(
     Ok(plaintexts)
 }
 
-fn decrypt_bulk_fallible(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
-    let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
-    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
-
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-
-    rt.spawn(async move {
-        let plaintexts_result =
-            decrypt_bulk_fallible_inner(client, ciphertexts, service_token).await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            js_array_decrypt_results_from_string_vec(plaintexts, &mut cx)
-        });
-    });
-
-    Ok(promise)
+#[neon::export]
+async fn decrypt_bulk_fallible(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<DecryptBulkOptions>,
+) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
+    let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
+    
+    for payload in opts.ciphertexts {
+        let lock_context = payload.lock_context.unwrap_or_default();
+        ciphertexts.push((payload.ciphertext, lock_context));
+    }
+    
+    let results = decrypt_bulk_fallible_inner(client, ciphertexts, opts.service_token).await?;
+    
+    // Convert Result<String, Error> to DecryptResult enum for TypeScript compatibility
+    let json_results: Vec<DecryptResult> = results
+        .into_iter()
+        .map(|result| match result {
+            Ok(data) => DecryptResult::Success { data },
+            Err(err) => DecryptResult::Error { error: err.to_string() },
+        })
+        .collect();
+    
+    Ok(Json(json_results))
 }
 
 async fn decrypt_bulk_fallible_inner(
@@ -805,7 +815,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 
     neon::registered().export(&mut cx)?;
 
-    cx.export_function("decryptBulkFallible", decrypt_bulk_fallible)?;
 
     Ok(())
 }

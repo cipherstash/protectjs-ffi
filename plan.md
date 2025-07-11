@@ -324,17 +324,17 @@ declare module './load.cjs' {
 - [x] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### decryptBulkFallible
-- [ ] Define `DecryptBulkFallibleOptions` struct (or reuse `DecryptBulkOptions`)
-- [ ] Replace `fn decrypt_bulk_fallible(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk_fallible(client: &Client, opts: DecryptBulkFallibleOptions)`
-- [ ] Update TypeScript definitions
-- [ ] Update integration tests to use new options-based API
-- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
-- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
+- [x] Define `DecryptBulkFallibleOptions` struct (or reuse `DecryptBulkOptions`)
+- [x] Replace `fn decrypt_bulk_fallible(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk_fallible(client: &Client, opts: DecryptBulkFallibleOptions)`
+- [x] Update TypeScript definitions
+- [x] Update integration tests to use new options-based API
+- [x] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [x] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 ### Final Cleanup
-- [ ] Remove manual `cx.export_function` calls from `#[neon::main]`
-- [ ] Remove unused helper functions (if any)
-- [ ] Run full integration test suite
+- [x] Remove manual `cx.export_function` calls from `#[neon::main]`
+- [x] Remove unused helper functions (if any)
+- [x] Run full integration test suite
 - [ ] Update documentation and examples
 
 ## Migration Guide for Users

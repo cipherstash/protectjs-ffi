@@ -144,10 +144,9 @@ describe('encryptBulk and decryptBulk', async () => {
       ],
     })
 
-    const decrypted = await decryptBulkFallible(
-      client,
-      ciphertexts.map((c) => ({ ciphertext: c.c })),
-    )
+    const decrypted = await decryptBulkFallible(client, {
+      ciphertexts: ciphertexts.map((c) => ({ ciphertext: c.c })),
+    })
 
     expect(decrypted).toEqual([{ data: plaintextOne }, { data: plaintextTwo }])
   })
