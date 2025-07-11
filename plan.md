@@ -287,37 +287,49 @@ declare module './load.cjs' {
 - [ ] Define `NewClientOptions` struct
 - [ ] Replace `fn new_client(mut cx: FunctionContext)` with `#[neon::export(json)] async fn new_client(opts: NewClientOptions)`
 - [ ] Update TypeScript definitions
-- [ ] Test function works correctly
+- [ ] Update integration tests to use new options-based API
+- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### encrypt  
 - [ ] Define `EncryptOptions` struct
 - [ ] Replace `fn encrypt(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt(client: &Client, opts: EncryptOptions)`
 - [ ] Update TypeScript definitions
-- [ ] Test function works correctly
+- [ ] Update integration tests to use new options-based API
+- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### encryptBulk
 - [ ] Define `EncryptBulkOptions` struct  
 - [ ] Replace `fn encrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt_bulk(client: &Client, opts: EncryptBulkOptions)`
 - [ ] Update TypeScript definitions
-- [ ] Test function works correctly
+- [ ] Update integration tests to use new options-based API
+- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### decrypt
 - [ ] Define `DecryptOptions` struct
 - [ ] Replace `fn decrypt(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt(client: &Client, opts: DecryptOptions)`
-- [ ] Update TypeScript definitions  
-- [ ] Test function works correctly
+- [ ] Update TypeScript definitions
+- [ ] Update integration tests to use new options-based API
+- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### decryptBulk
 - [ ] Define `DecryptBulkOptions` struct
 - [ ] Replace `fn decrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk(client: &Client, opts: DecryptBulkOptions)`
 - [ ] Update TypeScript definitions
-- [ ] Test function works correctly
+- [ ] Update integration tests to use new options-based API
+- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### decryptBulkFallible
 - [ ] Define `DecryptBulkFallibleOptions` struct (or reuse `DecryptBulkOptions`)
 - [ ] Replace `fn decrypt_bulk_fallible(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk_fallible(client: &Client, opts: DecryptBulkFallibleOptions)`
 - [ ] Update TypeScript definitions
-- [ ] Test function works correctly
+- [ ] Update integration tests to use new options-based API
+- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 ### Final Cleanup
 - [ ] Remove manual `cx.export_function` calls from `#[neon::main]`
