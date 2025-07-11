@@ -343,26 +343,20 @@ async fn decrypt_inner(
     plaintext_str_from_bytes(decrypted)
 }
 
-fn decrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
-    let ciphertexts = ciphertexts_from_js_array(cx.argument::<JsArray>(1)?, &mut cx)?;
-    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
-
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-
-    rt.spawn(async move {
-        let plaintexts_result = decrypt_bulk_inner(client, ciphertexts, service_token).await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let plaintexts = plaintexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            js_array_from_string_vec(plaintexts, &mut cx)
-        });
-    });
-
-    Ok(promise)
+#[neon::export]
+async fn decrypt_bulk(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<DecryptBulkOptions>,
+) -> Result<Json<Vec<String>>, neon::types::extract::Error> {
+    let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
+    
+    for payload in opts.ciphertexts {
+        let lock_context = payload.lock_context.unwrap_or_default();
+        ciphertexts.push((payload.ciphertext, lock_context));
+    }
+    
+    let plaintexts = decrypt_bulk_inner(client, ciphertexts, opts.service_token).await?;
+    Ok(Json(plaintexts))
 }
 
 async fn decrypt_bulk_inner(
@@ -811,7 +805,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 
     neon::registered().export(&mut cx)?;
 
-    cx.export_function("decryptBulk", decrypt_bulk)?;
     cx.export_function("decryptBulkFallible", decrypt_bulk_fallible)?;
 
     Ok(())

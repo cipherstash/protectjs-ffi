@@ -84,10 +84,9 @@ describe('encryptBulk and decryptBulk', async () => {
       ],
     })
 
-    const decrypted = await decryptBulk(
-      client,
-      ciphertexts.map(({ c }) => ({ ciphertext: c })),
-    )
+    const decrypted = await decryptBulk(client, {
+      ciphertexts: ciphertexts.map(({ c }) => ({ ciphertext: c })),
+    })
 
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
   })
@@ -114,11 +113,13 @@ describe('encryptBulk and decryptBulk', async () => {
       serviceToken: undefined,
     })
 
-    const decrypted = await decryptBulk(
-      client,
-      ciphertexts.map(({ c }) => ({ ciphertext: c })),
-      undefined,
-    )
+    const decrypted = await decryptBulk(client, {
+      ciphertexts: ciphertexts.map(({ c }) => ({
+        ciphertext: c,
+        lockContext: undefined,
+      })),
+      serviceToken: undefined,
+    })
 
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
   })

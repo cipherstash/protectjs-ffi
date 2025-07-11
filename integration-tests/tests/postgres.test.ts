@@ -100,10 +100,9 @@ describe('postgres', async () => {
       ORDER BY eql_v2.order_by(encrypted_text) ASC
     `)
 
-    const decrypted = await decryptBulk(
-      protectClient,
-      res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
-    )
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
+    })
 
     expect(decrypted).toEqual(['aaa', 'bbb', 'ccc'])
   })
@@ -143,10 +142,9 @@ describe('postgres', async () => {
       [search],
     )
 
-    const decrypted = await decryptBulk(
-      protectClient,
-      res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
-    )
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
+    })
 
     expect(decrypted).toEqual(['aaa ccc'])
   })
@@ -186,10 +184,9 @@ describe('postgres', async () => {
       ],
     )
 
-    const decrypted = await decryptBulk(
-      protectClient,
-      res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
-    )
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
+    })
 
     expect(decrypted).toEqual(['b'])
   })

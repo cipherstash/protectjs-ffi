@@ -316,12 +316,12 @@ declare module './load.cjs' {
 - [x] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### decryptBulk
-- [ ] Define `DecryptBulkOptions` struct
-- [ ] Replace `fn decrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk(client: &Client, opts: DecryptBulkOptions)`
-- [ ] Update TypeScript definitions
-- [ ] Update integration tests to use new options-based API
-- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
-- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
+- [x] Define `DecryptBulkOptions` struct
+- [x] Replace `fn decrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk(client: &Client, opts: DecryptBulkOptions)`
+- [x] Update TypeScript definitions
+- [x] Update integration tests to use new options-based API
+- [x] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [x] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### decryptBulkFallible
 - [ ] Define `DecryptBulkFallibleOptions` struct (or reuse `DecryptBulkOptions`)
