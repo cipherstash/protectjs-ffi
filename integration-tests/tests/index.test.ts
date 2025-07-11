@@ -36,7 +36,7 @@ describe('encrypt and decrypt', async () => {
       table: 'users',
     })
 
-    const decrypted = await decrypt(client, ciphertext.c)
+    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
 
     expect(decrypted).toBe(originalPlaintext)
   })
@@ -53,7 +53,11 @@ describe('encrypt and decrypt', async () => {
       lockContext: undefined,
     })
 
-    const decrypted = await decrypt(client, ciphertext.c, undefined)
+    const decrypted = await decrypt(client, {
+      ciphertext: ciphertext.c,
+      lockContext: undefined,
+      serviceToken: undefined,
+    })
 
     expect(decrypted).toBe(originalPlaintext)
   })

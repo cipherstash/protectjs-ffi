@@ -26,9 +26,7 @@ declare module './load.cjs' {
   ): Promise<Encrypted>
   function decrypt(
     client: Client,
-    ciphertext: string,
-    context?: Context,
-    ctsToken?: CtsToken,
+    opts: DecryptOptions,
   ): Promise<string>
   function encryptBulk(
     client: Client,
@@ -48,19 +46,9 @@ declare module './load.cjs' {
 
 export function decrypt(
   client: Client,
-  ciphertext: string,
-  lockContext?: Context,
-  ctsToken?: CtsToken,
+  opts: DecryptOptions,
 ): Promise<string> {
-  if (ctsToken) {
-    return ffiDecrypt(client, ciphertext, lockContext, ctsToken)
-  }
-
-  if (lockContext) {
-    return ffiDecrypt(client, ciphertext, lockContext)
-  }
-
-  return ffiDecrypt(client, ciphertext)
+  return ffiDecrypt(client, opts)
 }
 
 export function decryptBulkFallible(
@@ -133,5 +121,11 @@ export type EncryptOptions = {
 
 export type EncryptBulkOptions = {
   plaintexts: EncryptPayload[]
+  serviceToken?: CtsToken
+}
+
+export type DecryptOptions = {
+  ciphertext: string
+  lockContext?: Context
   serviceToken?: CtsToken
 }
