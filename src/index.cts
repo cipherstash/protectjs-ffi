@@ -22,8 +22,7 @@ declare module './load.cjs' {
   function newClient(opts: NewClientOptions): Promise<Client>
   function encrypt(
     client: Client,
-    plaintext: EncryptPayload,
-    ctsToken?: CtsToken,
+    opts: EncryptOptions,
   ): Promise<Encrypted>
   function decrypt(
     client: Client,
@@ -123,4 +122,12 @@ export type ClientOpts = {
   accessKey?: string
   clientId?: string
   clientKey?: string
+}
+
+export type EncryptOptions = {
+  plaintext: string
+  column: string
+  table: string
+  lockContext?: Context
+  serviceToken?: CtsToken
 }

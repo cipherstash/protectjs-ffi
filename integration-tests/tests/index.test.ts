@@ -41,19 +41,17 @@ describe('encrypt and decrypt', async () => {
     expect(decrypted).toBe(originalPlaintext)
   })
 
-  test('can pass in undefined for ctsToken', async () => {
+  test('can explicitly pass in undefined for optional fields', async () => {
     const client = await newClient({ encryptConfig })
     const originalPlaintext = 'abc'
 
-    const ciphertext = await encrypt(
-      client,
-      {
-        plaintext: originalPlaintext,
-        column: 'email',
-        table: 'users',
-      },
-      undefined,
-    )
+    const ciphertext = await encrypt(client, {
+      plaintext: originalPlaintext,
+      column: 'email',
+      table: 'users',
+      serviceToken: undefined,
+      lockContext: undefined,
+    })
 
     const decrypted = await decrypt(client, ciphertext.c, undefined)
 

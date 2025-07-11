@@ -83,8 +83,8 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     // Register the global runtime with Neon for async fn support
     let runtime = RUNTIME.get_or_try_init(|| Runtime::new())?;
     neon::set_global_executor(runtime.handle().clone())?;
-    
-    // No need to manually export functions anymore - 
+
+    // No need to manually export functions anymore -
     // #[neon::export] will handle this automatically
     Ok(())
 }
@@ -168,9 +168,9 @@ async fn encrypt_bulk(client: &Client, opts: EncryptBulkOptions) -> Result<Vec<E
 #[neon::export(json)]
 async fn decrypt(client: &Client, opts: DecryptOptions) -> Result<String, Error> {
     decrypt_inner(
-        client.clone(), 
-        opts.ciphertext, 
-        opts.lock_context.unwrap_or_default(), 
+        client.clone(),
+        opts.ciphertext,
+        opts.lock_context.unwrap_or_default(),
         opts.service_token
     ).await
 }
@@ -278,29 +278,29 @@ declare module './load.cjs' {
 ## Function-by-Function Implementation Checklist
 
 ### Setup (Do Once)
-- [ ] Register global Tokio runtime in `#[neon::main]` function
-- [ ] Define all option structs with serde derives
+- [x] Register global Tokio runtime in `#[neon::main]` function
+- [x] Define all option structs with serde derives
 
 ### Individual Function Updates
 
 #### newClient
-- [ ] Define `NewClientOptions` struct
-- [ ] Replace `fn new_client(mut cx: FunctionContext)` with `#[neon::export(json)] async fn new_client(opts: NewClientOptions)`
-- [ ] Update TypeScript definitions
-- [ ] Update integration tests to use new options-based API
-- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
-- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
+- [x] Define `NewClientOptions` struct
+- [x] Replace `fn new_client(mut cx: FunctionContext)` with `#[neon::export(json)] async fn new_client(opts: NewClientOptions)`
+- [x] Update TypeScript definitions
+- [x] Update integration tests to use new options-based API
+- [x] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [x] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
-#### encrypt  
-- [ ] Define `EncryptOptions` struct
-- [ ] Replace `fn encrypt(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt(client: &Client, opts: EncryptOptions)`
-- [ ] Update TypeScript definitions
-- [ ] Update integration tests to use new options-based API
-- [ ] Run `npm run debug` to verify Rust and TypeScript compile successfully
-- [ ] Run `npm test` in `./integration-tests` to verify behavior works correctly
+#### encrypt
+- [x] Define `EncryptOptions` struct
+- [x] Replace `fn encrypt(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt(client: &Client, opts: EncryptOptions)`
+- [x] Update TypeScript definitions
+- [x] Update integration tests to use new options-based API
+- [x] Run `npm run debug` to verify Rust and TypeScript compile successfully
+- [x] Run `npm test` in `./integration-tests` to verify behavior works correctly
 
 #### encryptBulk
-- [ ] Define `EncryptBulkOptions` struct  
+- [ ] Define `EncryptBulkOptions` struct
 - [ ] Replace `fn encrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt_bulk(client: &Client, opts: EncryptBulkOptions)`
 - [ ] Update TypeScript definitions
 - [ ] Update integration tests to use new options-based API
@@ -344,15 +344,15 @@ declare module './load.cjs' {
 const client = await newClient(encryptConfig, clientOptsJson);
 const result = await encrypt(client, { plaintext: "data", column: "col", table: "table" });
 
-// New API  
-const client = await newClient({ 
-  encryptConfig, 
-  clientOpts: JSON.parse(clientOptsJson) 
+// New API
+const client = await newClient({
+  encryptConfig,
+  clientOpts: JSON.parse(clientOptsJson)
 });
-const result = await encrypt(client, { 
-  plaintext: "data", 
-  column: "col", 
-  table: "table" 
+const result = await encrypt(client, {
+  plaintext: "data",
+  column: "col",
+  table: "table"
 });
 ```
 

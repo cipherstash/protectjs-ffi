@@ -215,44 +215,22 @@ async fn new_client_inner(
     })
 }
 
-fn encrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
-    let (plaintext_target, ident) = plaintext_target_from_js_object(
-        cx.argument::<JsObject>(1)?,
-        &client.encrypt_config,
-        &mut cx,
-    )?;
-    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+#[neon::export]
+async fn encrypt(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<EncryptOptions>,
+) -> Result<Json<Encrypted>, neon::types::extract::Error> {
+    let ident = Identifier::new(opts.table, opts.column);
+    
+    let column_config = client.encrypt_config
+        .get(&ident)
+        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
+    let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
+    plaintext_target.context = opts.lock_context.unwrap_or_default();
 
-    // Create a JavaScript promise and a `deferred` handle for resolving it.
-    // It is important to be careful not to perform failable actions after
-    // creating the promise to avoid an unhandled rejection.
-    let (deferred, promise) = cx.promise();
-
-    // Spawn an `async` task on the tokio runtime. Only Rust types that are
-    // `Send` may be moved into this block. `Context` may not be passed and all
-    // JavaScript values must first be converted to Rust types.
-    //
-    // This task will _not_ block the JavaScript main thread.
-    rt.spawn(async move {
-        let ciphertext_result = encrypt_inner(client, plaintext_target, ident, service_token).await;
-
-        // Settle the promise from the result of a closure. JavaScript exceptions
-        // will be converted to a Promise rejection.
-        //
-        // This closure will execute on the JavaScript main thread. It should be
-        // limited to converting Rust types to JavaScript values. Expensive operations
-        // should be performed outside of it.
-        deferred.settle_with(&channel, move |mut cx| {
-            let ciphertext = ciphertext_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            eql_encrypted_to_js(ciphertext, &mut cx)
-        });
-    });
-
-    Ok(promise)
+    let encrypted = encrypt_inner(client, plaintext_target, ident, opts.service_token).await?;
+    Ok(Json(encrypted))
 }
 
 async fn encrypt_inner(
@@ -849,7 +827,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 
     neon::registered().export(&mut cx)?;
 
-    cx.export_function("encrypt", encrypt)?;
     cx.export_function("encryptBulk", encrypt_bulk)?;
     cx.export_function("decrypt", decrypt)?;
     cx.export_function("decryptBulk", decrypt_bulk)?;
