@@ -18,14 +18,8 @@ export type Client = { readonly [sym]: unknown }
 // which otherwise default to `any`.
 declare module './load.cjs' {
   function newClient(opts: NewClientOptions): Promise<Client>
-  function encrypt(
-    client: Client,
-    opts: EncryptOptions,
-  ): Promise<Encrypted>
-  function decrypt(
-    client: Client,
-    opts: DecryptOptions,
-  ): Promise<string>
+  function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
+  function decrypt(client: Client, opts: DecryptOptions): Promise<string>
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,

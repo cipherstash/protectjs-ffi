@@ -64,7 +64,9 @@ describe('postgres', async () => {
 
     expect(res.rowCount).toBe(1)
 
-    const decrypted = await decrypt(protectClient, { ciphertext: res.rows[0].encrypted_text.c })
+    const decrypted = await decrypt(protectClient, {
+      ciphertext: res.rows[0].encrypted_text.c,
+    })
 
     expect(decrypted).toBe(originalPlaintext)
   })
@@ -101,7 +103,9 @@ describe('postgres', async () => {
     `)
 
     const decrypted = await decryptBulk(protectClient, {
-      ciphertexts: res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_text.c,
+      })),
     })
 
     expect(decrypted).toEqual(['aaa', 'bbb', 'ccc'])
@@ -143,7 +147,9 @@ describe('postgres', async () => {
     )
 
     const decrypted = await decryptBulk(protectClient, {
-      ciphertexts: res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_text.c,
+      })),
     })
 
     expect(decrypted).toEqual(['aaa ccc'])
@@ -185,7 +191,9 @@ describe('postgres', async () => {
     )
 
     const decrypted = await decryptBulk(protectClient, {
-      ciphertexts: res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_text.c,
+      })),
     })
 
     expect(decrypted).toEqual(['b'])
