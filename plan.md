@@ -275,12 +275,55 @@ declare module './load.cjs' {
 4. **Performance**: Additional serialization/deserialization overhead
 5. **Error Handling**: Need to adapt error types for new patterns
 
-## Implementation Timeline
+## Function-by-Function Implementation Checklist
 
-- **Week 1**: Phase 1-2 (Preparation and Options Structures)
-- **Week 2**: Phase 3-4 (Function Refactoring and Client Management)  
-- **Week 3**: Phase 5-6 (TypeScript Updates and Compatibility)
-- **Week 4**: Phase 7 (Testing and Validation)
+### Setup (Do Once)
+- [ ] Register global Tokio runtime in `#[neon::main]` function
+- [ ] Define all option structs with serde derives
+
+### Individual Function Updates
+
+#### newClient
+- [ ] Define `NewClientOptions` struct
+- [ ] Replace `fn new_client(mut cx: FunctionContext)` with `#[neon::export(json)] async fn new_client(opts: NewClientOptions)`
+- [ ] Update TypeScript definitions
+- [ ] Test function works correctly
+
+#### encrypt  
+- [ ] Define `EncryptOptions` struct
+- [ ] Replace `fn encrypt(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt(client: &Client, opts: EncryptOptions)`
+- [ ] Update TypeScript definitions
+- [ ] Test function works correctly
+
+#### encryptBulk
+- [ ] Define `EncryptBulkOptions` struct  
+- [ ] Replace `fn encrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn encrypt_bulk(client: &Client, opts: EncryptBulkOptions)`
+- [ ] Update TypeScript definitions
+- [ ] Test function works correctly
+
+#### decrypt
+- [ ] Define `DecryptOptions` struct
+- [ ] Replace `fn decrypt(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt(client: &Client, opts: DecryptOptions)`
+- [ ] Update TypeScript definitions  
+- [ ] Test function works correctly
+
+#### decryptBulk
+- [ ] Define `DecryptBulkOptions` struct
+- [ ] Replace `fn decrypt_bulk(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk(client: &Client, opts: DecryptBulkOptions)`
+- [ ] Update TypeScript definitions
+- [ ] Test function works correctly
+
+#### decryptBulkFallible
+- [ ] Define `DecryptBulkFallibleOptions` struct (or reuse `DecryptBulkOptions`)
+- [ ] Replace `fn decrypt_bulk_fallible(mut cx: FunctionContext)` with `#[neon::export(json)] async fn decrypt_bulk_fallible(client: &Client, opts: DecryptBulkFallibleOptions)`
+- [ ] Update TypeScript definitions
+- [ ] Test function works correctly
+
+### Final Cleanup
+- [ ] Remove manual `cx.export_function` calls from `#[neon::main]`
+- [ ] Remove unused helper functions (if any)
+- [ ] Run full integration test suite
+- [ ] Update documentation and examples
 
 ## Migration Guide for Users
 
