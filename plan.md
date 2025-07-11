@@ -50,11 +50,10 @@ struct NewClientOptions {
 }
 ```
 
-#### 2.2 Encryption Options
+#### 2.2 Encryption Options (No Client - Passed Separately)
 ```rust
 #[derive(Debug, Deserialize)]
 struct EncryptOptions {
-    client: String, // Will need to handle Client reference differently
     plaintext: String,
     column: String,
     table: String,
@@ -64,17 +63,15 @@ struct EncryptOptions {
 
 #[derive(Debug, Deserialize)]
 struct EncryptBulkOptions {
-    client: String,
     plaintexts: Vec<PlaintextPayload>,
     service_token: Option<ServiceToken>,
 }
 ```
 
-#### 2.3 Decryption Options
+#### 2.3 Decryption Options (No Client - Passed Separately)
 ```rust
 #[derive(Debug, Deserialize)]
 struct DecryptOptions {
-    client: String,
     ciphertext: String,
     lock_context: Option<EncryptionContext>,
     service_token: Option<ServiceToken>,
@@ -82,7 +79,6 @@ struct DecryptOptions {
 
 #[derive(Debug, Deserialize)]
 struct DecryptBulkOptions {
-    client: String,
     ciphertexts: Vec<BulkDecryptPayload>,
     service_token: Option<ServiceToken>,
 }
@@ -92,71 +88,64 @@ struct DecryptBulkOptions {
 
 #### 3.1 New Client Function
 ```rust
-#[neon::export(task)]
+#[neon::export(task, json)]
 async fn new_client(opts: NewClientOptions) -> Result<Client, Error> {
-    // Implementation using opts.encrypt_config and opts.client_opts
+    new_client_inner(opts.encrypt_config, opts.client_opts).await
 }
 ```
 
-#### 3.2 Encryption Functions
+#### 3.2 Encryption Functions (Client + Options Pattern)
 ```rust
-#[neon::export(task)]
-async fn encrypt(opts: EncryptOptions) -> Result<Encrypted, Error> {
-    // Implementation using options object
+#[neon::export(task, json)]
+async fn encrypt(client: &Client, opts: EncryptOptions) -> Result<Encrypted, Error> {
+    let plaintext_target = PlaintextTarget::new(
+        opts.plaintext,
+        // Get column config from client.encrypt_config
+    );
+    encrypt_inner(client.clone(), plaintext_target, ident, opts.service_token).await
 }
 
-#[neon::export(task)]
-async fn encrypt_bulk(opts: EncryptBulkOptions) -> Result<Vec<Encrypted>, Error> {
-    // Implementation using options object
+#[neon::export(task, json)]
+async fn encrypt_bulk(client: &Client, opts: EncryptBulkOptions) -> Result<Vec<Encrypted>, Error> {
+    // Convert opts.plaintexts to Vec<(PlaintextTarget, Identifier)>
+    encrypt_bulk_inner(client.clone(), plaintext_targets, opts.service_token).await
 }
 ```
 
-#### 3.3 Decryption Functions
+#### 3.3 Decryption Functions (Client + Options Pattern)
 ```rust
-#[neon::export(task)]
-async fn decrypt(opts: DecryptOptions) -> Result<String, Error> {
-    // Implementation using options object
+#[neon::export(task, json)]
+async fn decrypt(client: &Client, opts: DecryptOptions) -> Result<String, Error> {
+    decrypt_inner(
+        client.clone(), 
+        opts.ciphertext, 
+        opts.lock_context.unwrap_or_default(), 
+        opts.service_token
+    ).await
 }
 
-#[neon::export(task)]
-async fn decrypt_bulk(opts: DecryptBulkOptions) -> Result<Vec<String>, Error> {
-    // Implementation using options object
+#[neon::export(task, json)]
+async fn decrypt_bulk(client: &Client, opts: DecryptBulkOptions) -> Result<Vec<String>, Error> {
+    decrypt_bulk_inner(client.clone(), opts.ciphertexts, opts.service_token).await
 }
 
-#[neon::export(task)]
-async fn decrypt_bulk_fallible(opts: DecryptBulkOptions) -> Result<Vec<Result<String, Error>>, Error> {
-    // Implementation using options object
-}
-```
-
-### Phase 4: Handle Client Reference Management
-
-**Challenge**: The current implementation passes `Box<Client>` directly. With options objects, we need an alternative approach.
-
-**Solutions**:
-1. **Client ID Approach**: Store clients in a global registry with IDs
-2. **Serialization Approach**: Serialize client state (if feasible)
-3. **Hybrid Approach**: Keep some functions with direct client parameter
-
-**Recommended**: Client ID approach using a global concurrent HashMap:
-
-```rust
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use uuid::Uuid;
-
-static CLIENT_REGISTRY: Lazy<Arc<Mutex<HashMap<String, Client>>>> = 
-    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
-
-#[neon::export(task)]
-async fn new_client(opts: NewClientOptions) -> Result<String, Error> {
-    let client = new_client_inner(opts.encrypt_config, opts.client_opts).await?;
-    let client_id = Uuid::new_v4().to_string();
-    
-    CLIENT_REGISTRY.lock().unwrap().insert(client_id.clone(), client);
-    Ok(client_id)
+#[neon::export(task, json)]
+async fn decrypt_bulk_fallible(client: &Client, opts: DecryptBulkOptions) -> Result<Vec<Result<String, Error>>, Error> {
+    decrypt_bulk_fallible_inner(client.clone(), opts.ciphertexts, opts.service_token).await
 }
 ```
+
+### Phase 4: Client Reference Management (Simplified)
+
+**Solution**: Keep `Box<Client>` as the first parameter, eliminating the need for client registries.
+
+**Benefits**:
+- No complex client lifecycle management
+- Direct memory management by Neon
+- Maintains existing performance characteristics
+- Simpler implementation
+
+**Implementation**: The `#[neon::export]` macro can handle `Box<Client>` references directly, so we keep the current client management approach while only changing the options structure.
 
 ### Phase 5: Update TypeScript Definitions
 
@@ -169,7 +158,6 @@ interface NewClientOptions {
 }
 
 interface EncryptOptions {
-  clientId: string;
   plaintext: string;
   column: string;
   table: string;
@@ -177,7 +165,31 @@ interface EncryptOptions {
   serviceToken?: CtsToken;
 }
 
-// ... similar for other options
+interface EncryptBulkOptions {
+  plaintexts: EncryptPayload[];
+  serviceToken?: CtsToken;
+}
+
+interface DecryptOptions {
+  ciphertext: string;
+  lockContext?: Context;
+  serviceToken?: CtsToken;
+}
+
+interface DecryptBulkOptions {
+  ciphertexts: BulkDecryptPayload[];
+  serviceToken?: CtsToken;
+}
+
+// Updated function signatures
+declare module './load.cjs' {
+  function newClient(opts: NewClientOptions): Promise<Client>
+  function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
+  function encryptBulk(client: Client, opts: EncryptBulkOptions): Promise<Encrypted[]>
+  function decrypt(client: Client, opts: DecryptOptions): Promise<string>
+  function decryptBulk(client: Client, opts: DecryptBulkOptions): Promise<string[]>
+  function decryptBulkFallible(client: Client, opts: DecryptBulkOptions): Promise<DecryptResult[]>
+}
 ```
 
 ### Phase 6: Backward Compatibility
@@ -227,12 +239,11 @@ const client = await newClient(encryptConfig, clientOptsJson);
 const result = await encrypt(client, { plaintext: "data", column: "col", table: "table" });
 
 // New API  
-const clientId = await newClient({ 
+const client = await newClient({ 
   encryptConfig, 
   clientOpts: JSON.parse(clientOptsJson) 
 });
-const result = await encrypt({ 
-  clientId, 
+const result = await encrypt(client, { 
   plaintext: "data", 
   column: "col", 
   table: "table" 
