@@ -70,23 +70,25 @@ describe('postgres', async () => {
   })
 
   test('can order by an ORE index', async () => {
-    const ciphertexts = await encryptBulk(protectClient, [
-      {
-        plaintext: 'ccc',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'aaa',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'bbb',
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'ccc',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'aaa',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'bbb',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
@@ -107,18 +109,20 @@ describe('postgres', async () => {
   })
 
   test('can use a match query', async () => {
-    const ciphertexts = await encryptBulk(protectClient, [
-      {
-        plaintext: 'aaa bbb',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'aaa ccc',
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'aaa bbb',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'aaa ccc',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb)',
@@ -148,18 +152,20 @@ describe('postgres', async () => {
   })
 
   test('can use an exact query', async () => {
-    const ciphertexts = await encryptBulk(protectClient, [
-      {
-        plaintext: 'a',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'b',
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'a',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'b',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb)',

@@ -32,8 +32,7 @@ declare module './load.cjs' {
   ): Promise<string>
   function encryptBulk(
     client: Client,
-    plaintextTargets: EncryptPayload[],
-    ctsToken?: CtsToken,
+    opts: EncryptBulkOptions,
   ): Promise<Encrypted[]>
   function decryptBulk(
     client: Client,
@@ -129,5 +128,10 @@ export type EncryptOptions = {
   column: string
   table: string
   lockContext?: Context
+  serviceToken?: CtsToken
+}
+
+export type EncryptBulkOptions = {
+  plaintexts: EncryptPayload[]
   serviceToken?: CtsToken
 }

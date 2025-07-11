@@ -254,30 +254,28 @@ async fn encrypt_inner(
     to_eql_encrypted(encrypted, &ident)
 }
 
-fn encrypt_bulk(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let client = (**cx.argument::<JsBox<Client>>(0)?).clone();
-    let plaintext_targets = plaintext_targets_from_js_array(
-        client.encrypt_config.clone(),
-        cx.argument::<JsArray>(1)?,
-        &mut cx,
-    )?;
-    let service_token = service_token_from_js_value(cx.argument_opt(2), &mut cx)?;
+#[neon::export]
+async fn encrypt_bulk(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<EncryptBulkOptions>,
+) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
+    let mut plaintext_targets = Vec::with_capacity(opts.plaintexts.len());
+    
+    for payload in opts.plaintexts {
+        let ident = Identifier::new(payload.table, payload.column);
+        
+        let column_config = client.encrypt_config
+            .get(&ident)
+            .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-
-    rt.spawn(async move {
-        let ciphertexts_result = encrypt_bulk_inner(client, plaintext_targets, service_token).await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let ciphertexts = ciphertexts_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            js_array_from_eql_encrypted_vec(ciphertexts, &mut cx)
-        });
-    });
-
-    Ok(promise)
+        let mut plaintext_target = PlaintextTarget::new(payload.plaintext, column_config.clone());
+        plaintext_target.context = payload.lock_context.unwrap_or_default();
+        
+        plaintext_targets.push((plaintext_target, ident));
+    }
+    
+    let encrypted_vec = encrypt_bulk_inner(client, plaintext_targets, opts.service_token).await?;
+    Ok(Json(encrypted_vec))
 }
 
 async fn encrypt_bulk_inner(
@@ -827,7 +825,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 
     neon::registered().export(&mut cx)?;
 
-    cx.export_function("encryptBulk", encrypt_bulk)?;
     cx.export_function("decrypt", decrypt)?;
     cx.export_function("decryptBulk", decrypt_bulk)?;
     cx.export_function("decryptBulkFallible", decrypt_bulk_fallible)?;

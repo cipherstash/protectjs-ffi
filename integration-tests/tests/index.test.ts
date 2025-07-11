@@ -65,35 +65,8 @@ describe('encryptBulk and decryptBulk', async () => {
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 
-    const ciphertexts = await encryptBulk(client, [
-      {
-        plaintext: plaintextOne,
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: plaintextTwo,
-        column: 'email',
-        table: 'users',
-      },
-    ])
-
-    const decrypted = await decryptBulk(
-      client,
-      ciphertexts.map(({ c }) => ({ ciphertext: c })),
-    )
-
-    expect(decrypted).toEqual([plaintextOne, plaintextTwo])
-  })
-
-  test('can pass in undefined for ctsToken', async () => {
-    const client = await newClient({ encryptConfig })
-    const plaintextOne = 'abc'
-    const plaintextTwo = 'def'
-
-    const ciphertexts = await encryptBulk(
-      client,
-      [
+    const ciphertexts = await encryptBulk(client, {
+      plaintexts: [
         {
           plaintext: plaintextOne,
           column: 'email',
@@ -105,8 +78,37 @@ describe('encryptBulk and decryptBulk', async () => {
           table: 'users',
         },
       ],
-      undefined,
+    })
+
+    const decrypted = await decryptBulk(
+      client,
+      ciphertexts.map(({ c }) => ({ ciphertext: c })),
     )
+
+    expect(decrypted).toEqual([plaintextOne, plaintextTwo])
+  })
+
+  test('can pass in undefined for optional fields', async () => {
+    const client = await newClient({ encryptConfig })
+    const plaintextOne = 'abc'
+    const plaintextTwo = 'def'
+
+    const ciphertexts = await encryptBulk(client, {
+      plaintexts: [
+        {
+          plaintext: plaintextOne,
+          column: 'email',
+          table: 'users',
+          lockContext: undefined,
+        },
+        {
+          plaintext: plaintextTwo,
+          column: 'email',
+          table: 'users',
+        },
+      ],
+      serviceToken: undefined,
+    })
 
     const decrypted = await decryptBulk(
       client,
@@ -122,18 +124,20 @@ describe('encryptBulk and decryptBulk', async () => {
     const plaintextOne = 'abc'
     const plaintextTwo = 'def'
 
-    const ciphertexts = await encryptBulk(client, [
-      {
-        plaintext: plaintextOne,
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: plaintextTwo,
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(client, {
+      plaintexts: [
+        {
+          plaintext: plaintextOne,
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: plaintextTwo,
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     const decrypted = await decryptBulkFallible(
       client,
