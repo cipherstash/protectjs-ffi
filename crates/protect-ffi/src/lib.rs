@@ -98,7 +98,7 @@ pub enum Error {
 
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Deserialize, Default)]
 struct ClientOpts {
     workspace_crn: Option<Crn>,
     access_key: Option<String>,
@@ -106,8 +106,7 @@ struct ClientOpts {
     client_key: Option<String>,
 }
 
-// Option structs for the new export macro-based functions
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewClientOptions {
     encrypt_config: String,
@@ -122,45 +121,66 @@ enum DecryptResult {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EncryptOptions {
     plaintext: String,
     column: String,
     table: String,
-    lock_context: Option<Vec<zerokms::Context>>,
+    lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EncryptBulkOptions {
     plaintexts: Vec<PlaintextPayload>,
     service_token: Option<ServiceToken>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PlaintextPayload {
     plaintext: String,
     column: String,
     table: String,
-    lock_context: Option<Vec<zerokms::Context>>,
+    lock_context: Option<LockContext>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DecryptOptions {
     ciphertext: String,
-    lock_context: Option<Vec<zerokms::Context>>,
+    lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DecryptBulkOptions {
     ciphertexts: Vec<BulkDecryptPayload>,
     service_token: Option<ServiceToken>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BulkDecryptPayload {
     ciphertext: String,
-    lock_context: Option<Vec<zerokms::Context>>,
+    lock_context: Option<LockContext>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LockContext {
+    identity_claim: Vec<String>,
+}
+
+impl Into<Vec<zerokms::Context>> for LockContext {
+    fn into(self) -> Vec<zerokms::Context> {
+        self.identity_claim
+            .into_iter()
+            .map(|claim| zerokms::Context::IdentityClaim(claim))
+            .collect()
+    }
 }
 
 #[neon::export]
@@ -235,7 +255,7 @@ async fn encrypt(
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
     let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
-    plaintext_target.context = opts.lock_context.unwrap_or_default();
+    plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
 
     let encrypted = encrypt_inner(client, plaintext_target, ident, opts.service_token).await?;
     Ok(Json(encrypted))
@@ -278,7 +298,7 @@ async fn encrypt_bulk(
             .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
         let mut plaintext_target = PlaintextTarget::new(payload.plaintext, column_config.clone());
-        plaintext_target.context = payload.lock_context.unwrap_or_default();
+        plaintext_target.context = payload.lock_context.map(Into::into).unwrap_or_default();
 
         plaintext_targets.push((plaintext_target, ident));
     }
@@ -331,7 +351,7 @@ async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
 ) -> Result<String, neon::types::extract::Error> {
-    let lock_context = opts.lock_context.unwrap_or_default();
+    let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
     let plaintext =
         decrypt_inner(client, opts.ciphertext, lock_context, opts.service_token).await?;
     Ok(plaintext)
@@ -361,7 +381,7 @@ async fn decrypt_bulk(
     let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
 
     for payload in opts.ciphertexts {
-        let lock_context = payload.lock_context.unwrap_or_default();
+        let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
         ciphertexts.push((payload.ciphertext, lock_context));
     }
 
@@ -404,13 +424,12 @@ async fn decrypt_bulk_fallible(
     let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
 
     for payload in opts.ciphertexts {
-        let lock_context = payload.lock_context.unwrap_or_default();
+        let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
         ciphertexts.push((payload.ciphertext, lock_context));
     }
 
     let results = decrypt_bulk_fallible_inner(client, ciphertexts, opts.service_token).await?;
 
-    // Convert Result<String, Error> to DecryptResult enum for TypeScript compatibility
     let json_results: Vec<DecryptResult> = results
         .into_iter()
         .map(|result| match result {
