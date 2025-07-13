@@ -61,6 +61,42 @@ describe('encrypt and decrypt', async () => {
 
     expect(decrypted).toBe(originalPlaintext)
   })
+
+  test('encrypt throws an error when identityClaim is used without a service token', async () => {
+    const client = await newClient({ encryptConfig })
+    const originalPlaintext = 'abc'
+
+    await expect(async () => {
+      await encrypt(client, {
+        plaintext: originalPlaintext,
+        column: 'email',
+        table: 'users',
+        lockContext: {
+          identityClaim: ['sub'],
+        },
+      })
+    }).rejects.toThrowError(/Failed to send request/)
+  })
+
+  test('decrypt throws an error when identityClaim is used without a service token', async () => {
+    const client = await newClient({ encryptConfig })
+    const originalPlaintext = 'abc'
+
+    const ciphertext = await encrypt(client, {
+      plaintext: originalPlaintext,
+      column: 'email',
+      table: 'users',
+    })
+
+    await expect(async () => {
+      await decrypt(client, {
+        ciphertext: ciphertext.c,
+        lockContext: {
+          identityClaim: ['sub'],
+        },
+      })
+    }).rejects.toThrowError(/Failed to send request/)
+  })
 })
 
 describe('encryptBulk and decryptBulk', async () => {
@@ -149,5 +185,49 @@ describe('encryptBulk and decryptBulk', async () => {
     })
 
     expect(decrypted).toEqual([{ data: plaintextOne }, { data: plaintextTwo }])
+  })
+
+  test('encryptBulk throws an errow when identityClaim is used without a service token', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(async () => {
+      await encryptBulk(client, {
+        plaintexts: [
+          {
+            plaintext: 'abc',
+            column: 'email',
+            table: 'users',
+            lockContext: {
+              identityClaim: ['sub'],
+            },
+          },
+        ],
+      })
+    }).rejects.toThrowError(/Failed to send request/)
+  })
+
+  test('decryptBulk throws an errow when identityClaim is used without a service token', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const ciphertexts = await encryptBulk(client, {
+      plaintexts: [
+        {
+          plaintext: 'abc',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
+
+    await expect(async () => {
+      await decryptBulk(client, {
+        ciphertexts: ciphertexts.map(({ c }) => ({
+          ciphertext: c,
+          lockContext: {
+            identityClaim: ['sub'],
+          },
+        })),
+      })
+    }).rejects.toThrowError(/Failed to send request/)
   })
 })
