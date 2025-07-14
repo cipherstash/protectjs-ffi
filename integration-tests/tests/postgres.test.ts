@@ -10,7 +10,7 @@ import {
 import { Client } from 'pg'
 
 describe('postgres', async () => {
-  const protectClient = await newClient(encryptConfig())
+  const protectClient = await newClient({ encryptConfig: encryptConfig() })
   const pg = new Client()
   await pg.connect()
 
@@ -64,29 +64,33 @@ describe('postgres', async () => {
 
     expect(res.rowCount).toBe(1)
 
-    const decrypted = await decrypt(protectClient, res.rows[0].encrypted_text.c)
+    const decrypted = await decrypt(protectClient, {
+      ciphertext: res.rows[0].encrypted_text.c,
+    })
 
     expect(decrypted).toBe(originalPlaintext)
   })
 
   test('can order by an ORE index', async () => {
-    const ciphertexts = await encryptBulk(protectClient, [
-      {
-        plaintext: 'ccc',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'aaa',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'bbb',
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'ccc',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'aaa',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'bbb',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
@@ -98,27 +102,30 @@ describe('postgres', async () => {
       ORDER BY eql_v2.order_by(encrypted_text) ASC
     `)
 
-    const decrypted = await decryptBulk(
-      protectClient,
-      res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
-    )
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_text.c,
+      })),
+    })
 
     expect(decrypted).toEqual(['aaa', 'bbb', 'ccc'])
   })
 
   test('can use a match query', async () => {
-    const ciphertexts = await encryptBulk(protectClient, [
-      {
-        plaintext: 'aaa bbb',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'aaa ccc',
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'aaa bbb',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'aaa ccc',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb)',
@@ -139,27 +146,30 @@ describe('postgres', async () => {
       [search],
     )
 
-    const decrypted = await decryptBulk(
-      protectClient,
-      res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
-    )
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_text.c,
+      })),
+    })
 
     expect(decrypted).toEqual(['aaa ccc'])
   })
 
   test('can use an exact query', async () => {
-    const ciphertexts = await encryptBulk(protectClient, [
-      {
-        plaintext: 'a',
-        column: 'email',
-        table: 'users',
-      },
-      {
-        plaintext: 'b',
-        column: 'email',
-        table: 'users',
-      },
-    ])
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'a',
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: 'b',
+          column: 'email',
+          table: 'users',
+        },
+      ],
+    })
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_text) VALUES ($1::jsonb), ($2::jsonb)',
@@ -180,17 +190,18 @@ describe('postgres', async () => {
       ],
     )
 
-    const decrypted = await decryptBulk(
-      protectClient,
-      res.rows.map((row) => ({ ciphertext: row.encrypted_text.c })),
-    )
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_text.c,
+      })),
+    })
 
     expect(decrypted).toEqual(['b'])
   })
 })
 
 function encryptConfig() {
-  return JSON.stringify({
+  return {
     v: 1,
     tables: {
       users: {
@@ -199,12 +210,12 @@ function encryptConfig() {
             ore: {},
             match: {
               tokenizer: {
-                kind: 'ngram',
+                kind: 'ngram' as const,
                 token_length: 3,
               },
               token_filters: [
                 {
-                  kind: 'downcase',
+                  kind: 'downcase' as const,
                 },
               ],
               k: 6,
@@ -216,5 +227,5 @@ function encryptConfig() {
         },
       },
     },
-  })
+  }
 }
