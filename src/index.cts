@@ -140,20 +140,24 @@ export type EncryptOptions = {
   table: string
   lockContext?: Context
   serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
 }
 
 export type EncryptBulkOptions = {
   plaintexts: EncryptPayload[]
   serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
 }
 
 export type DecryptOptions = {
   ciphertext: string
   lockContext?: Context
   serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
 }
 
 export type DecryptBulkOptions = {
   ciphertexts: BulkDecryptPayload[]
   serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
 }

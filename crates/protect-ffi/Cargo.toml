@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cipherstash-client = "0.23.0"
+cipherstash-client = "0.24.0"
 cts-common = { version = "0.3.0", default-features = false }
 hex = "0.4.3"
 neon = {version = "1", features = ["serde", "tokio"] }

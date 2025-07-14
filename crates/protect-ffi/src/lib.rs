@@ -11,6 +11,7 @@ use cipherstash_client::{
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
+    UnverifiedContext,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -121,6 +122,7 @@ struct EncryptOptions {
     table: String,
     lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 }
 
 #[derive(Deserialize)]
@@ -128,6 +130,7 @@ struct EncryptOptions {
 struct EncryptBulkOptions {
     plaintexts: Vec<PlaintextPayload>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +148,7 @@ struct DecryptOptions {
     ciphertext: String,
     lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 }
 
 #[derive(Deserialize)]
@@ -152,6 +156,7 @@ struct DecryptOptions {
 struct DecryptBulkOptions {
     ciphertexts: Vec<BulkDecryptPayload>,
     service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
 }
 
 #[derive(Deserialize)]
@@ -246,7 +251,9 @@ async fn encrypt(
 
     pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, 0)?;
 
-    let mut source_encrypted = pipeline.encrypt(opts.service_token).await?;
+    let mut source_encrypted = pipeline
+        .encrypt(opts.service_token, opts.unverified_context)
+        .await?;
 
     let encrypted = source_encrypted.remove(0).ok_or_else(|| {
         Error::InvariantViolation(
@@ -290,7 +297,9 @@ async fn encrypt_bulk(
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
 
-    let mut source_encrypted = pipeline.encrypt(opts.service_token).await?;
+    let mut source_encrypted = pipeline
+        .encrypt(opts.service_token, opts.unverified_context)
+        .await?;
 
     let mut results: Vec<Encrypted> = Vec::with_capacity(len);
 
@@ -325,7 +334,11 @@ async fn decrypt(
 
     let decrypted = client
         .zerokms
-        .decrypt_single(encrypted_record, opts.service_token)
+        .decrypt_single(
+            encrypted_record,
+            opts.service_token,
+            opts.unverified_context,
+        )
         .await?;
 
     Ok(plaintext_str_from_bytes(decrypted)?)
@@ -354,7 +367,11 @@ async fn decrypt_bulk(
 
     let decrypted = client
         .zerokms
-        .decrypt(encrypted_records, opts.service_token)
+        .decrypt(
+            encrypted_records,
+            opts.service_token,
+            opts.unverified_context,
+        )
         .await?;
 
     let plaintexts = decrypted
@@ -390,7 +407,11 @@ async fn decrypt_bulk_fallible(
 
     let decrypted = client
         .zerokms
-        .decrypt_fallible(encrypted_records, opts.service_token)
+        .decrypt_fallible(
+            encrypted_records,
+            opts.service_token,
+            opts.unverified_context,
+        )
         .await?;
 
     let plaintexts: Vec<Result<String, Error>> = decrypted
