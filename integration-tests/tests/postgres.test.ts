@@ -201,7 +201,7 @@ describe('postgres', async () => {
 })
 
 function encryptConfig() {
-  return JSON.stringify({
+  return {
     v: 1,
     tables: {
       users: {
@@ -210,12 +210,12 @@ function encryptConfig() {
             ore: {},
             match: {
               tokenizer: {
-                kind: 'ngram',
+                kind: 'ngram' as const,
                 token_length: 3,
               },
               token_filters: [
                 {
-                  kind: 'downcase',
+                  kind: 'downcase' as const,
                 },
               ],
               k: 6,
@@ -227,5 +227,5 @@ function encryptConfig() {
         },
       },
     },
-  })
+  }
 }

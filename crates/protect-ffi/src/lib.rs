@@ -20,8 +20,8 @@ use neon::{
 };
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, str::FromStr};
 use tokio::runtime::Runtime;
 
 mod encrypt_config;
@@ -109,7 +109,7 @@ struct ClientOpts {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewClientOptions {
-    encrypt_config: String,
+    encrypt_config: EncryptConfig,
     client_opts: Option<ClientOpts>,
 }
 
@@ -187,9 +187,8 @@ impl From<LockContext> for Vec<zerokms::Context> {
 async fn new_client(
     Json(opts): Json<NewClientOptions>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
-    // TODO: pass in EncryptConfig object instead of string.
-    let encrypt_config = EncryptConfig::from_str(&opts.encrypt_config)?;
-    let client = new_client_inner(encrypt_config, opts.client_opts.unwrap_or_default()).await?;
+    let client =
+        new_client_inner(opts.encrypt_config, opts.client_opts.unwrap_or_default()).await?;
 
     Ok(Boxed(client))
 }

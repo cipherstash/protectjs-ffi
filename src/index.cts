@@ -70,8 +70,60 @@ export type Encrypted = {
   v: number
 }
 
+export type EncryptConfig = {
+  v: number
+  tables: Record<string, Record<string, Column>>
+}
+
+export type Column = {
+  cast_as?: CastAs
+  indexes?: Indexes
+}
+
+export type CastAs =
+  | 'big_int'
+  | 'boolean'
+  | 'date'
+  | 'real'
+  | 'double'
+  | 'int'
+  | 'small_int'
+  | 'text'
+  | 'jsonb'
+
+export type Indexes = {
+  ore?: OreIndexOpts
+  unique?: UniqueIndexOpts
+  match?: MatchIndexOpts
+  ste_vec?: SteVecIndexOpts
+}
+
+export type OreIndexOpts = Record<string, never>
+
+export type UniqueIndexOpts = {
+  token_filters?: TokenFilter[]
+}
+
+export type MatchIndexOpts = {
+  tokenizer?: Tokenizer
+  token_filters?: TokenFilter[]
+  k?: number
+  m?: number
+  include_original?: boolean
+}
+
+export type SteVecIndexOpts = {
+  prefix: string
+}
+
+export type Tokenizer =
+  | { kind: 'standard' }
+  | { kind: 'ngram'; token_length: number }
+
+export type TokenFilter = { kind: 'downcase' }
+
 export type NewClientOptions = {
-  encryptConfig: string
+  encryptConfig: EncryptConfig
   clientOpts?: ClientOpts
 }
 

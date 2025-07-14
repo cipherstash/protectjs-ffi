@@ -10,7 +10,7 @@ import {
   newClient,
 } from '@cipherstash/protect-ffi'
 
-const encryptConfig = JSON.stringify({
+const encryptConfig = {
   v: 1,
   tables: {
     users: {
@@ -23,7 +23,7 @@ const encryptConfig = JSON.stringify({
       },
     },
   },
-})
+}
 
 describe('encrypt and decrypt', async () => {
   test('can round-trip encrypt and decrypt', async () => {
