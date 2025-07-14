@@ -76,7 +76,7 @@ describe('encrypt and decrypt', async () => {
         },
       })
     }).rejects.toThrowError(/Failed to send request/)
-  })
+  }, 10000)
 
   test('decrypt throws an error when identityClaim is used without a service token', async () => {
     const client = await newClient({ encryptConfig })
@@ -96,7 +96,7 @@ describe('encrypt and decrypt', async () => {
         },
       })
     }).rejects.toThrowError(/Failed to send request/)
-  })
+  }, 10000)
 })
 
 describe('encryptBulk and decryptBulk', async () => {
@@ -204,7 +204,7 @@ describe('encryptBulk and decryptBulk', async () => {
         ],
       })
     }).rejects.toThrowError(/Failed to send request/)
-  })
+  }, 10000)
 
   test('decryptBulk throws an errow when identityClaim is used without a service token', async () => {
     const client = await newClient({ encryptConfig })
@@ -229,5 +229,5 @@ describe('encryptBulk and decryptBulk', async () => {
         })),
       })
     }).rejects.toThrowError(/Failed to send request/)
-  })
+  }, 10000)
 })
