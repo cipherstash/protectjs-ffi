@@ -91,6 +91,7 @@ pub enum Error {
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct ClientOpts {
     workspace_crn: Option<Crn>,
     access_key: Option<String>,
