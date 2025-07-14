@@ -51,12 +51,36 @@ describe('encrypt and decrypt', async () => {
       table: 'users',
       serviceToken: undefined,
       lockContext: undefined,
+      unverifiedContext: undefined,
     })
 
     const decrypted = await decrypt(client, {
       ciphertext: ciphertext.c,
       lockContext: undefined,
       serviceToken: undefined,
+      unverifiedContext: undefined,
+    })
+
+    expect(decrypted).toBe(originalPlaintext)
+  })
+
+  test('can pass in unverified context', async () => {
+    const client = await newClient({ encryptConfig })
+    const originalPlaintext = 'abc'
+    const unverifiedContext = {
+      sub: 'sub-single',
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: originalPlaintext,
+      column: 'email',
+      table: 'users',
+      unverifiedContext,
+    })
+
+    const decrypted = await decrypt(client, {
+      ciphertext: ciphertext.c,
+      unverifiedContext,
     })
 
     expect(decrypted).toBe(originalPlaintext)
@@ -147,6 +171,7 @@ describe('encryptBulk and decryptBulk', async () => {
         },
       ],
       serviceToken: undefined,
+      unverifiedContext: undefined,
     })
 
     const decrypted = await decryptBulk(client, {
@@ -155,6 +180,39 @@ describe('encryptBulk and decryptBulk', async () => {
         lockContext: undefined,
       })),
       serviceToken: undefined,
+      unverifiedContext: undefined,
+    })
+
+    expect(decrypted).toEqual([plaintextOne, plaintextTwo])
+  })
+
+  test('can pass in unverified context', async () => {
+    const client = await newClient({ encryptConfig })
+    const plaintextOne = 'abc'
+    const plaintextTwo = 'def'
+    const unverifiedContext = {
+      sub: 'sub-bulk',
+    }
+
+    const ciphertexts = await encryptBulk(client, {
+      plaintexts: [
+        {
+          plaintext: plaintextOne,
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: plaintextTwo,
+          column: 'email',
+          table: 'users',
+        },
+      ],
+      unverifiedContext,
+    })
+
+    const decrypted = await decryptBulk(client, {
+      ciphertexts: ciphertexts.map(({ c }) => ({ ciphertext: c })),
+      unverifiedContext,
     })
 
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
@@ -182,6 +240,38 @@ describe('encryptBulk and decryptBulk', async () => {
 
     const decrypted = await decryptBulkFallible(client, {
       ciphertexts: ciphertexts.map((c) => ({ ciphertext: c.c })),
+    })
+
+    expect(decrypted).toEqual([{ data: plaintextOne }, { data: plaintextTwo }])
+  })
+
+  test('can use unverified context with decryptBulkFallible', async () => {
+    const client = await newClient({ encryptConfig })
+    const plaintextOne = 'abc'
+    const plaintextTwo = 'def'
+    const unverifiedContext = {
+      sub: 'sub-bulk-fallible',
+    }
+
+    const ciphertexts = await encryptBulk(client, {
+      plaintexts: [
+        {
+          plaintext: plaintextOne,
+          column: 'email',
+          table: 'users',
+        },
+        {
+          plaintext: plaintextTwo,
+          column: 'email',
+          table: 'users',
+        },
+      ],
+      unverifiedContext,
+    })
+
+    const decrypted = await decryptBulkFallible(client, {
+      ciphertexts: ciphertexts.map((c) => ({ ciphertext: c.c })),
+      unverifiedContext,
     })
 
     expect(decrypted).toEqual([{ data: plaintextOne }, { data: plaintextTwo }])
