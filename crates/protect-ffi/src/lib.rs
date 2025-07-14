@@ -174,11 +174,11 @@ struct LockContext {
     identity_claim: Vec<String>,
 }
 
-impl Into<Vec<zerokms::Context>> for LockContext {
-    fn into(self) -> Vec<zerokms::Context> {
-        self.identity_claim
+impl From<LockContext> for Vec<zerokms::Context> {
+    fn from(val: LockContext) -> Self {
+        val.identity_claim
             .into_iter()
-            .map(|claim| zerokms::Context::IdentityClaim(claim))
+            .map(zerokms::Context::IdentityClaim)
             .collect()
     }
 }
@@ -287,21 +287,24 @@ async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptBulkOptions>,
 ) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
-    let mut plaintext_targets = Vec::with_capacity(opts.plaintexts.len());
+    let plaintext_targets = opts
+        .plaintexts
+        .into_iter()
+        .map(|payload| {
+            let ident = Identifier::new(payload.table, payload.column);
 
-    for payload in opts.plaintexts {
-        let ident = Identifier::new(payload.table, payload.column);
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-        let column_config = client
-            .encrypt_config
-            .get(&ident)
-            .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            let mut plaintext_target =
+                PlaintextTarget::new(payload.plaintext, column_config.clone());
+            plaintext_target.context = payload.lock_context.map(Into::into).unwrap_or_default();
 
-        let mut plaintext_target = PlaintextTarget::new(payload.plaintext, column_config.clone());
-        plaintext_target.context = payload.lock_context.map(Into::into).unwrap_or_default();
-
-        plaintext_targets.push((plaintext_target, ident));
-    }
+            Ok((plaintext_target, ident))
+        })
+        .collect::<Result<Vec<(PlaintextTarget, Identifier)>, Error>>()?;
 
     let encrypted_vec = encrypt_bulk_inner(client, plaintext_targets, opts.service_token).await?;
     Ok(Json(encrypted_vec))
@@ -378,12 +381,14 @@ async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<String>>, neon::types::extract::Error> {
-    let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
-
-    for payload in opts.ciphertexts {
-        let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-        ciphertexts.push((payload.ciphertext, lock_context));
-    }
+    let ciphertexts = opts
+        .ciphertexts
+        .into_iter()
+        .map(|payload| {
+            let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
+            (payload.ciphertext, lock_context)
+        })
+        .collect();
 
     let plaintexts = decrypt_bulk_inner(client, ciphertexts, opts.service_token).await?;
     Ok(Json(plaintexts))
@@ -394,26 +399,24 @@ async fn decrypt_bulk_inner(
     ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
     service_token: Option<ServiceToken>,
 ) -> Result<Vec<String>, Error> {
-    let len = ciphertexts.len();
-    let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
-
-    for (ciphertext, encryption_context) in ciphertexts {
-        let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
-        encrypted_records.push(encrypted_record);
-    }
+    let encrypted_records = ciphertexts
+        .into_iter()
+        .map(|(ciphertext, encryption_context)| {
+            encrypted_record_from_mp_base85(&ciphertext, encryption_context)
+        })
+        .collect::<Result<Vec<WithContext>, Error>>()?;
 
     let decrypted = client
         .zerokms
         .decrypt(encrypted_records, service_token)
         .await?;
 
-    let mut plaintexts: Vec<String> = Vec::with_capacity(len);
+    let plaintexts: Result<Vec<String>, Error> = decrypted
+        .into_iter()
+        .map(plaintext_str_from_bytes)
+        .collect();
 
-    for item in decrypted {
-        plaintexts.push(plaintext_str_from_bytes(item)?);
-    }
-
-    Ok(plaintexts)
+    plaintexts
 }
 
 #[neon::export]
@@ -421,16 +424,17 @@ async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
-    let mut ciphertexts = Vec::with_capacity(opts.ciphertexts.len());
+    let ciphertexts: Vec<(String, Vec<zerokms::Context>)> = opts
+        .ciphertexts
+        .into_iter()
+        .map(|payload| {
+            let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
+            (payload.ciphertext, lock_context)
+        })
+        .collect();
 
-    for payload in opts.ciphertexts {
-        let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-        ciphertexts.push((payload.ciphertext, lock_context));
-    }
-
-    let results = decrypt_bulk_fallible_inner(client, ciphertexts, opts.service_token).await?;
-
-    let json_results: Vec<DecryptResult> = results
+    let results = decrypt_bulk_fallible_inner(client, ciphertexts, opts.service_token)
+        .await?
         .into_iter()
         .map(|result| match result {
             Ok(data) => DecryptResult::Success { data },
@@ -440,7 +444,7 @@ async fn decrypt_bulk_fallible(
         })
         .collect();
 
-    Ok(Json(json_results))
+    Ok(Json(results))
 }
 
 async fn decrypt_bulk_fallible_inner(
@@ -448,24 +452,24 @@ async fn decrypt_bulk_fallible_inner(
     ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
     service_token: Option<ServiceToken>,
 ) -> Result<Vec<Result<String, Error>>, Error> {
-    let len = ciphertexts.len();
-    let mut encrypted_records: Vec<WithContext> = Vec::with_capacity(ciphertexts.len());
+    let encrypted_records: Result<Vec<WithContext>, Error> = ciphertexts
+        .into_iter()
+        .map(|(ciphertext, encryption_context)| {
+            encrypted_record_from_mp_base85(&ciphertext, encryption_context)
+        })
+        .collect();
 
-    for (ciphertext, encryption_context) in ciphertexts {
-        let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
-        encrypted_records.push(encrypted_record);
-    }
+    let encrypted_records = encrypted_records?;
 
     let decrypted = client
         .zerokms
         .decrypt_fallible(encrypted_records, service_token)
         .await?;
 
-    let mut plaintexts = Vec::with_capacity(len);
-
-    for item in decrypted {
-        plaintexts.push(item.map_err(Error::from).and_then(plaintext_str_from_bytes));
-    }
+    let plaintexts: Vec<Result<String, Error>> = decrypted
+        .into_iter()
+        .map(|item| item.map_err(Error::from).and_then(plaintext_str_from_bytes))
+        .collect();
 
     Ok(plaintexts)
 }
