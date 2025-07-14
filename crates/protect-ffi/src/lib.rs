@@ -26,14 +26,6 @@ use tokio::runtime::Runtime;
 
 mod encrypt_config;
 
-// Return a global tokio runtime or create one if it doesn't exist.
-// Throws a JavaScript exception if the `Runtime` fails to create.
-fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
-    static RUNTIME: OnceCell<Runtime> = OnceCell::new();
-
-    RUNTIME.get_or_try_init(|| Runtime::new().or_else(|err| cx.throw_error(err.to_string())))
-}
-
 #[derive(Clone)]
 struct Client {
     cipher: Arc<ScopedZeroKMSNoRefresh>,
@@ -187,16 +179,7 @@ impl From<LockContext> for Vec<zerokms::Context> {
 async fn new_client(
     Json(opts): Json<NewClientOptions>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
-    let client =
-        new_client_inner(opts.encrypt_config, opts.client_opts.unwrap_or_default()).await?;
-
-    Ok(Boxed(client))
-}
-
-async fn new_client_inner(
-    encrypt_config: EncryptConfig,
-    client_opts: ClientOpts,
-) -> Result<Client, Error> {
+    let client_opts = opts.client_opts.unwrap_or_default();
     let console_config = ConsoleConfig::builder().with_env().build()?;
     let cts_config = CtsConfig::builder().with_env().build()?;
 
@@ -234,11 +217,13 @@ async fn new_client_inner(
 
     let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), None).await?;
 
-    Ok(Client {
+    let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(encrypt_config.into_config_map()),
-    })
+        encrypt_config: Arc::new(opts.encrypt_config.into_config_map()),
+    };
+
+    Ok(Boxed(client))
 }
 
 #[neon::export]
@@ -256,21 +241,11 @@ async fn encrypt(
     let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
     plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
 
-    let encrypted = encrypt_inner(client, plaintext_target, ident, opts.service_token).await?;
-    Ok(Json(encrypted))
-}
-
-async fn encrypt_inner(
-    client: Client,
-    plaintext_target: PlaintextTarget,
-    ident: Identifier,
-    service_token: Option<ServiceToken>,
-) -> Result<Encrypted, Error> {
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
 
     pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, 0)?;
 
-    let mut source_encrypted = pipeline.encrypt(service_token).await?;
+    let mut source_encrypted = pipeline.encrypt(opts.service_token).await?;
 
     let encrypted = source_encrypted.remove(0).ok_or_else(|| {
         Error::InvariantViolation(
@@ -278,7 +253,7 @@ async fn encrypt_inner(
         )
     })?;
 
-    to_eql_encrypted(encrypted, &ident)
+    Ok(Json(to_eql_encrypted(encrypted, &ident)?))
 }
 
 #[neon::export]
@@ -305,15 +280,6 @@ async fn encrypt_bulk(
         })
         .collect::<Result<Vec<(PlaintextTarget, Identifier)>, Error>>()?;
 
-    let encrypted_vec = encrypt_bulk_inner(client, plaintext_targets, opts.service_token).await?;
-    Ok(Json(encrypted_vec))
-}
-
-async fn encrypt_bulk_inner(
-    client: Client,
-    plaintext_targets: Vec<(PlaintextTarget, Identifier)>,
-    service_token: Option<ServiceToken>,
-) -> Result<Vec<Encrypted>, Error> {
     let len = plaintext_targets.len();
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
     let (plaintext_targets, identifiers): (Vec<PlaintextTarget>, Vec<Identifier>) =
@@ -323,7 +289,7 @@ async fn encrypt_bulk_inner(
         pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
     }
 
-    let mut source_encrypted = pipeline.encrypt(service_token).await?;
+    let mut source_encrypted = pipeline.encrypt(opts.service_token).await?;
 
     let mut results: Vec<Encrypted> = Vec::with_capacity(len);
 
@@ -345,7 +311,7 @@ async fn encrypt_bulk_inner(
         results.push(eql_payload);
     }
 
-    Ok(results)
+    Ok(Json(results))
 }
 
 #[neon::export]
@@ -354,25 +320,14 @@ async fn decrypt(
     Json(opts): Json<DecryptOptions>,
 ) -> Result<String, neon::types::extract::Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    let plaintext =
-        decrypt_inner(client, opts.ciphertext, lock_context, opts.service_token).await?;
-    Ok(plaintext)
-}
-
-async fn decrypt_inner(
-    client: Client,
-    ciphertext: String,
-    encryption_context: Vec<zerokms::Context>,
-    service_token: Option<ServiceToken>,
-) -> Result<String, Error> {
-    let encrypted_record = encrypted_record_from_mp_base85(&ciphertext, encryption_context)?;
+    let encrypted_record = encrypted_record_from_mp_base85(&opts.ciphertext, lock_context)?;
 
     let decrypted = client
         .zerokms
-        .decrypt_single(encrypted_record, service_token)
+        .decrypt_single(encrypted_record, opts.service_token)
         .await?;
 
-    plaintext_str_from_bytes(decrypted)
+    Ok(plaintext_str_from_bytes(decrypted)?)
 }
 
 #[neon::export]
@@ -380,7 +335,7 @@ async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<String>>, neon::types::extract::Error> {
-    let ciphertexts = opts
+    let ciphertexts: Vec<(String, Vec<zerokms::Context>)> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -389,15 +344,6 @@ async fn decrypt_bulk(
         })
         .collect();
 
-    let plaintexts = decrypt_bulk_inner(client, ciphertexts, opts.service_token).await?;
-    Ok(Json(plaintexts))
-}
-
-async fn decrypt_bulk_inner(
-    client: Client,
-    ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
-    service_token: Option<ServiceToken>,
-) -> Result<Vec<String>, Error> {
     let encrypted_records = ciphertexts
         .into_iter()
         .map(|(ciphertext, encryption_context)| {
@@ -407,15 +353,15 @@ async fn decrypt_bulk_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt(encrypted_records, service_token)
+        .decrypt(encrypted_records, opts.service_token)
         .await?;
 
-    let plaintexts: Result<Vec<String>, Error> = decrypted
+    let plaintexts = decrypted
         .into_iter()
         .map(plaintext_str_from_bytes)
-        .collect();
+        .collect::<Result<Vec<String>, Error>>()?;
 
-    plaintexts
+    Ok(Json(plaintexts))
 }
 
 #[neon::export]
@@ -432,25 +378,6 @@ async fn decrypt_bulk_fallible(
         })
         .collect();
 
-    let results = decrypt_bulk_fallible_inner(client, ciphertexts, opts.service_token)
-        .await?
-        .into_iter()
-        .map(|result| match result {
-            Ok(data) => DecryptResult::Success { data },
-            Err(err) => DecryptResult::Error {
-                error: err.to_string(),
-            },
-        })
-        .collect();
-
-    Ok(Json(results))
-}
-
-async fn decrypt_bulk_fallible_inner(
-    client: Client,
-    ciphertexts: Vec<(String, Vec<zerokms::Context>)>,
-    service_token: Option<ServiceToken>,
-) -> Result<Vec<Result<String, Error>>, Error> {
     let encrypted_records: Result<Vec<WithContext>, Error> = ciphertexts
         .into_iter()
         .map(|(ciphertext, encryption_context)| {
@@ -462,7 +389,7 @@ async fn decrypt_bulk_fallible_inner(
 
     let decrypted = client
         .zerokms
-        .decrypt_fallible(encrypted_records, service_token)
+        .decrypt_fallible(encrypted_records, opts.service_token)
         .await?;
 
     let plaintexts: Vec<Result<String, Error>> = decrypted
@@ -470,7 +397,17 @@ async fn decrypt_bulk_fallible_inner(
         .map(|item| item.map_err(Error::from).and_then(plaintext_str_from_bytes))
         .collect();
 
-    Ok(plaintexts)
+    let results = plaintexts
+        .into_iter()
+        .map(|result| match result {
+            Ok(data) => DecryptResult::Success { data },
+            Err(err) => DecryptResult::Error {
+                error: err.to_string(),
+            },
+        })
+        .collect();
+
+    Ok(Json(results))
 }
 
 fn encrypted_record_from_mp_base85(
@@ -585,9 +522,14 @@ fn format_index_term_ore(bytes: &Vec<u8>) -> Vec<String> {
     vec![format_index_term_ore_bytea(bytes)]
 }
 
+static RUNTIME: OnceCell<Runtime> = OnceCell::new();
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
-    let runtime = runtime(&mut cx)?;
+    let runtime = RUNTIME
+        .get_or_try_init(Runtime::new)
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
     let _ = neon::set_global_executor(&mut cx, runtime);
 
     neon::registered().export(&mut cx)?;
