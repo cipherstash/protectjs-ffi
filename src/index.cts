@@ -134,8 +134,10 @@ export type ClientOpts = {
   clientKey?: string
 }
 
+export type JsPlaintext = string | number
+
 export type EncryptOptions = {
-  plaintext: string
+  plaintext: JsPlaintext
   column: string
   table: string
   lockContext?: Context

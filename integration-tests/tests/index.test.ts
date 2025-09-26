@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
+  CastAs,
   decrypt,
   decryptBulk,
   decryptBulkFallible,
@@ -15,24 +16,44 @@ const encryptConfig = {
   tables: {
     users: {
       email: {
+        cast_as: 'text' as CastAs, // FIXME: do we need the as ?
         indexes: {
           ore: {},
           match: {},
           unique: {},
         },
       },
+      score: {
+        cast_as: 'big_int' as CastAs,
+        indexes: {}
+      },
     },
   },
 }
 
 describe('encrypt and decrypt', async () => {
-  test('can round-trip encrypt and decrypt', async () => {
+  test('can round-trip encrypt and decrypt a string', async () => {
     const client = await newClient({ encryptConfig })
     const originalPlaintext = 'abc'
 
     const ciphertext = await encrypt(client, {
       plaintext: originalPlaintext,
       column: 'email',
+      table: 'users',
+    })
+
+    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+    expect(decrypted).toBe(originalPlaintext)
+  })
+
+  test('can round-trip encrypt and decrypt a number', async () => {
+    const client = await newClient({ encryptConfig })
+    const originalPlaintext = 123
+
+    const ciphertext = await encrypt(client, {
+      plaintext: originalPlaintext,
+      column: 'score',
       table: 'users',
     })
 

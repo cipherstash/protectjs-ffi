@@ -6,8 +6,7 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
-        ScopedCipher, SteVec, TypeParseError,
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline, ScopedCipher, SteVec, TryFromPlaintext, TypeParseError
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
@@ -117,12 +116,40 @@ enum DecryptResult {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EncryptOptions {
-    plaintext: String,
+    plaintext: JsPlaintext,
     column: String,
     table: String,
     lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum JsPlaintext {
+    String(String),
+    Number(f64),
+}
+
+impl From<JsPlaintext> for Plaintext {
+    fn from(value: JsPlaintext) -> Self {
+        match value {
+            JsPlaintext::String(s) => Plaintext::Utf8Str(Some(s)),
+            JsPlaintext::Number(n) => Plaintext::Float(Some(n)),
+        }
+    }
+}
+
+impl TryFrom<Plaintext> for JsPlaintext {
+    type Error = TypeParseError;
+
+    fn try_from(value: Plaintext) -> Result<Self, Self::Error> {
+        match value {
+            v @ Plaintext::Utf8Str(Some(_)) => String::try_from_plaintext(v).map(JsPlaintext::String),
+            Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
+            _ => unimplemented!(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -182,7 +209,7 @@ impl From<LockContext> for Vec<zerokms::Context> {
 }
 
 #[neon::export]
-async fn new_client(
+pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
@@ -243,6 +270,8 @@ async fn encrypt(
         .encrypt_config
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+
+    dbg!(&column_config);
 
     let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
     plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
@@ -324,8 +353,8 @@ async fn encrypt_bulk(
     Ok(Json(results))
 }
 
-#[neon::export]
-async fn decrypt(
+//#[neon::export]
+async fn _decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
 ) -> Result<String, neon::types::extract::Error> {
@@ -341,7 +370,39 @@ async fn decrypt(
         )
         .await?;
 
-    Ok(plaintext_str_from_bytes(decrypted)?)
+   Ok(plaintext_str_from_bytes(decrypted)?)
+}
+
+fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let (Boxed(client), Json(opts)): (Boxed<Client>, Json<DecryptOptions>) = cx.args()?;
+    let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
+    let encrypted_record = encrypted_record_from_mp_base85(&opts.ciphertext, lock_context).unwrap(); // TODO: handle error
+
+    let channel = cx.channel();
+
+    let runtime = RUNTIME
+        .get_or_try_init(Runtime::new)
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+    let (deferred, promise) = cx.promise();
+    runtime.spawn(async move {
+
+        let decrypted = client
+            .zerokms
+            .decrypt_single(
+                encrypted_record,
+                opts.service_token,
+                opts.unverified_context,
+            )
+            .await;
+
+        deferred.settle_with(&channel, move |mut cx| match decrypted {
+            Ok(data) => Ok(cx.string(plaintext_str_from_bytes(data).unwrap())), // TODO: handle error
+            Err(err) => cx.throw_error(err.to_string()),
+        });
+    });
+
+    Ok(promise)
 }
 
 #[neon::export]
@@ -450,12 +511,7 @@ fn encrypted_record_from_mp_base85(
 fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
     let plaintext = Plaintext::from_slice(bytes.as_slice())?;
 
-    match plaintext {
-        Plaintext::Utf8Str(Some(ref inner)) => Ok(inner.clone()),
-        _ => Err(Error::Unimplemented(
-            "data types other than `Utf8Str`".to_string(),
-        )),
-    }
+    Ok("Foo".to_string())  // TODO:
 }
 
 fn to_eql_encrypted(
