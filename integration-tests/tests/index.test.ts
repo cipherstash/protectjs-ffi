@@ -84,7 +84,9 @@ describe('encrypt and decrypt', async () => {
 
     expect(decrypted).toBe(originalPlaintext)
   })
+})
 
+describe('lock context', () => {
   test('can pass in unverified context', async () => {
     const client = await newClient({ encryptConfig })
     const originalPlaintext = 'abc'
@@ -317,7 +319,7 @@ describe('encryptBulk and decryptBulk', async () => {
     }).rejects.toThrowError(/Failed to send request/)
   }, 10000)
 
-  test('decryptBulk throws an errow when identityClaim is used without a service token', async () => {
+  test('decryptBulk throws an error when identityClaim is used without a service token', async () => {
     const client = await newClient({ encryptConfig })
 
     const ciphertexts = await encryptBulk(client, {

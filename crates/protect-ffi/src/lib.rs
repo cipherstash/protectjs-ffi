@@ -124,7 +124,7 @@ struct EncryptOptions {
     unverified_context: Option<UnverifiedContext>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum JsPlaintext {
     String(String),
@@ -353,27 +353,29 @@ async fn encrypt_bulk(
     Ok(Json(results))
 }
 
-//#[neon::export]
-async fn _decrypt(
+#[neon::export]
+async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
-) -> Result<String, neon::types::extract::Error> {
+) -> Result<Json<JsPlaintext>, neon::types::extract::Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
     let encrypted_record = encrypted_record_from_mp_base85(&opts.ciphertext, lock_context)?;
 
-    let decrypted = client
+    let plaintext = client
         .zerokms
         .decrypt_single(
             encrypted_record,
             opts.service_token,
             opts.unverified_context,
         )
-        .await?;
+        .await
+        .map_err(Error::from)
+        .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from))?;
 
-   Ok(plaintext_str_from_bytes(decrypted)?)
+        JsPlaintext::try_from(plaintext).map(Json).map_err(From::from)
 }
 
-fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
+/*fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (Boxed(client), Json(opts)): (Boxed<Client>, Json<DecryptOptions>) = cx.args()?;
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
     let encrypted_record = encrypted_record_from_mp_base85(&opts.ciphertext, lock_context).unwrap(); // TODO: handle error
@@ -387,29 +389,36 @@ fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
     runtime.spawn(async move {
 
-        let decrypted = client
+        let plaintext = client
             .zerokms
             .decrypt_single(
                 encrypted_record,
                 opts.service_token,
                 opts.unverified_context,
             )
-            .await;
+            .await
+            .map_err(Error::from)
+            .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from));
 
-        deferred.settle_with(&channel, move |mut cx| match decrypted {
-            Ok(data) => Ok(cx.string(plaintext_str_from_bytes(data).unwrap())), // TODO: handle error
+        deferred.settle_with(&channel, move |mut cx| {
+            let r: JsResult<JsValue> = match plaintext {
+            Ok(v @ Plaintext::Utf8Str(Some(_))) => Ok(cx.string(String::try_from_plaintext(v).unwrap()).upcast()), // TODO: handle error
+            Ok(v @ Plaintext::Float(Some(_))) => Ok(cx.number(f64::try_from_plaintext(v).unwrap()).upcast()),
             Err(err) => cx.throw_error(err.to_string()),
+            _ => todo!(),
+            };
+            r
         });
     });
 
     Ok(promise)
-}
+}*/
 
 #[neon::export]
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<Json<Vec<String>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<JsPlaintext>>, neon::types::extract::Error> {
     let ciphertexts: Vec<(String, Vec<zerokms::Context>)> = opts
         .ciphertexts
         .into_iter()
@@ -437,8 +446,10 @@ async fn decrypt_bulk(
 
     let plaintexts = decrypted
         .into_iter()
-        .map(plaintext_str_from_bytes)
-        .collect::<Result<Vec<String>, Error>>()?;
+        .map(|bytes| {
+            Plaintext::from_slice(&bytes).and_then(JsPlaintext::try_from)
+        })
+        .collect::<Result<Vec<JsPlaintext>, TypeParseError>>()?;
 
     Ok(Json(plaintexts))
 }
@@ -475,7 +486,7 @@ async fn decrypt_bulk_fallible(
         )
         .await?;
 
-    let plaintexts: Vec<Result<String, Error>> = decrypted
+    /*let plaintexts: Vec<Result<String, Error>> = decrypted
         .into_iter()
         .map(|item| item.map_err(Error::from).and_then(plaintext_str_from_bytes))
         .collect();
@@ -490,7 +501,9 @@ async fn decrypt_bulk_fallible(
         })
         .collect();
 
-    Ok(Json(results))
+    Ok(Json(results))*/
+
+    todo!()
 }
 
 fn encrypted_record_from_mp_base85(
@@ -506,12 +519,6 @@ fn encrypted_record_from_mp_base85(
         record: encrypted_record,
         context: encryption_context,
     })
-}
-
-fn plaintext_str_from_bytes(bytes: Vec<u8>) -> Result<String, Error> {
-    let plaintext = Plaintext::from_slice(bytes.as_slice())?;
-
-    Ok("Foo".to_string())  // TODO:
 }
 
 fn to_eql_encrypted(
