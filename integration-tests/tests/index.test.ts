@@ -25,12 +25,12 @@ const encryptConfig = {
       },
       score: {
         cast_as: 'double' as CastAs,
-        indexes: {} // TODO: add ore index options here when we support them
+        indexes: {}, // TODO: add ore index options here when we support them
       },
       profile: {
         cast_as: 'jsonb' as CastAs,
-        indexes: {} // TODO: add an index here
-      }
+        indexes: {}, // TODO: add an index here
+      },
     },
   },
 }

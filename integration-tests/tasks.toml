@@ -25,6 +25,7 @@ run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psq
 
 [setup]
 description = "Set up the integration test environment"
+dir = "{{ config_root }}/integration-tests"
 run = [
     "npm ci",
     "mise run start-db",

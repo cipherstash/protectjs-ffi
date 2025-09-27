@@ -1,6 +1,6 @@
 [tools]
 node = "latest"
-rust = "latest"
+#rust = "stable"
 
 [env]
 PGPORT = "5432"
@@ -18,7 +18,7 @@ includes = [
 description = "Build the project in debug mode"
 run = "npm run debug"
 
-[tasks.lint]
+[tasks."lint:rust"]
 description = "cargo clippy with all features and no dependencies, includes tests"
 run = "cargo clippy --no-deps --tests --all-features --all-targets -- -D warnings"
 

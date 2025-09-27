@@ -74,9 +74,17 @@ jobs:
         with:
           platform: linux-x64-gnu
 
+      - name: Fix permissions on target directory
+        run: |
+          mkdir -p ./target
+          sudo chown -R "$(id -u):$(id -g)" ./target
+
       - name: Build
         shell: bash
         run: npm run debug
+
+      - name: Rust Lint
+        run: mise lint:rust
 
       - name: Test (typecheck, lint, & Rust)
         shell: bash
