@@ -6,7 +6,8 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline, ScopedCipher, SteVec, TryFromPlaintext, TypeParseError
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
+        ScopedCipher, SteVec, TryFromPlaintext, TypeParseError,
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
@@ -147,8 +148,12 @@ impl TryFrom<Plaintext> for JsPlaintext {
 
     fn try_from(value: Plaintext) -> Result<Self, Self::Error> {
         match value {
-            v @ Plaintext::Utf8Str(Some(_)) => String::try_from_plaintext(v).map(JsPlaintext::String),
-            v @ Plaintext::JsonB(Some(_)) => serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB),
+            v @ Plaintext::Utf8Str(Some(_)) => {
+                String::try_from_plaintext(v).map(JsPlaintext::String)
+            }
+            v @ Plaintext::JsonB(Some(_)) => {
+                serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB)
+            }
             Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
             _ => unimplemented!(), // TODO: Handle other types and/or return an error here
         }
@@ -373,7 +378,9 @@ async fn decrypt(
         .map_err(Error::from)
         .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from))?;
 
-        JsPlaintext::try_from(plaintext).map(Json).map_err(From::from)
+    JsPlaintext::try_from(plaintext)
+        .map(Json)
+        .map_err(From::from)
 }
 
 #[neon::export]
@@ -408,9 +415,7 @@ async fn decrypt_bulk(
 
     let plaintexts = decrypted
         .into_iter()
-        .map(|bytes| {
-            Plaintext::from_slice(&bytes).and_then(JsPlaintext::try_from)
-        })
+        .map(|bytes| Plaintext::from_slice(&bytes).and_then(JsPlaintext::try_from))
         .collect::<Result<Vec<JsPlaintext>, TypeParseError>>()?;
 
     Ok(Json(plaintexts))
@@ -452,9 +457,9 @@ async fn decrypt_bulk_fallible(
         .into_iter()
         .map(|item| {
             item.map_err(Error::from).and_then(|bytes| {
-                Plaintext::from_slice(&bytes).map_err(Error::from).and_then(|e| {
-                    JsPlaintext::try_from(e).map_err(Error::from)
-                })
+                Plaintext::from_slice(&bytes)
+                    .map_err(Error::from)
+                    .and_then(|e| JsPlaintext::try_from(e).map_err(Error::from))
             })
         })
         .collect();

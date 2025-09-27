@@ -143,13 +143,22 @@ PGHOST=localhost
 ```
 
 To run integration tests:
+```sh
+mise setup
+mise test:integration
 ```
-npm run debug
-cd integration-tests
-docker compose up --detach --wait
-npm run eql:download
-npm run eql:install
-npm run test
+
+You can also run the integration tests in "watch" mode:
+
+```sh
+mise test:integration --watch
+```
+
+By default lock context tests are not included because invalid lock contexts fire security warnings in ZeroKMS.
+To include these, run:
+
+```sh
+mise test:integration:all
 ```
 
 ## Releasing

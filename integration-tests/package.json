@@ -3,9 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "tsc && vitest test",
-    "eql:download": "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/download/eql-2.0.2/cipherstash-encrypt.sql",
-    "eql:install": "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
+    "test": "tsc && vitest test"
   },
   "author": "",
   "license": "MIT",
