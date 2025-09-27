@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
-  CastAs,
+  type CastAs,
   decrypt,
   encrypt,
   newClient,
