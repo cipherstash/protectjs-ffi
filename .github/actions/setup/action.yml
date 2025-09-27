@@ -57,7 +57,7 @@ runs:
 
     - name: Install Rust
       if: ${{ inputs['use-rust'] == 'true' }}
-      uses: dtolnay/rust-toolchain
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ env.RUST_VERSION }}
         target: ${{ steps.target.outputs.target }}
