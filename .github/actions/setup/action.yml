@@ -57,11 +57,11 @@ runs:
 
     - name: Install Rust
       if: ${{ inputs['use-rust'] == 'true' }}
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain
       with:
         toolchain: ${{ env.RUST_VERSION }}
         target: ${{ steps.target.outputs.target }}
-        override: true
+        components: clippy, rustfmt
 
     - uses: jdx/mise-action@v2
       with:
@@ -79,7 +79,7 @@ runs:
       shell: bash
       run: |
         echo version=$(node -e 'console.log(process.versions.node)') | tee -a $GITHUB_OUTPUT
-        
+
     - name: Rust Version
       if: ${{ inputs['use-rust'] == 'true' }}
       id: rust
