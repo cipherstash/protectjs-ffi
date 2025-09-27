@@ -24,9 +24,13 @@ const encryptConfig = {
         },
       },
       score: {
-        cast_as: 'big_int' as CastAs,
-        indexes: {}
+        cast_as: 'double' as CastAs,
+        indexes: {} // TODO: add ore index options here when we support them
       },
+      profile: {
+        cast_as: 'jsonb' as CastAs,
+        indexes: {} // TODO: add an index here
+      }
     },
   },
 }
@@ -49,7 +53,7 @@ describe('encrypt and decrypt', async () => {
 
   test('can round-trip encrypt and decrypt a number', async () => {
     const client = await newClient({ encryptConfig })
-    const originalPlaintext = 123
+    const originalPlaintext = 123.456
 
     const ciphertext = await encrypt(client, {
       plaintext: originalPlaintext,
@@ -60,6 +64,21 @@ describe('encrypt and decrypt', async () => {
     const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
 
     expect(decrypted).toBe(originalPlaintext)
+  })
+
+  test('can round-trip encrypt and decrypt a JSON object', async () => {
+    const client = await newClient({ encryptConfig })
+    const originalPlaintext = { foo: 'bar', baz: 123 }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: originalPlaintext,
+      column: 'profile',
+      table: 'users',
+    })
+
+    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+    expect(decrypted).toEqual(originalPlaintext)
   })
 
   test('can explicitly pass in undefined for optional fields', async () => {

@@ -134,7 +134,7 @@ export type ClientOpts = {
   clientKey?: string
 }
 
-export type JsPlaintext = string | number
+export type JsPlaintext = string | number | Record<string, unknown>
 
 export type EncryptOptions = {
   plaintext: JsPlaintext

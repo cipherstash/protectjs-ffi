@@ -109,7 +109,7 @@ struct NewClientOptions {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum DecryptResult {
-    Success { data: String },
+    Success { data: JsPlaintext },
     Error { error: String },
 }
 
@@ -124,11 +124,12 @@ struct EncryptOptions {
     unverified_context: Option<UnverifiedContext>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug)] // FIXME: Don't debug directly, use vitamin C
 #[serde(untagged)]
 enum JsPlaintext {
     String(String),
     Number(f64),
+    JsonB(serde_json::Value),
 }
 
 impl From<JsPlaintext> for Plaintext {
@@ -136,6 +137,7 @@ impl From<JsPlaintext> for Plaintext {
         match value {
             JsPlaintext::String(s) => Plaintext::Utf8Str(Some(s)),
             JsPlaintext::Number(n) => Plaintext::Float(Some(n)),
+            JsPlaintext::JsonB(j) => Plaintext::JsonB(Some(j)),
         }
     }
 }
@@ -146,8 +148,9 @@ impl TryFrom<Plaintext> for JsPlaintext {
     fn try_from(value: Plaintext) -> Result<Self, Self::Error> {
         match value {
             v @ Plaintext::Utf8Str(Some(_)) => String::try_from_plaintext(v).map(JsPlaintext::String),
+            v @ Plaintext::JsonB(Some(_)) => serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB),
             Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
-            _ => unimplemented!(),
+            _ => unimplemented!(), // TODO: Handle other types and/or return an error here
         }
     }
 }
@@ -271,8 +274,6 @@ async fn encrypt(
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    dbg!(&column_config);
-
     let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
     plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
 
@@ -375,45 +376,6 @@ async fn decrypt(
         JsPlaintext::try_from(plaintext).map(Json).map_err(From::from)
 }
 
-/*fn decrypt(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let (Boxed(client), Json(opts)): (Boxed<Client>, Json<DecryptOptions>) = cx.args()?;
-    let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    let encrypted_record = encrypted_record_from_mp_base85(&opts.ciphertext, lock_context).unwrap(); // TODO: handle error
-
-    let channel = cx.channel();
-
-    let runtime = RUNTIME
-        .get_or_try_init(Runtime::new)
-        .or_else(|err| cx.throw_error(err.to_string()))?;
-
-    let (deferred, promise) = cx.promise();
-    runtime.spawn(async move {
-
-        let plaintext = client
-            .zerokms
-            .decrypt_single(
-                encrypted_record,
-                opts.service_token,
-                opts.unverified_context,
-            )
-            .await
-            .map_err(Error::from)
-            .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from));
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let r: JsResult<JsValue> = match plaintext {
-            Ok(v @ Plaintext::Utf8Str(Some(_))) => Ok(cx.string(String::try_from_plaintext(v).unwrap()).upcast()), // TODO: handle error
-            Ok(v @ Plaintext::Float(Some(_))) => Ok(cx.number(f64::try_from_plaintext(v).unwrap()).upcast()),
-            Err(err) => cx.throw_error(err.to_string()),
-            _ => todo!(),
-            };
-            r
-        });
-    });
-
-    Ok(promise)
-}*/
-
 #[neon::export]
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
@@ -486,9 +448,15 @@ async fn decrypt_bulk_fallible(
         )
         .await?;
 
-    /*let plaintexts: Vec<Result<String, Error>> = decrypted
+    let plaintexts: Vec<Result<JsPlaintext, _>> = decrypted
         .into_iter()
-        .map(|item| item.map_err(Error::from).and_then(plaintext_str_from_bytes))
+        .map(|item| {
+            item.map_err(Error::from).and_then(|bytes| {
+                Plaintext::from_slice(&bytes).map_err(Error::from).and_then(|e| {
+                    JsPlaintext::try_from(e).map_err(Error::from)
+                })
+            })
+        })
         .collect();
 
     let results = plaintexts
@@ -501,9 +469,7 @@ async fn decrypt_bulk_fallible(
         })
         .collect();
 
-    Ok(Json(results))*/
-
-    todo!()
+    Ok(Json(results))
 }
 
 fn encrypted_record_from_mp_base85(
