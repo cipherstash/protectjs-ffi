@@ -81,6 +81,21 @@ describe('encrypt and decrypt', async () => {
     expect(decrypted).toEqual(originalPlaintext)
   })
 
+  test('can round-trip encrypt and decrypt a JSON object', async () => {
+    const client = await newClient({ encryptConfig })
+    const originalPlaintext = [ 1, 2, 3 ]
+
+    const ciphertext = await encrypt(client, {
+      plaintext: originalPlaintext,
+      column: 'profile',
+      table: 'users',
+    })
+
+    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+    expect(decrypted).toEqual(originalPlaintext)
+  })
+
   test('can explicitly pass in undefined for optional fields', async () => {
     const client = await newClient({ encryptConfig })
     const originalPlaintext = 'abc'
