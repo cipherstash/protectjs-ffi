@@ -1,4 +1,4 @@
-use cipherstash_client::encryption::{Plaintext, TypeParseError, TryFromPlaintext};
+use cipherstash_client::encryption::{Plaintext, TryFromPlaintext, TypeParseError};
 use serde::{Deserialize, Serialize};
 use vitaminc_protected::OpaqueDebug;
 
@@ -27,14 +27,18 @@ impl TryFrom<Plaintext> for JsPlaintext {
 
     fn try_from(value: Plaintext) -> Result<Self, Self::Error> {
         match value {
-            v @ Plaintext::Utf8Str(Some(_)) => String::try_from_plaintext(v).map(JsPlaintext::String),
-            v @ Plaintext::JsonB(Some(_)) => serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB),
+            v @ Plaintext::Utf8Str(Some(_)) => {
+                String::try_from_plaintext(v).map(JsPlaintext::String)
+            }
+            v @ Plaintext::JsonB(Some(_)) => {
+                serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB)
+            }
             // Note: BigInt is converted to f64, which may lose precision for very large integers
             // let this be a reminder of JavaScript's limitations with numbers
             Plaintext::BigInt(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
             Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
             Plaintext::Boolean(Some(b)) => Ok(JsPlaintext::Boolean(b)),
-            _ => Err(TypeParseError("Unsupported type".to_string()))
+            _ => Err(TypeParseError("Unsupported type".to_string())),
         }
     }
 }
@@ -76,13 +80,16 @@ mod tests {
         fn test_jsonb() {
             let js_jsonb = JsPlaintext::JsonB(serde_json::json!({"key": "value"}));
             let plaintext_jsonb: Plaintext = js_jsonb.into();
-            assert_eq!(plaintext_jsonb, Plaintext::JsonB(Some(serde_json::json!({"key": "value"}))));
+            assert_eq!(
+                plaintext_jsonb,
+                Plaintext::JsonB(Some(serde_json::json!({"key": "value"})))
+            );
         }
     }
 
     mod plaintext_to_js_plaintext {
-        use chrono::{DateTime, Utc};
         use super::*;
+        use chrono::{DateTime, Utc};
 
         #[quickcheck]
         fn test_utf8str(s: String) {
@@ -113,7 +120,10 @@ mod tests {
         fn test_jsonb() {
             let plaintext_jsonb = Plaintext::JsonB(Some(serde_json::json!({"key": "value"})));
             let js_jsonb: JsPlaintext = plaintext_jsonb.try_into().unwrap();
-            assert_eq!(js_jsonb, JsPlaintext::JsonB(serde_json::json!({"key": "value"})));
+            assert_eq!(
+                js_jsonb,
+                JsPlaintext::JsonB(serde_json::json!({"key": "value"}))
+            );
         }
 
         #[quickcheck]

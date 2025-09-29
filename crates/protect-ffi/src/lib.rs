@@ -9,7 +9,8 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline, ScopedCipher, SteVec, TypeParseError
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
+        ScopedCipher, SteVec, TypeParseError,
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
@@ -17,6 +18,7 @@ use cipherstash_client::{
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
+use js_plaintext::JsPlaintext;
 use neon::{
     prelude::*,
     types::extract::{Boxed, Json},
@@ -26,7 +28,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use js_plaintext::JsPlaintext;
 
 #[cfg(test)]
 extern crate quickcheck;

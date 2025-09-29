@@ -1,6 +1,5 @@
 [tools]
 node = "latest"
-#rust = "stable"
 
 [env]
 PGPORT = "5432"
