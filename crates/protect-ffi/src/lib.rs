@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use vitaminc_protected::OpaqueDebug;
 
 mod encrypt_config;
 
@@ -125,7 +126,7 @@ struct EncryptOptions {
     unverified_context: Option<UnverifiedContext>,
 }
 
-#[derive(Deserialize, Serialize, Debug)] // FIXME: Don't debug directly, use vitamin C
+#[derive(Deserialize, Serialize, OpaqueDebug)]
 #[serde(untagged)]
 enum JsPlaintext {
     String(String),
