@@ -83,7 +83,7 @@ describe('encrypt and decrypt', async () => {
 
   test('can round-trip encrypt and decrypt a JSON object', async () => {
     const client = await newClient({ encryptConfig })
-    const originalPlaintext = [ 1, 2, 3 ]
+    const originalPlaintext = [1, 2, 3]
 
     const ciphertext = await encrypt(client, {
       plaintext: originalPlaintext,
