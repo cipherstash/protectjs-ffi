@@ -1,3 +1,6 @@
+mod encrypt_config;
+mod js_plaintext;
+
 use cipherstash_client::{
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
@@ -6,8 +9,7 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
-        ScopedCipher, SteVec, TryFromPlaintext, TypeParseError,
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline, ScopedCipher, SteVec, TypeParseError
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
@@ -24,9 +26,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use vitaminc_protected::OpaqueDebug;
+use js_plaintext::JsPlaintext;
 
-mod encrypt_config;
+#[cfg(test)]
+extern crate quickcheck;
+#[cfg(test)]
+#[macro_use(quickcheck)]
+extern crate quickcheck_macros;
 
 #[derive(Clone)]
 struct Client {
@@ -124,41 +130,6 @@ struct EncryptOptions {
     lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
-}
-
-#[derive(Deserialize, Serialize, OpaqueDebug)]
-#[serde(untagged)]
-enum JsPlaintext {
-    String(String),
-    Number(f64),
-    JsonB(serde_json::Value),
-}
-
-impl From<JsPlaintext> for Plaintext {
-    fn from(value: JsPlaintext) -> Self {
-        match value {
-            JsPlaintext::String(s) => Plaintext::Utf8Str(Some(s)),
-            JsPlaintext::Number(n) => Plaintext::Float(Some(n)),
-            JsPlaintext::JsonB(j) => Plaintext::JsonB(Some(j)),
-        }
-    }
-}
-
-impl TryFrom<Plaintext> for JsPlaintext {
-    type Error = TypeParseError;
-
-    fn try_from(value: Plaintext) -> Result<Self, Self::Error> {
-        match value {
-            v @ Plaintext::Utf8Str(Some(_)) => {
-                String::try_from_plaintext(v).map(JsPlaintext::String)
-            }
-            v @ Plaintext::JsonB(Some(_)) => {
-                serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB)
-            }
-            Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
-            _ => unimplemented!(), // TODO: Handle other types and/or return an error here
-        }
-    }
 }
 
 #[derive(Deserialize)]
