@@ -33,8 +33,9 @@ impl TryFrom<Plaintext> for JsPlaintext {
             v @ Plaintext::JsonB(Some(_)) => {
                 serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB)
             }
-            // Note: BigInt is converted to f64, which may lose precision for very large integers
-            // let this be a reminder of JavaScript's limitations with numbers
+            // Note: BigInt is converted to f64, which may lose precision for integers larger than
+            // JavaScript's Number.MAX_SAFE_INTEGER (2^53 - 1). Only values up to this threshold
+            // can be safely represented as a Number in JavaScript without loss of precision.
             Plaintext::BigInt(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
             Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
             Plaintext::Boolean(Some(b)) => Ok(JsPlaintext::Boolean(b)),
