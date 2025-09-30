@@ -91,6 +91,16 @@ export type CastAs =
   | 'text'
   | 'jsonb'
 
+// Extract the tables from a specific config
+type TablesOf<C extends EncryptConfig> = C['tables']
+
+// Compute valid { table, column } pairs
+export type Identifier<C extends EncryptConfig> = {
+  [T in keyof TablesOf<C>]: {
+    [CName in keyof TablesOf<C>[T]]: { table: T; column: CName }
+  }[keyof TablesOf<C>[T]]
+}[keyof TablesOf<C>]
+
 export type Indexes = {
   ore?: OreIndexOpts
   unique?: UniqueIndexOpts

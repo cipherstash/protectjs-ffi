@@ -9,29 +9,8 @@ import {
   newClient,
 } from '@cipherstash/protect-ffi'
 
-const encryptConfig: EncryptConfig = {
-  v: 1,
-  tables: {
-    users: {
-      email: {
-        cast_as: 'text',
-        indexes: {
-          ore: {},
-          match: {},
-          unique: {},
-        },
-      },
-      score: {
-        cast_as: 'double',
-        indexes: { ore: {} },
-      },
-      profile: {
-        cast_as: 'jsonb',
-        indexes: {}, // TODO: add an index here
-      },
-    },
-  },
-}
+// Import a shared encryptConfig from common.js
+import { encryptConfig } from './common.js'
 
 describe('lock context', () => {
   test('can pass in unverified context', async () => {
