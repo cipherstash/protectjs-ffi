@@ -66,34 +66,81 @@ describe('encrypt and decrypt', async () => {
     expect(decrypted).toBe(originalPlaintext)
   })
 
-  test('can round-trip encrypt and decrypt a JSON object', async () => {
-    const client = await newClient({ encryptConfig })
-    const originalPlaintext = { foo: 'bar', baz: 123 }
+  describe('Can round-trip encrypt & decrypt JSON', async () => {
+    test('object', async () => {
+      const client = await newClient({ encryptConfig })
+      const originalPlaintext = { foo: 'bar', baz: 123 }
 
-    const ciphertext = await encrypt(client, {
-      plaintext: originalPlaintext,
-      column: 'profile',
-      table: 'users',
+      const ciphertext = await encrypt(client, {
+        plaintext: originalPlaintext,
+        column: 'profile',
+        table: 'users',
+      })
+
+      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+      expect(decrypted).toEqual(originalPlaintext)
     })
 
-    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+    test('array', async () => {
+      const client = await newClient({ encryptConfig })
+      const originalPlaintext = [1, 2, 3]
 
-    expect(decrypted).toEqual(originalPlaintext)
-  })
+      const ciphertext = await encrypt(client, {
+        plaintext: originalPlaintext,
+        column: 'profile',
+        table: 'users',
+      })
 
-  test('can round-trip encrypt and decrypt a JSON object', async () => {
-    const client = await newClient({ encryptConfig })
-    const originalPlaintext = [1, 2, 3]
+      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
 
-    const ciphertext = await encrypt(client, {
-      plaintext: originalPlaintext,
-      column: 'profile',
-      table: 'users',
+      expect(decrypted).toEqual(originalPlaintext)
     })
 
-    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+    test('nested array within object', async () => {
+      const client = await newClient({ encryptConfig })
+      const originalPlaintext = { foo: 'bar', baz: [1, 2, 3] }
 
-    expect(decrypted).toEqual(originalPlaintext)
+      const ciphertext = await encrypt(client, {
+        plaintext: originalPlaintext,
+        column: 'profile',
+        table: 'users',
+      })
+
+      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+      expect(decrypted).toEqual(originalPlaintext)
+    })
+
+    test('nested object within object', async () => {
+      const client = await newClient({ encryptConfig })
+      const originalPlaintext = { foo: 'bar', baz: { qux: 'quux' } }
+
+      const ciphertext = await encrypt(client, {
+        plaintext: originalPlaintext,
+        column: 'profile',
+        table: 'users',
+      })
+
+      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+      expect(decrypted).toEqual(originalPlaintext)
+    })
+
+    test('nested object within array', async () => {
+      const client = await newClient({ encryptConfig })
+      const originalPlaintext = { foo: 'bar', baz: [{ qux: 'quux' }] }
+
+      const ciphertext = await encrypt(client, {
+        plaintext: originalPlaintext,
+        column: 'profile',
+        table: 'users',
+      })
+
+      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+
+      expect(decrypted).toEqual(originalPlaintext)
+    })
   })
 
   test('can explicitly pass in undefined for optional fields', async () => {
