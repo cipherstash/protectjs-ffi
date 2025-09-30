@@ -144,7 +144,7 @@ struct EncryptBulkOptions {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PlaintextPayload {
-    plaintext: String,
+    plaintext: String, // FIXME: use JsPlaintext here instead
     column: String,
     table: String,
     lock_context: Option<LockContext>,
@@ -153,7 +153,7 @@ struct PlaintextPayload {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecryptOptions {
-    ciphertext: String,
+    ciphertext: Encrypted,
     lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
@@ -170,7 +170,7 @@ struct DecryptBulkOptions {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BulkDecryptPayload {
-    ciphertext: String,
+    ciphertext: Encrypted,
     lock_context: Option<LockContext>,
 }
 
@@ -338,7 +338,7 @@ async fn decrypt(
     Json(opts): Json<DecryptOptions>,
 ) -> Result<Json<JsPlaintext>, neon::types::extract::Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    let encrypted_record = encrypted_record_from_mp_base85(&opts.ciphertext, lock_context)?;
+    let encrypted_record = encrypted_record_from_mp_base85(opts.ciphertext, lock_context)?;
 
     let plaintext = client
         .zerokms
@@ -361,7 +361,7 @@ async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<JsPlaintext>>, neon::types::extract::Error> {
-    let ciphertexts: Vec<(String, Vec<zerokms::Context>)> = opts
+    let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -373,7 +373,7 @@ async fn decrypt_bulk(
     let encrypted_records = ciphertexts
         .into_iter()
         .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(&ciphertext, encryption_context)
+            encrypted_record_from_mp_base85(ciphertext, encryption_context)
         })
         .collect::<Result<Vec<WithContext>, Error>>()?;
 
@@ -399,7 +399,7 @@ async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
-    let ciphertexts: Vec<(String, Vec<zerokms::Context>)> = opts
+    let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -411,7 +411,7 @@ async fn decrypt_bulk_fallible(
     let encrypted_records: Result<Vec<WithContext>, Error> = ciphertexts
         .into_iter()
         .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(&ciphertext, encryption_context)
+            encrypted_record_from_mp_base85(ciphertext, encryption_context)
         })
         .collect();
 
@@ -451,13 +451,18 @@ async fn decrypt_bulk_fallible(
 }
 
 fn encrypted_record_from_mp_base85(
-    base85str: &str,
+    encrypted: Encrypted,
     encryption_context: Vec<zerokms::Context>,
 ) -> Result<WithContext, Error> {
-    let encrypted_record = EncryptedRecord::from_mp_base85(base85str)
-        // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-        // Instead, we use `map_err`.
-        .map_err(|err| Error::Base85(err.to_string()))?;
+    let encrypted_record = match encrypted {
+        Encrypted::Ciphertext { ciphertext, .. } => EncryptedRecord::from_mp_base85(&ciphertext)
+            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
+            // Instead, we use `map_err`.
+            .map_err(|err| Error::Base85(err.to_string()))?,
+        Encrypted::SteVec { ste_vec_index, .. } => {
+            ste_vec_index.into_root_ciphertext().map_err(Error::from)?
+        }
+    };
 
     Ok(WithContext {
         record: encrypted_record,

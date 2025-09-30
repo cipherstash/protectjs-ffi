@@ -5,15 +5,16 @@ import {
   type CastAs,
   decrypt,
   encrypt,
+  type EncryptConfig,
   newClient,
 } from '@cipherstash/protect-ffi'
 
-const encryptConfig = {
+const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {
     users: {
       email: {
-        cast_as: 'text' as CastAs, // FIXME: do we need the as ?
+        cast_as: 'text',
         indexes: {
           ore: {},
           match: {},
@@ -21,11 +22,11 @@ const encryptConfig = {
         },
       },
       score: {
-        cast_as: 'double' as CastAs,
-        indexes: {}, // TODO: add ore index options here when we support them
+        cast_as: 'double',
+        indexes: { ore: {} },
       },
       profile: {
-        cast_as: 'jsonb' as CastAs,
+        cast_as: 'jsonb',
         indexes: {}, // TODO: add an index here
       },
     },
@@ -48,7 +49,7 @@ describe('lock context', () => {
     })
 
     const decrypted = await decrypt(client, {
-      ciphertext: ciphertext.c,
+      ciphertext,
       unverifiedContext,
     })
 
@@ -83,7 +84,7 @@ describe('lock context', () => {
 
     await expect(async () => {
       await decrypt(client, {
-        ciphertext: ciphertext.c,
+        ciphertext,
         lockContext: {
           identityClaim: ['sub'],
         },

@@ -8,32 +8,12 @@ import {
   decryptBulkFallible,
   encrypt,
   encryptBulk,
+  EncryptConfig,
   newClient,
 } from '@cipherstash/protect-ffi'
 
-const encryptConfig = {
-  v: 1,
-  tables: {
-    users: {
-      email: {
-        cast_as: 'text' as CastAs, // FIXME: do we need the as ?
-        indexes: {
-          ore: {},
-          match: {},
-          unique: {},
-        },
-      },
-      score: {
-        cast_as: 'double' as CastAs,
-        indexes: {}, // TODO: add ore index options here when we support them
-      },
-      profile: {
-        cast_as: 'jsonb' as CastAs,
-        indexes: {}, // TODO: add an index here
-      },
-    },
-  },
-}
+// Import a shared encryptConfig from common.js
+import { encryptConfig } from './common.js'
 
 describe('encrypt and decrypt', async () => {
   test('can round-trip encrypt and decrypt a string', async () => {
@@ -46,7 +26,7 @@ describe('encrypt and decrypt', async () => {
       table: 'users',
     })
 
-    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+    const decrypted = await decrypt(client, { ciphertext })
 
     expect(decrypted).toBe(originalPlaintext)
   })
@@ -61,7 +41,7 @@ describe('encrypt and decrypt', async () => {
       table: 'users',
     })
 
-    const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+    const decrypted = await decrypt(client, { ciphertext })
 
     expect(decrypted).toBe(originalPlaintext)
   })
@@ -77,7 +57,8 @@ describe('encrypt and decrypt', async () => {
         table: 'users',
       })
 
-      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+      console.log('ciphertext', ciphertext)
+      const decrypted = await decrypt(client, { ciphertext })
 
       expect(decrypted).toEqual(originalPlaintext)
     })
@@ -92,7 +73,7 @@ describe('encrypt and decrypt', async () => {
         table: 'users',
       })
 
-      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+      const decrypted = await decrypt(client, { ciphertext })
 
       expect(decrypted).toEqual(originalPlaintext)
     })
@@ -107,7 +88,7 @@ describe('encrypt and decrypt', async () => {
         table: 'users',
       })
 
-      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+      const decrypted = await decrypt(client, { ciphertext })
 
       expect(decrypted).toEqual(originalPlaintext)
     })
@@ -122,7 +103,7 @@ describe('encrypt and decrypt', async () => {
         table: 'users',
       })
 
-      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+      const decrypted = await decrypt(client, { ciphertext })
 
       expect(decrypted).toEqual(originalPlaintext)
     })
@@ -137,7 +118,7 @@ describe('encrypt and decrypt', async () => {
         table: 'users',
       })
 
-      const decrypted = await decrypt(client, { ciphertext: ciphertext.c })
+      const decrypted = await decrypt(client, { ciphertext })
 
       expect(decrypted).toEqual(originalPlaintext)
     })
@@ -157,7 +138,7 @@ describe('encrypt and decrypt', async () => {
     })
 
     const decrypted = await decrypt(client, {
-      ciphertext: ciphertext.c,
+      ciphertext,
       lockContext: undefined,
       serviceToken: undefined,
       unverifiedContext: undefined,
@@ -189,7 +170,7 @@ describe('encryptBulk and decryptBulk', async () => {
     })
 
     const decrypted = await decryptBulk(client, {
-      ciphertexts: ciphertexts.map(({ c }) => ({ ciphertext: c })),
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
     expect(decrypted).toEqual([plaintextOne, plaintextTwo])
@@ -219,8 +200,8 @@ describe('encryptBulk and decryptBulk', async () => {
     })
 
     const decrypted = await decryptBulk(client, {
-      ciphertexts: ciphertexts.map(({ c }) => ({
-        ciphertext: c,
+      ciphertexts: ciphertexts.map((ciphertext) => ({
+        ciphertext,
         lockContext: undefined,
       })),
       serviceToken: undefined,
@@ -255,7 +236,7 @@ describe('encryptBulk and decryptBulk', async () => {
     })
 
     const decrypted = await decryptBulk(client, {
-      ciphertexts: ciphertexts.map(({ c }) => ({ ciphertext: c })),
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
       unverifiedContext,
     })
 
@@ -283,7 +264,7 @@ describe('encryptBulk and decryptBulk', async () => {
     })
 
     const decrypted = await decryptBulkFallible(client, {
-      ciphertexts: ciphertexts.map((c) => ({ ciphertext: c.c })),
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
     expect(decrypted).toEqual([{ data: plaintextOne }, { data: plaintextTwo }])
@@ -314,7 +295,7 @@ describe('encryptBulk and decryptBulk', async () => {
     })
 
     const decrypted = await decryptBulkFallible(client, {
-      ciphertexts: ciphertexts.map((c) => ({ ciphertext: c.c })),
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
       unverifiedContext,
     })
 
@@ -355,8 +336,8 @@ describe('encryptBulk and decryptBulk', async () => {
 
     await expect(async () => {
       await decryptBulk(client, {
-        ciphertexts: ciphertexts.map(({ c }) => ({
-          ciphertext: c,
+        ciphertexts: ciphertexts.map((ciphertext) => ({
+          ciphertext,
           lockContext: {
             identityClaim: ['sub'],
           },
