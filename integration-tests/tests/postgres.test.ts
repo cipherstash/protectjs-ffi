@@ -6,8 +6,10 @@ import {
   newClient,
   encryptBulk,
   decryptBulk,
+  type Encrypted,
+  type EncryptConfig,
 } from '@cipherstash/protect-ffi'
-import { Client } from 'pg'
+import { Client, type QueryResult } from 'pg'
 
 describe('postgres', async () => {
   const protectClient = await newClient({ encryptConfig: encryptConfig() })
@@ -60,12 +62,14 @@ describe('postgres', async () => {
       [ciphertext],
     )
 
-    const res = await pg.query('SELECT encrypted_text::jsonb FROM encrypted')
+    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
+      'SELECT encrypted_text::jsonb FROM encrypted',
+    )
 
     expect(res.rowCount).toBe(1)
 
     const decrypted = await decrypt(protectClient, {
-      ciphertext: res.rows[0].encrypted_text.c,
+      ciphertext: res.rows[0].encrypted_text,
     })
 
     expect(decrypted).toBe(originalPlaintext)
@@ -97,14 +101,14 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const res = await pg.query(`
+    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(`
       SELECT encrypted_text::jsonb FROM encrypted
       ORDER BY eql_v2.order_by(encrypted_text) ASC
     `)
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
-        ciphertext: row.encrypted_text.c,
+        ciphertext: row.encrypted_text,
       })),
     })
 
@@ -138,7 +142,7 @@ describe('postgres', async () => {
       table: 'users',
     })
 
-    const res = await pg.query(
+    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
       `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text LIKE $1::jsonb
@@ -148,7 +152,7 @@ describe('postgres', async () => {
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
-        ciphertext: row.encrypted_text.c,
+        ciphertext: row.encrypted_text,
       })),
     })
 
@@ -176,7 +180,7 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const res = await pg.query(
+    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
       `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text = $1::jsonb
@@ -192,7 +196,7 @@ describe('postgres', async () => {
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
-        ciphertext: row.encrypted_text.c,
+        ciphertext: row.encrypted_text,
       })),
     })
 
@@ -200,7 +204,7 @@ describe('postgres', async () => {
   })
 })
 
-function encryptConfig() {
+function encryptConfig(): EncryptConfig {
   return {
     v: 1,
     tables: {
@@ -210,12 +214,12 @@ function encryptConfig() {
             ore: {},
             match: {
               tokenizer: {
-                kind: 'ngram' as const,
+                kind: 'ngram',
                 token_length: 3,
               },
               token_filters: [
                 {
-                  kind: 'downcase' as const,
+                  kind: 'downcase',
                 },
               ],
               k: 6,

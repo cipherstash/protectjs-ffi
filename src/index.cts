@@ -19,7 +19,7 @@ export type Client = { readonly [sym]: unknown }
 declare module './load.cjs' {
   function newClient(opts: NewClientOptions): Promise<Client>
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
-  function decrypt(client: Client, opts: DecryptOptions): Promise<string>
+  function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,
@@ -27,7 +27,7 @@ declare module './load.cjs' {
   function decryptBulk(
     client: Client,
     opts: DecryptBulkOptions,
-  ): Promise<string[]>
+  ): Promise<JsPlaintext[]>
   function decryptBulkFallible(
     client: Client,
     opts: DecryptBulkOptions,
@@ -37,14 +37,14 @@ declare module './load.cjs' {
 export type DecryptResult = { data: string } | { error: string }
 
 export type EncryptPayload = {
-  plaintext: string
+  plaintext: JsPlaintext
   column: string
   table: string
   lockContext?: Context
 }
 
 export type BulkDecryptPayload = {
-  ciphertext: string
+  ciphertext: Encrypted
   lockContext?: Context
 }
 
@@ -91,6 +91,16 @@ export type CastAs =
   | 'text'
   | 'jsonb'
 
+// Extract the tables from a specific config
+type TablesOf<C extends EncryptConfig> = C['tables']
+
+// Compute valid { table, column } pairs
+export type Identifier<C extends EncryptConfig> = {
+  [T in keyof TablesOf<C>]: {
+    [CName in keyof TablesOf<C>[T]]: { table: T; column: CName }
+  }[keyof TablesOf<C>[T]]
+}[keyof TablesOf<C>]
+
 export type Indexes = {
   ore?: OreIndexOpts
   unique?: UniqueIndexOpts
@@ -134,8 +144,14 @@ export type ClientOpts = {
   clientKey?: string
 }
 
+export type JsPlaintext =
+  | string
+  | number
+  | Record<string, unknown>
+  | JsPlaintext[]
+
 export type EncryptOptions = {
-  plaintext: string
+  plaintext: JsPlaintext
   column: string
   table: string
   lockContext?: Context
@@ -150,7 +166,7 @@ export type EncryptBulkOptions = {
 }
 
 export type DecryptOptions = {
-  ciphertext: string
+  ciphertext: Encrypted
   lockContext?: Context
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>

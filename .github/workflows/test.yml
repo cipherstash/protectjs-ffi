@@ -73,29 +73,20 @@ jobs:
         uses: ./.github/actions/setup
         with:
           platform: linux-x64-gnu
+
       - name: Build
         shell: bash
         run: npm run debug
+
+      - name: Rust Lint
+        run: mise lint:rust
+
       - name: Test (typecheck, lint, & Rust)
         shell: bash
         run: npm test
-      - name: Install integration test dependencies
-        run: npm ci
-        working-directory: ./integration-tests
-      - name: Set up integration test DB
-        run: |
-          docker compose up --detach --wait
-          npm run eql:download
-          npm run eql:install
-        working-directory: ./integration-tests
-      - name: Create .env file in ./integration-tests/
-        run: |
-          cat << EOF > ./integration-tests/.env
-          CS_WORKSPACE_CRN=${{ secrets.CS_WORKSPACE_CRN }}
-          CS_CLIENT_ID=${{ secrets.CS_CLIENT_ID }}
-          CS_CLIENT_KEY=${{ secrets.CS_CLIENT_KEY }}
-          CS_CLIENT_ACCESS_KEY=${{ secrets.CS_CLIENT_ACCESS_KEY }}
-          EOF
+
+      - name: Integration test setup
+        run: mise setup
+
       - name: Test (integration)
-        run: npm test
-        working-directory: ./integration-tests
+        run: mise run test:integration:all

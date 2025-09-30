@@ -1,3 +1,26 @@
 [tools]
 node = "latest"
-rust = "latest"
+
+[env]
+PGPORT = "5432"
+PGDATABASE = "cipherstash"
+PGUSER = "cipherstash"
+PGPASSWORD = "password"
+PGHOST = "localhost"
+
+[task_config]
+includes = [
+  "integration-tests/tasks.toml",
+]
+
+[tasks."build:debug"]
+description = "Build the project in debug mode"
+run = "npm run debug"
+
+[tasks."lint:rust"]
+description = "cargo clippy with all features and no dependencies, includes tests"
+run = "cargo clippy --no-deps --tests --all-features --all-targets -- -D warnings"
+
+[tasks."fmt"]
+description = "Format code with rustfmt"
+run = "cargo fmt"

@@ -1,0 +1,50 @@
+[start-db]
+description = "Start a local Postgres database in a Docker container"
+dir = "{{ config_root }}/integration-tests"
+run = """
+docker compose up --wait --detach
+
+# wait till postgres is ready
+printf "Waiting for postgres to be ready..."
+until pg_isready -q -h ${PGHOST} -U ${PGUSER} -p ${PGPORT}; do
+    printf "."
+    sleep 0.1
+done
+echo "done"
+"""
+
+["eql:download"]
+description = "Download CipherStash encrypt SQL"
+dir = "{{ config_root }}/integration-tests"
+run = "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/download/eql-2.0.2/cipherstash-encrypt.sql"
+
+["eql:install"]
+description = "Install CipherStash encrypt SQL into the database"
+dir = "{{ config_root }}/integration-tests"
+run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
+
+[setup]
+description = "Set up the integration test environment"
+dir = "{{ config_root }}/integration-tests"
+run = [
+    "npm ci",
+    "mise run start-db",
+    "mise run eql:download",
+    "mise run eql:install",
+]
+
+["test:integration"]
+description = "Run the integration tests"
+dir = "{{ config_root }}/integration-tests"
+run = [
+    "mise run build:debug",
+    "npx vitest --exclude tests/lock-context.test.ts",
+]
+
+["test:integration:all"]
+description = "Run all integration tests (includes lock context tests)"
+dir = "{{ config_root }}/integration-tests"
+run = [
+    "mise run build:debug",
+    "npx vitest",
+]
