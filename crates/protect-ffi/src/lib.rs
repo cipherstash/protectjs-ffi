@@ -144,7 +144,7 @@ struct EncryptBulkOptions {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PlaintextPayload {
-    plaintext: String, // FIXME: use JsPlaintext here instead
+    plaintext: JsPlaintext,
     column: String,
     table: String,
     lock_context: Option<LockContext>,
