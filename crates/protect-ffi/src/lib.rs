@@ -450,6 +450,14 @@ async fn decrypt_bulk_fallible(
     Ok(Json(results))
 }
 
+#[neon::export]
+fn is_encrypted(
+    Json(raw): Json<serde_json::Value>,
+) -> bool {
+    let result: Result<Encrypted, _> = serde_json::from_value(raw);
+    result.is_ok()
+}
+
 fn encrypted_record_from_mp_base85(
     encrypted: Encrypted,
     encryption_context: Vec<zerokms::Context>,
@@ -569,4 +577,38 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     neon::registered().export(&mut cx)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod is_encrypted {
+        use serde_json::json;
+        use super::*;
+
+        #[test]
+        fn valid_ciphertext_is_encrypted() {
+            let encrypted: Encrypted = Encrypted::Ciphertext {
+                ciphertext: "3q2+7w==".to_string(),
+                ore_index: None,
+                match_index: None,
+                unique_index: None,
+                identifier: crate::encrypt_config::Identifier {
+                    table: "users".to_string(),
+                    column: "email".to_string(),
+                },
+                version: 2,
+            };
+
+            let valid_encrypted = serde_json::to_value(&encrypted).unwrap();
+            assert!(is_encrypted(Json(valid_encrypted)));
+        }
+
+        #[test]
+        fn invalid_ciphertext_is_not_encrypted() {
+            let invalid_encrypted = json!({"k":"invalid","c":"3q2+7w==","i":{"t":"users","c":"email"},"v":2});
+            assert!(!is_encrypted(Json(invalid_encrypted)));
+        }
+    }
 }
