@@ -4,6 +4,7 @@ export {
   newClient,
   encrypt,
   encryptBulk,
+  isEncrypted,
   decrypt,
   decryptBulk,
   decryptBulkFallible,
@@ -20,6 +21,7 @@ declare module './load.cjs' {
   function newClient(opts: NewClientOptions): Promise<Client>
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
+  function isEncrypted(encrypted: Encrypted): boolean
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,
@@ -57,17 +59,34 @@ export type Context = {
   identityClaim: string[]
 }
 
-export type Encrypted = {
-  k: string
-  c: string
-  ob: string[] | null
-  bf: number[] | null
-  hm: string | null
-  i: {
-    c: string
-    t: string
-  }
-  v: number
+export type Encrypted =
+  | {
+      k: 'ct'
+      c: string
+      ob: string[] | null
+      bf: number[] | null
+      hm: string | null
+      i: {
+        c: string
+        t: string
+      }
+      v: number
+    }
+  | {
+      k: 'sv'
+      sv: SteVecEncryptedEntry[]
+      i: {
+        c: string
+        t: string
+      }
+      v: number
+    }
+
+export type SteVecEncryptedEntry = {
+  tokenized_selector: string
+  term: string
+  record: string
+  parent_is_array: boolean
 }
 
 export type EncryptConfig = {

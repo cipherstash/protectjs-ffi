@@ -2,14 +2,11 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
-  type CastAs,
   decrypt,
-  decryptBulk,
-  decryptBulkFallible,
   encrypt,
-  encryptBulk,
   type Identifier,
   newClient,
+  isEncrypted,
 } from '@cipherstash/protect-ffi'
 
 // Import a shared encryptConfig from common.js
@@ -42,6 +39,8 @@ describe.each(cases)(
           plaintext,
           ...identifier,
         })
+
+        expect(isEncrypted(ciphertext)).toBe(true)
 
         const decrypted = await decrypt(client, { ciphertext })
         expect(decrypted).toBe(plaintext)
