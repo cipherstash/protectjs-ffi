@@ -2,6 +2,7 @@ mod encrypt_config;
 mod js_plaintext;
 
 use cipherstash_client::{
+    Crn,
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
         zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
@@ -9,14 +10,12 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
-        ScopedCipher, SteVec, TypeParseError,
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, Queryable, QueryOp, ReferencedPendingPipeline, ScopedCipher, SteVec, TypeParseError
     },
-    schema::ColumnConfig,
+    schema::{operator::Operator, ColumnConfig},
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     UnverifiedContext,
 };
-use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
 use js_plaintext::JsPlaintext;
 use neon::{
@@ -131,6 +130,24 @@ struct EncryptOptions {
     lock_context: Option<LockContext>,
     service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryOptions {
+    plaintext: JsPlaintext,
+    column: String,
+    table: String,
+    #[serde(deserialize_with = "deserialize_operator")]
+    operator: Operator,
+}
+
+fn deserialize_operator<'de, D>(deserializer: D) -> Result<Operator, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    s.parse().map_err(serde::de::Error::custom)
 }
 
 #[derive(Deserialize)]
@@ -333,6 +350,26 @@ async fn encrypt_bulk(
 }
 
 #[neon::export]
+async fn encrypt_query(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<QueryOptions>,
+) -> Result<Json<IndexTerm>, neon::types::extract::Error> {
+    let ident = Identifier::new(opts.table, opts.column);
+
+    let column_config = client
+        .encrypt_config
+        .get(&ident)
+        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+
+    let plaintext: Plaintext = opts.plaintext.try_into()?;
+    let index = column_config.index_for_operator(&opts.operator).unwrap(); // TODO: Handle no index found
+    let term = (index, plaintext).build_queryable(client.cipher, QueryOp::Default)?;
+
+    Ok(Json(term))
+}
+
+
+#[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
@@ -344,6 +381,7 @@ async fn decrypt(
         .zerokms
         .decrypt_single(
             encrypted_record,
+            None,
             opts.service_token,
             opts.unverified_context,
         )
@@ -381,6 +419,7 @@ async fn decrypt_bulk(
         .zerokms
         .decrypt(
             encrypted_records,
+            None,
             opts.service_token,
             opts.unverified_context,
         )

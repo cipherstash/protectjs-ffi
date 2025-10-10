@@ -22,6 +22,7 @@ declare module './load.cjs' {
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
   function isEncrypted(encrypted: Encrypted): boolean
+  function encryptQuery(client: Client, opts: QueryOptions): Promise<IndexTerm>
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,
@@ -196,3 +197,13 @@ export type DecryptBulkOptions = {
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
+
+export type QueryOptions = {
+  plaintext: JsPlaintext
+  column: string
+  table: string
+  operator: QueryOperator
+}
+
+export type QueryOperator = '<' | '<=' | '=' | '>=' | '>' | '~~' | '~~*' | '@>' | '<@';
+
