@@ -25,3 +25,6 @@ vitaminc-protected = { version = "0.1.0-pre2", git = "https://github.com/ciphers
 chrono = "0.4.42"
 quickcheck = "1.0.3"
 quickcheck_macros = "1.0.3"
+
+[package.metadata.cargo]
+net.git-fetch-with-cli = true
