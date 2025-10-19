@@ -10,6 +10,7 @@ import {
   type EncryptConfig,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
+import { encryptQuery } from '../../lib/load.cjs'
 
 describe('postgres', async () => {
   const protectClient = await newClient({ encryptConfig: encryptConfig() })
@@ -23,12 +24,16 @@ describe('postgres', async () => {
     await pg.query(`
       CREATE TABLE encrypted (
         id SERIAL PRIMARY KEY,
-        encrypted_text eql_v2_encrypted
+        encrypted_text eql_v2_encrypted,
+        encrypted_score eql_v2_encrypted
       )
     `)
 
     await pg.query(
       "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_text')",
+    )
+    await pg.query(
+      "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_score')",
     )
 
     // clean up function, called once after all tests run
@@ -136,10 +141,11 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const search = await encrypt(protectClient, {
+    const search = await encryptQuery(protectClient, {
       plaintext: 'ccc',
       column: 'email',
       table: 'users',
+      operator: '~~',
     })
 
     const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
@@ -157,6 +163,56 @@ describe('postgres', async () => {
     })
 
     expect(decrypted).toEqual(['aaa ccc'])
+  })
+
+  test('can use an ORE query', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 1000,
+          column: 'score',
+          table: 'users',
+        },
+        {
+          plaintext: 75,
+          column: 'score',
+          table: 'users',
+        },
+        {
+          plaintext: 888,
+          column: 'score',
+          table: 'users',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_score) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      ciphertexts,
+    )
+
+    const search = await encryptQuery(protectClient, {
+      plaintext: 500,
+      column: 'score',
+      table: 'users',
+      operator: '>=',
+    })
+
+    const res: QueryResult<{ encrypted_score: Encrypted }> = await pg.query(
+      `
+      SELECT encrypted_score::jsonb FROM encrypted
+      WHERE encrypted_score >= $1::jsonb ORDER BY eql_v2.order_by(encrypted_score) ASC
+      `,
+      [search],
+    )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_score,
+      })),
+    })
+
+    expect(decrypted).toEqual([888, 1000])
   })
 
   test('can use an exact query', async () => {
@@ -180,18 +236,19 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
+    const query = await encryptQuery(protectClient, {
+      plaintext: 'b',
+      column: 'email',
+      table: 'users',
+      operator: '=',
+    });
+
     const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
       `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text = $1::jsonb
       `,
-      [
-        await encrypt(protectClient, {
-          plaintext: 'b',
-          column: 'email',
-          table: 'users',
-        }),
-      ],
+      [query],
     )
 
     const decrypted = await decryptBulk(protectClient, {
@@ -204,6 +261,7 @@ describe('postgres', async () => {
   })
 })
 
+// TODO: Load the config from common
 function encryptConfig(): EncryptConfig {
   return {
     v: 1,
@@ -228,6 +286,10 @@ function encryptConfig(): EncryptConfig {
             },
             unique: {},
           },
+        },
+        score: {
+          cast_as: 'double',
+          indexes: { ore: {} },
         },
       },
     },

@@ -2336,6 +2336,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "cipherstash-client",
+ "const-hex",
  "hex",
  "neon",
  "once_cell",

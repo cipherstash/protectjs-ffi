@@ -11,8 +11,8 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, QueryOp, Queryable,
-        ReferencedPendingPipeline, ScopedCipher, SteVec, TypeParseError,
+        self, EncryptionError, Plaintext, PlaintextTarget, QueryOp, Queryable,
+        ReferencedPendingPipeline, ScopedCipher, TypeParseError,
     },
     schema::{operator::Operator, ColumnConfig},
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+
+use crate::query::Query;
 
 #[cfg(test)]
 extern crate quickcheck;
@@ -68,6 +70,8 @@ pub enum Error {
     Parse(#[from] serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
     UnknownColumn(Identifier),
+    #[error("no index found for column {}.{} supporting operator {}", _0.table, _0.column, _1)]
+    MissingIndexForOperator(Identifier, Operator),
     #[error(transparent)]
     RecordDecryptError(#[from] RecordDecryptError),
 }
@@ -330,7 +334,7 @@ async fn encrypt_bulk(
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<QueryOptions>,
-) -> Result<Json<IndexTerm>, neon::types::extract::Error> {
+) -> Result<Json<Query>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table, opts.column);
 
     let column_config = client
@@ -339,10 +343,14 @@ async fn encrypt_query(
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
     let plaintext: Plaintext = opts.plaintext.into();
-    let index = column_config.index_for_operator(&opts.operator).unwrap(); // TODO: Handle no index found
-    let term = (index, plaintext).build_queryable(client.cipher, QueryOp::Default)?;
+    let index = column_config.index_for_operator(&opts.operator)
+        .ok_or_else(|| Error::MissingIndexForOperator(ident, opts.operator))?;
 
-    Ok(Json(term))
+    let query: Query = (index, plaintext)
+        .build_queryable(client.cipher, QueryOp::Default)?
+        .try_into()?;
+
+    Ok(Json(query))
 }
 
 #[neon::export]

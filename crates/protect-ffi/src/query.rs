@@ -1,12 +1,55 @@
-use cipherstash_client::encryption::{EncryptedSteVecTerm, SteQueryVec, TokenizedSelector};
+use cipherstash_client::{encryption::{EncryptedSteVecTerm, IndexTerm, SteQueryVec, TokenizedSelector}};
 use serde::Serialize;
 
+/// Represents a query term that can be serialized to JSON for use in FFI.
 #[derive(Serialize, Debug)]
-#[serde(untagged)]
 pub enum Query {
+    #[serde(rename = "hm", with = "const_hex_sans_prefix")]
+    Binary(Vec<u8>),
+    #[serde(rename = "bf")]
+    BitMap(Vec<u16>),
+
+    #[serde(rename = "ob")]
+    OreLeft(Vec<OreTerm>),
+
     Json(SteQueryVec<16>),
     SteVecSelector(TokenizedSelector<16>),
     SteVecTerm(EncryptedSteVecTerm),
+}
+
+#[derive(Serialize, Debug)]
+#[serde(transparent)]
+pub struct OreTerm(#[serde(with = "const_hex_sans_prefix")] Vec<u8>);
+
+impl TryFrom<IndexTerm> for Query {
+    type Error = String;
+
+    fn try_from(value: IndexTerm) -> Result<Self, Self::Error> {
+        match value {
+            IndexTerm::Binary(b) => Ok(Query::Binary(b)),
+            IndexTerm::BitMap(bm) => Ok(Query::BitMap(bm)),
+            IndexTerm::OreLeft(ol) => Ok(Query::OreLeft(vec![OreTerm(ol)])),
+            // TODO: Truncate - or remove entirely?
+            IndexTerm::OreFull(of) => Ok(Query::OreLeft(vec![OreTerm(of)])),
+            IndexTerm::SteQueryVec(sqv) => Ok(Query::Json(sqv)),
+            IndexTerm::SteVecSelector(ts) => Ok(Query::SteVecSelector(ts)),
+            IndexTerm::SteVecTerm(est) => Ok(Query::SteVecTerm(est)),
+            unsupported => Err(format!("{unsupported:?} cannot be converted to Query")),
+        }
+    }
+}
+
+// The const_hex provides a serde serializer but it prefixes with "0x" which we don't want here.
+mod const_hex_sans_prefix {
+    use serde::Serializer;
+
+    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let hex_string = const_hex::encode(bytes);
+        serializer.serialize_str(&hex_string)
+    }
 }
 
 #[cfg(test)]
