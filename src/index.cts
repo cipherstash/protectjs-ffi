@@ -162,7 +162,11 @@ export type ClientOpts = {
   accessKey?: string
   clientId?: string
   clientKey?: string
+  keyset?: IdentifiedBy
 }
+
+// This is a UUID or name
+export type IdentifiedBy = string
 
 export type JsPlaintext =
   | string
@@ -205,5 +209,29 @@ export type QueryOptions = {
   operator: QueryOperator
 }
 
-export type QueryOperator = '<' | '<=' | '=' | '>=' | '>' | '~~' | '~~*' | '@>' | '<@';
+export type QueryOperator =
+  | '<'
+  | '<='
+  | '='
+  | '>='
+  | '>'
+  | '~~'
+  | '~~*'
+  | '@>'
+  | '<@'
 
+export type IndexTerm =
+  | { type: 'Binary'; value: Uint8Array }
+  | { type: 'BinaryVec'; value: Uint8Array[] }
+  | { type: 'BitMap'; value: number[] } // u16 fits safely in JS number
+  | { type: 'OreFull'; value: Uint8Array }
+  | { type: 'OreArray'; value: Uint8Array[] }
+  | { type: 'OreLeft'; value: Uint8Array }
+  | { type: 'SteVecSelector'; value: TokenizedSelector }
+  | { type: 'SteVecTerm'; value: EncryptedSteVecTerm }
+  | { type: 'SteQueryVec'; value: SteQueryVec }
+  | { type: 'Null' }
+
+export type TokenizedSelector = string
+export type EncryptedSteVecTerm = string[]
+export type SteQueryVec = string[]

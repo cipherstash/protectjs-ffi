@@ -2,7 +2,6 @@ mod encrypt_config;
 mod js_plaintext;
 
 use cipherstash_client::{
-    Crn,
     config::{
         console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
         zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
@@ -10,11 +9,12 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, Queryable, QueryOp, ReferencedPendingPipeline, ScopedCipher, SteVec, TypeParseError
+        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, QueryOp, Queryable,
+        ReferencedPendingPipeline, ScopedCipher, SteVec, TypeParseError,
     },
     schema::{operator::Operator, ColumnConfig},
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
-    UnverifiedContext,
+    Crn, IdentifiedBy, UnverifiedContext,
 };
 use encrypt_config::{EncryptConfig, Identifier};
 use js_plaintext::JsPlaintext;
@@ -105,6 +105,7 @@ struct ClientOpts {
     access_key: Option<String>,
     client_id: Option<String>,
     client_key: Option<String>,
+    keyset: Option<IdentifiedBy>,
 }
 
 #[derive(Deserialize)]
@@ -246,7 +247,7 @@ pub async fn new_client(
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), None).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), client_opts.keyset).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
@@ -361,13 +362,12 @@ async fn encrypt_query(
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    let plaintext: Plaintext = opts.plaintext.try_into()?;
+    let plaintext: Plaintext = opts.plaintext.into();
     let index = column_config.index_for_operator(&opts.operator).unwrap(); // TODO: Handle no index found
     let term = (index, plaintext).build_queryable(client.cipher, QueryOp::Default)?;
 
     Ok(Json(term))
 }
-
 
 #[neon::export]
 async fn decrypt(

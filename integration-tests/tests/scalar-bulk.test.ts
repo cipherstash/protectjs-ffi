@@ -128,7 +128,9 @@ describe('encryptBulk and decryptBulk', async () => {
           },
         })),
       })
-    }).rejects.toThrowError(/Failed to send request/)
+      // NOTE: New ZeroKMS changes will report this as an authentication error
+      // See https://github.com/cipherstash/cipherstash-suite/pull/1516
+    }).rejects.toThrowError(/Unexpected error/)
   }, 10000)
 
   test('decryptBulk throws an error when identityClaim is used without a service token', async () => {
