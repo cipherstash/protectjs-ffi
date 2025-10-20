@@ -13,6 +13,8 @@ pub enum Query {
     OreLeft(Vec<OreTerm>),
 
     Json(SteQueryVec<16>),
+    
+    #[serde(rename = "s")]
     SteVecSelector(TokenizedSelector<16>),
     SteVecTerm(EncryptedSteVecTerm),
 }

@@ -22,7 +22,7 @@ declare module './load.cjs' {
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
   function isEncrypted(encrypted: Encrypted): boolean
-  function encryptQuery(client: Client, opts: QueryOptions): Promise<IndexTerm>
+  function encryptQuery(client: Client, opts: QueryOptions): Promise<EncryptedQueryTerm>
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,
@@ -60,7 +60,25 @@ export type Context = {
   identityClaim: string[]
 }
 
-export type Encrypted =
+// TODO: Make generic and use the identifier utility type
+export type Versioned = { i: { c: string; t: string }; v: number };
+
+export type EncryptedCT = Versioned & {
+  k: 'ct';
+  c: string;
+  ob: string[] | null;
+  bf: number[] | null;
+  hm: string | null;
+};
+
+export type EncryptedSV = Versioned & {
+  k: 'sv';
+  sv: SteVecEncryptedEntry[];
+};
+
+export type Encrypted = EncryptedCT | EncryptedSV;
+
+/*export type Encrypted =
   | {
       k: 'ct'
       c: string
@@ -81,10 +99,10 @@ export type Encrypted =
         t: string
       }
       v: number
-    }
+    }*/
 
 export type SteVecEncryptedEntry = {
-  tokenized_selector: string
+  s: string
   term: string
   record: string
   parent_is_array: boolean
@@ -219,9 +237,15 @@ export type QueryOperator =
   | '~~*'
   | '@>'
   | '<@'
+  | '->'
 
-export type IndexTerm =
-  | { type: 'Binary'; value: Uint8Array }
+// TODO: Maybe give each variant a more descriptive name via a named type
+export type EncryptedQueryTerm =
+  | { ob: String[] }
+  | { bf: number[] }
+  | { hm: string }
+  | { s: string }
+  /*| { type: 'Binary'; value: Uint8Array }
   | { type: 'BinaryVec'; value: Uint8Array[] }
   | { type: 'BitMap'; value: number[] } // u16 fits safely in JS number
   | { type: 'OreFull'; value: Uint8Array }
@@ -234,4 +258,4 @@ export type IndexTerm =
 
 export type TokenizedSelector = string
 export type EncryptedSteVecTerm = string[]
-export type SteQueryVec = string[]
+export type SteQueryVec = string[]*/

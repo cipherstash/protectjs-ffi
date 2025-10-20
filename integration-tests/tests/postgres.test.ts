@@ -8,6 +8,7 @@ import {
   decryptBulk,
   type Encrypted,
   type EncryptConfig,
+  EncryptedSV,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
 import { encryptQuery } from '../../lib/load.cjs'
@@ -25,7 +26,8 @@ describe('postgres', async () => {
       CREATE TABLE encrypted (
         id SERIAL PRIMARY KEY,
         encrypted_text eql_v2_encrypted,
-        encrypted_score eql_v2_encrypted
+        encrypted_score eql_v2_encrypted,
+        encrypted_profile eql_v2_encrypted
       )
     `)
 
@@ -35,6 +37,10 @@ describe('postgres', async () => {
     await pg.query(
       "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_score')",
     )
+    // FIXME: This doesn't work for ste_vec - should there be a different function?
+    //await pg.query(
+    //  "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_profile')",
+    //)
 
     // clean up function, called once after all tests run
     return async () => {
@@ -259,6 +265,79 @@ describe('postgres', async () => {
 
     expect(decrypted).toEqual(['b'])
   })
+
+  test.only('can use JSON stabby ->', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: { foo: 'bar', baz: [1, 2, 3] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { foo: 'baz', qux: [4, 5, 6] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { other: 'foo' },
+          column: 'profile',
+          table: 'users',
+        },
+      ],
+    })
+
+    console.log("Ciphertexts:", JSON.stringify(ciphertexts[0]));
+
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_profile) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      ciphertexts,
+    )
+
+    const query = await encryptQuery(protectClient, {
+      // FIXME: The first form fails (the selector doesn't map correctly)
+      // See JsonIndexer::tokenize_selector (the Dot variant behaves differently)
+      //plaintext: "$.foo",
+      plaintext: "$['foo']",
+      column: 'profile',
+      table: 'users',
+      operator: '->',
+    });
+
+    console.log("Query:", query);
+
+    const res1: QueryResult<{ encrypted_profile: EncryptedSV }> = await pg.query(
+      `
+      SELECT encrypted_profile::jsonb FROM encrypted
+      `
+    )
+
+    res1.rows[0].encrypted_profile.sv.forEach((entry) => {
+      console.log("Selector:", entry.s, "Term:", entry.term);
+    });
+
+    // Or jsonb_path_query
+    // eql_v2.jsonb_path_query(encrypted_profile, $1)
+
+    //SELECT eql_v2.jsonb_path_query(encrypted_profile, eql_v2.selector($1::jsonb)) FROM encrypted
+    // TODO: Use the jsonquery approach from the Json indexer docs
+    const res: QueryResult<{ encrypted_profile: EncryptedSV }> = await pg.query(
+      `
+      SELECT eql_v2."->"(encrypted_profile, eql_v2.selector($1::jsonb)) FROM encrypted
+      `,
+      [query],
+    )
+
+    console.log("ROWS:", res.rows);
+    /*const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_profile,
+      })),
+    })
+
+    expect(decrypted).toEqual(['bar', 'baz', null])*/
+    expect("foo").toBe("food")
+  })
 })
 
 // TODO: Load the config from common
@@ -290,6 +369,10 @@ function encryptConfig(): EncryptConfig {
         score: {
           cast_as: 'double',
           indexes: { ore: {} },
+        },
+        profile: {
+          cast_as: 'jsonb',
+          indexes: { ste_vec: { prefix: 'users/profile' } },
         },
       },
     },

@@ -11,10 +11,9 @@ use cipherstash_client::{
     },
     credentials::{ServiceCredentials, ServiceToken},
     encryption::{
-        self, EncryptionError, Plaintext, PlaintextTarget, QueryOp, Queryable,
-        ReferencedPendingPipeline, ScopedCipher, TypeParseError,
+        self, EncryptionError, JsonIndexerOptions, Plaintext, PlaintextTarget, QueryOp, Queryable, ReferencedPendingPipeline, ScopedCipher, TypeParseError
     },
-    schema::{operator::Operator, ColumnConfig},
+    schema::{column::IndexType, operator::Operator, ColumnConfig},
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     Crn, IdentifiedBy, UnverifiedContext,
 };
@@ -346,9 +345,26 @@ async fn encrypt_query(
     let index = column_config.index_for_operator(&opts.operator)
         .ok_or_else(|| Error::MissingIndexForOperator(ident, opts.operator))?;
 
+    dbg!(&index);
+    let query_op = if let IndexType::SteVec { .. } = index.index_type {
+        QueryOp::SteVecSelector
+    } else {
+        QueryOp::Default
+    };
+    println!("Using query op: {:?}", query_op);
+
     let query: Query = (index, plaintext)
-        .build_queryable(client.cipher, QueryOp::Default)?
+        // TODO: Better error
+        .build_queryable(client.cipher, query_op).map_err(|e| Error::Unimplemented(format!("build queryable failed: {e}")))?
+        //.build_queryable(client.cipher, QueryOp::SteVecSelector)?
         .try_into()?;
+
+    // JSON is completely different
+    // TODO: Check the operator (from this crate) and build the JSON query if its a JSON operator
+    // Find an Index with type SteVec to get the prefix (see cipherstash_config IndexType) and create the JsonIndexerOptions
+    //let options: JsonIndexerOptions = todo!();
+    //let indexer = JsonIndexer::try_init(options)?;
+    // indexer.generate_selector(selector, &client.cipher.index_key());
 
     Ok(Json(query))
 }
