@@ -43,12 +43,12 @@ export type EncryptPayload = {
   plaintext: JsPlaintext
   column: string
   table: string
-  lockContext?: Context
+  lockContext?: Context[]
 }
 
 export type BulkDecryptPayload = {
   ciphertext: Encrypted
-  lockContext?: Context
+  lockContext?: Context[]
 }
 
 export type CtsToken = {
@@ -56,57 +56,51 @@ export type CtsToken = {
   expiry: number
 }
 
-export type Context = {
-  identityClaim: string[]
-}
+// TODO: Handle the Value type as well
+export type Context = { identityClaim: string } | { tag: string }
 
-// TODO: Make generic and use the identifier utility type
-export type Versioned = { i: { c: string; t: string }; v: number };
+export type Versioned = { v: number };
+
+// Named term types
+export type Base85Ciphertext = string;
+export type BloomFilter = number[];
+export type HMAC = string;
+export type EncodedBlockOREArray = string[];
+export type EncodedFixedLengthORE = string;
+export type EncodedVariableLengthORE = string;
+export type JSONPathSelector = string;
 
 export type EncryptedCT = Versioned & {
   k: 'ct';
-  c: string;
-  ob: string[] | null;
-  bf: number[] | null;
-  hm: string | null;
+  c: Base85Ciphertext;
+  ob: EncodedBlockOREArray | null;
+  bf: BloomFilter | null;
+  hm: HMAC | null;
+  i: { c: string; t: string };
 };
 
 export type EncryptedSV = Versioned & {
   k: 'sv';
   sv: SteVecEncryptedEntry[];
+  i: { c: string; t: string };
 };
 
-export type Encrypted = EncryptedCT | EncryptedSV;
+// NOTE: We don't currently get the version or identifiers back from an SteVec entry
+// This is a limitation of EQL v2
+export type EncryptedSVE = {
+  k: 'sve';
+  sve: SteVecEncryptedEntry;
+}
 
-/*export type Encrypted =
-  | {
-      k: 'ct'
-      c: string
-      ob: string[] | null
-      bf: number[] | null
-      hm: string | null
-      i: {
-        c: string
-        t: string
-      }
-      v: number
-    }
-  | {
-      k: 'sv'
-      sv: SteVecEncryptedEntry[]
-      i: {
-        c: string
-        t: string
-      }
-      v: number
-    }*/
+export type Encrypted = EncryptedCT | EncryptedSV | EncryptedSVE;
 
 export type SteVecEncryptedEntry = {
-  s: string
-  term: string
-  record: string
+  s: JSONPathSelector
+  c: Base85Ciphertext
   parent_is_array: boolean
-}
+} & SteVecTerm;
+
+export type SteVecTerm = { hm: HMAC } | { ocf: EncodedFixedLengthORE } | { ocv: EncodedVariableLengthORE };
 
 export type EncryptConfig = {
   v: number
@@ -196,7 +190,7 @@ export type EncryptOptions = {
   plaintext: JsPlaintext
   column: string
   table: string
-  lockContext?: Context
+  lockContext?: Context[]
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
@@ -209,7 +203,7 @@ export type EncryptBulkOptions = {
 
 export type DecryptOptions = {
   ciphertext: Encrypted
-  lockContext?: Context
+  lockContext?: Context[]
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
@@ -239,23 +233,9 @@ export type QueryOperator =
   | '<@'
   | '->'
 
-// TODO: Maybe give each variant a more descriptive name via a named type
+// These types are included in responses from encryptQuery
 export type EncryptedQueryTerm =
-  | { ob: String[] }
-  | { bf: number[] }
-  | { hm: string }
-  | { s: string }
-  /*| { type: 'Binary'; value: Uint8Array }
-  | { type: 'BinaryVec'; value: Uint8Array[] }
-  | { type: 'BitMap'; value: number[] } // u16 fits safely in JS number
-  | { type: 'OreFull'; value: Uint8Array }
-  | { type: 'OreArray'; value: Uint8Array[] }
-  | { type: 'OreLeft'; value: Uint8Array }
-  | { type: 'SteVecSelector'; value: TokenizedSelector }
-  | { type: 'SteVecTerm'; value: EncryptedSteVecTerm }
-  | { type: 'SteQueryVec'; value: SteQueryVec }
-  | { type: 'Null' }
-
-export type TokenizedSelector = string
-export type EncryptedSteVecTerm = string[]
-export type SteQueryVec = string[]*/
+  | { ob: EncodedBlockOREArray }
+  | { bf: BloomFilter }
+  | { hm: HMAC }
+  | { s: JSONPathSelector }

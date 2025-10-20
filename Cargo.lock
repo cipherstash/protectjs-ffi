@@ -1332,9 +1332,9 @@ dependencies = [
 
 [[package]]
 name = "generic-array"
-version = "0.14.9"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bb6743198531e02858aeaea5398fcc883e71851fcbcb5a2f773e2fb6cb1edf2"
+checksum = "bff49e947297f3312447abdca79f45f4738097cc82b06e72054d2223f601f1b9"
 dependencies = [
  "typenum",
  "version_check",
@@ -2334,9 +2334,11 @@ dependencies = [
 name = "protect-ffi"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "cipherstash-client",
  "const-hex",
+ "generic-array",
  "hex",
  "neon",
  "once_cell",
@@ -2346,6 +2348,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "uuid",
  "vitaminc-protected 0.1.0-pre2 (git+https://github.com/cipherstash/vitaminc)",
 ]
 

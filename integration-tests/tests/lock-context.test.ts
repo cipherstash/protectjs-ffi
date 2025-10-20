@@ -44,9 +44,9 @@ describe('lock context', () => {
         plaintext: originalPlaintext,
         column: 'email',
         table: 'users',
-        lockContext: {
-          identityClaim: ['sub'],
-        },
+        lockContext: [
+          { identityClaim: 'sub' },
+        ],
       })
       // NOTE: New ZeroKMS changes will report this as an authentication error
       // See https://github.com/cipherstash/cipherstash-suite/pull/1516
@@ -60,16 +60,16 @@ describe('lock context', () => {
     const ciphertext = await encrypt(client, {
       plaintext: originalPlaintext,
       column: 'email',
-      table: 'users',
+     table: 'users',
     })
 
     await expect(async () => {
       await decrypt(client, {
         ciphertext,
-        lockContext: {
-          identityClaim: ['sub'],
-        },
-      })
-    }).rejects.toThrowError(/Failed to send request/)
+        lockContext: [
+          { identityClaim: 'sub' },
+        ],
+      });
+    }).rejects.toThrowError(/Failed to retrieve key/)
   }, 10000)
 })

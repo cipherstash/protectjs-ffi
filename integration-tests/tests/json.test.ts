@@ -31,7 +31,7 @@ describe.each([
   'Can round-trip encrypt & decrypt JSON',
   async ({ encryptConfig, description }) => {
     describe(`using ${description} config`, () => {
-      test('object', async ({ annotate }) => {
+      test('object', async () => {
         const client = await newClient({ encryptConfig })
         const originalPlaintext = { foo: 'bar', baz: 123 }
 

@@ -9,6 +9,9 @@ import {
   type Encrypted,
   type EncryptConfig,
   EncryptedSV,
+  EncryptedCT,
+  SteVecEncryptedEntry,
+  EncryptedSVE,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
 import { encryptQuery } from '../../lib/load.cjs'
@@ -73,7 +76,7 @@ describe('postgres', async () => {
       [ciphertext],
     )
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
+    const res: QueryResult<{ encrypted_text: EncryptedCT }> = await pg.query(
       'SELECT encrypted_text::jsonb FROM encrypted',
     )
 
@@ -267,7 +270,7 @@ describe('postgres', async () => {
   })
 
   test.only('can use JSON stabby ->', async () => {
-    const ciphertexts = await encryptBulk(protectClient, {
+    const toStore = await encryptBulk(protectClient, {
       plaintexts: [
         {
           plaintext: { foo: 'bar', baz: [1, 2, 3] },
@@ -287,11 +290,11 @@ describe('postgres', async () => {
       ],
     })
 
-    console.log("Ciphertexts:", JSON.stringify(ciphertexts[0]));
+    console.log("Ciphertexts:", JSON.stringify(toStore[0]));
 
     await pg.query(
       'INSERT INTO encrypted (encrypted_profile) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
-      ciphertexts,
+      toStore,
     )
 
     const query = await encryptQuery(protectClient, {
@@ -313,30 +316,34 @@ describe('postgres', async () => {
     )
 
     res1.rows[0].encrypted_profile.sv.forEach((entry) => {
-      console.log("Selector:", entry.s, "Term:", entry.term);
+      console.log("Selector:", entry.s);
     });
 
     // Or jsonb_path_query
     // eql_v2.jsonb_path_query(encrypted_profile, $1)
 
-    //SELECT eql_v2.jsonb_path_query(encrypted_profile, eql_v2.selector($1::jsonb)) FROM encrypted
     // TODO: Use the jsonquery approach from the Json indexer docs
-    const res: QueryResult<{ encrypted_profile: EncryptedSV }> = await pg.query(
+    //SELECT eql_v2."->"(encrypted_profile, eql_v2.selector($1::jsonb))::jsonb as value FROM encrypted
+    const res: QueryResult<{ value: SteVecEncryptedEntry | null }> = await pg.query(
       `
-      SELECT eql_v2."->"(encrypted_profile, eql_v2.selector($1::jsonb)) FROM encrypted
+      SELECT (encrypted_profile->eql_v2.selector($1::jsonb))::jsonb as value FROM encrypted
       `,
       [query],
     )
 
-    console.log("ROWS:", res.rows);
-    /*const decrypted = await decryptBulk(protectClient, {
-      ciphertexts: res.rows.map((row) => ({
-        ciphertext: row.encrypted_profile,
-      })),
-    })
+    console.log("ROWS:", res.rows[0].value);
+    let ciphertexts = res.rows.flatMap((row) => (row.value === null ? [] : [{
+        ciphertext: { k: 'sve', sve: row.value } as EncryptedSVE,
+      }]));
 
-    expect(decrypted).toEqual(['bar', 'baz', null])*/
-    expect("foo").toBe("food")
+    console.log("Ciphertexts:", JSON.stringify(ciphertexts));
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts,
+    })
+    //const decrypted = await decrypt(protectClient, ciphertexts[0])
+   //expect(decrypted).toEqual('bar')
+   // FIXME: we should handle null as an input and just return null
+   expect(decrypted).toEqual(['bar', 'baz'])
   })
 })
 

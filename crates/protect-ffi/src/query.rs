@@ -85,6 +85,8 @@ mod tests {
             ]
         ]);
 
+        println!("Serialized Query::Json: {}", serde_json::to_string_pretty(&x).unwrap());
+
         assert_eq!(serde_json::to_value(&x).unwrap(), check);
     }
 
