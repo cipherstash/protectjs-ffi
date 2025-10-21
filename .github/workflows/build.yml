@@ -96,7 +96,10 @@ jobs:
         env:
           CARGO_BUILD_TARGET: ${{ steps.neon.outputs.target }}
           NEON_BUILD_PLATFORM: ${{ matrix.cfg.platform }}
-        run: npm run ${{ matrix.cfg.script }}
+        run: |
+          eval `ssh-agent -s`
+          ssh-add - <<< "${{ secrets.CIPHERSTASH_SUITE_PRIVATE_SSH_KEY }}"
+          npm run ${{ matrix.cfg.script }}
       - name: Pack
         id: pack
         shell: bash
