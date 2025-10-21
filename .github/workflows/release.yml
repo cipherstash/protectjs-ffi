@@ -143,5 +143,15 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for p in ./dist/*.tgz ; do
-            npm publish --access public $p
+            # Extract version from package tarball
+            version=$(tar -xOf "$p" package/package.json | jq -r '.version')
+            
+            # Check if this is a prerelease version (contains hyphen)
+            if [[ "$version" == *-* ]]; then
+              echo "Publishing prerelease version $version with tag 'next'"
+              npm publish --access public --tag next "$p"
+            else
+              echo "Publishing stable version $version"
+              npm publish --access public "$p"
+            fi
           done
