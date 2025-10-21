@@ -98,7 +98,7 @@ jobs:
           NEON_BUILD_PLATFORM: ${{ matrix.cfg.platform }}
         run: |
           eval `ssh-agent -s`
-          ssh-add - <<< "${{ secrets.CIPHERSTASH_SUITE_PRIVATE_SSH_KEY }}"
+          echo "${{ secrets.CIPHERSTASH_SUITE_PRIVATE_SSH_KEY }}" | ssh-add -
           npm run ${{ matrix.cfg.script }}
       - name: Pack
         id: pack
