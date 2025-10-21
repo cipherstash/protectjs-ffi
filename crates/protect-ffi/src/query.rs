@@ -12,10 +12,14 @@ pub enum Query {
     #[serde(rename = "ob")]
     OreLeft(Vec<OreTerm>),
 
-    Json(SteQueryVec<16>),
+    // NOTE: This type doesn't current exist in the EQL spec but its convenient to give it the sv name
+    // even though its the query type and not the full encrypted entry.
+    #[serde(rename = "sv")]
+    SteQuery(SteQueryVec<16>),
     
     #[serde(rename = "s")]
     SteVecSelector(TokenizedSelector<16>),
+
     SteVecTerm(EncryptedSteVecTerm),
 }
 
@@ -32,7 +36,7 @@ impl TryFrom<IndexTerm> for Query {
             IndexTerm::BitMap(bm) => Ok(Query::BitMap(bm)),
             IndexTerm::OreLeft(ol) => Ok(Query::OreLeft(vec![OreTerm(ol)])),
             IndexTerm::OreFull(of) => Ok(Query::OreLeft(vec![OreTerm(of)])),
-            IndexTerm::SteQueryVec(sqv) => Ok(Query::Json(sqv)),
+            IndexTerm::SteQueryVec(sqv) => Ok(Query::SteQuery(sqv)),
             IndexTerm::SteVecSelector(ts) => Ok(Query::SteVecSelector(ts)),
             IndexTerm::SteVecTerm(est) => Ok(Query::SteVecTerm(est)),
             unsupported => Err(format!("{unsupported:?} cannot be converted to Query")),
@@ -72,7 +76,7 @@ mod tests {
 
     #[test]
     fn serialize_ste_query_vec() {
-        let x = indexer().query(json!({"foo": 1}), &index_key()).map(Query::Json).unwrap();
+        let x = indexer().query(json!({"foo": 1}), &index_key()).map(Query::SteQuery).unwrap();
         let check = json!([
             [
                 "814586efb4a86da0ae72f65c87e4b7b3",
@@ -83,8 +87,6 @@ mod tests {
                 "019d5739400872d8378c4002bd922ad7ff296fd9124a8cbfbf64e4803fa6e21d0f8cf8376a034d2735759c7b8e9f39d519b1da4264726e977e2d2df4ccf1b8c41d"
             ]
         ]);
-
-        println!("Serialized Query::Json: {}", serde_json::to_string_pretty(&x).unwrap());
 
         assert_eq!(serde_json::to_value(&x).unwrap(), check);
     }

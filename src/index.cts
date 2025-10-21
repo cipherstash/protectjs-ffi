@@ -30,10 +30,10 @@ declare module './load.cjs' {
   function isEncrypted<T extends EncryptConfig>(
     encrypted: AnyEncrypted<T>,
   ): boolean
-  function encryptQuery<T extends EncryptConfig>(
+  function encryptQuery<T extends EncryptConfig, Q extends EncryptedQueryTerm>(
     client: Client,
     opts: QueryOptions<T>,
-  ): Promise<EncryptedQueryTerm>
+  ): Promise<Q>
   function encryptBulk<T extends EncryptConfig>(
     client: Client,
     opts: EncryptBulkOptions<T>,
@@ -107,10 +107,12 @@ export type AnyEncrypted<T extends EncryptConfig> =
   | EncryptedSVE
 
 export type SteVecEncryptedEntry = {
-  s: JSONPathSelector
   c: Base85Ciphertext
   parent_is_array: boolean
-} & SteVecTerm
+} & SteVecTerm & { s: JSONPathSelector }
+
+export type SteVecQuery = { svq: SteQueryVecEntry[] }
+export type SteQueryVecEntry = { s: JSONPathSelector } & SteVecTerm
 
 export type SteVecTerm =
   | { hm: HMAC }
@@ -240,8 +242,25 @@ export type JsonbOperator = '@>' | '<@' | '->'
 export type QueryOperator = NumericOperator | StringOperator | JsonbOperator
 
 // These types are included in responses from encryptQuery
-export type EncryptedQueryTerm =
-  | { ob: EncodedBlockOREArray }
-  | { bf: BloomFilter }
-  | { hm: HMAC }
-  | { s: JSONPathSelector }
+export type EncryptedQueryTerm = {}
+export interface RangeQuery extends EncryptedQueryTerm {
+  ob: EncodedBlockOREArray
+}
+export interface MatchQuery extends EncryptedQueryTerm {
+  bf: BloomFilter
+}
+export interface ExactQuery extends EncryptedQueryTerm {
+  hm: HMAC
+}
+// Used for stabby queries (->)
+export interface JsonSelect extends EncryptedQueryTerm {
+  s: JSONPathSelector
+}
+// Used for contains queries (@>)
+export interface JsonContainsQuery extends EncryptedQueryTerm {
+  sv: SteQueryVecEntry[]
+}
+// Used for is-contained-by queries (<@)
+export interface JsonIsContainedByQuery extends EncryptedQueryTerm {
+  sv: SteQueryVecEntry[]
+}

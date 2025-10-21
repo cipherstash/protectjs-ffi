@@ -11,6 +11,8 @@ import {
   type SteVecEncryptedEntry,
   type EncryptedSVE,
   type EncryptConfig,
+  type JsonSelect,
+  type JsonContainsQuery,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
 import { encryptQuery } from '../../lib/load.cjs'
@@ -46,18 +48,18 @@ describe('postgres', async () => {
 
     // clean up function, called once after all tests run
     return async () => {
-      //await pg.query('DROP TABLE ENCRYPTED')
+      await pg.query('DROP TABLE ENCRYPTED')
       await pg.end()
     }
   })
 
   beforeEach(async () => {
     // called once before each test run
-    //await pg.query('BEGIN')
+    await pg.query('BEGIN')
 
     // clean up function, called once after each test run
     return async () => {
-      //await pg.query('ROLLBACK')
+      await pg.query('ROLLBACK')
     }
   })
 
@@ -297,7 +299,7 @@ describe('postgres', async () => {
       toStore,
     )
 
-    const query = await encryptQuery(protectClient, {
+    const query: JsonSelect = await encryptQuery(protectClient, {
       // FIXME: The first form fails (the selector doesn't map correctly)
       // See JsonIndexer::tokenize_selector (the Dot variant behaves differently)
       //plaintext: "$.foo",
@@ -307,36 +309,76 @@ describe('postgres', async () => {
       operator: '->',
     })
 
-    // SELECT jsonb_path_query(encrypted_profile::jsonb, '$.sv[*] ? (exists(@ ? (@.s == "d18aa290a20cf6413f50d5ca87a0a6c2"))).c') FROM encrypted
-    // TODO: Use the jsonquery approach from the Json indexer docs
-    //SELECT eql_v2."->"(encrypted_profile, eql_v2.selector($1::jsonb))::jsonb as value FROM encrypted
+    // NOTE: I realise this is pretty horrendous but the current EQL implementation isn't correct
     const res: QueryResult<{ value: SteVecEncryptedEntry | null }> =
       await pg.query(
         `
-      SELECT (encrypted_profile->eql_v2.selector($1::jsonb))::jsonb as value FROM encrypted
+        SELECT jsonb_path_query(encrypted_profile::jsonb, '$.sv[*] ? (exists(@ ? (@.s == $v)))', jsonb_build_object('v', to_jsonb($1::text))) as value FROM encrypted
+      `,
+        [query.s],
+      )
+
+    expect(res.rowCount).toBe(2)
+    const ciphertexts = res.rows.map((row) => ({
+      ciphertext: { k: 'sve', sve: row.value } as EncryptedSVE,
+    }))
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts,
+    })
+    expect(decrypted).toEqual(['bar', 'baz'])
+  })
+
+  test('can use JSON contains @>', async () => {
+    const toStore = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: { foo: 'bar', baz: [1, 2, 3] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { foo: 'baz', qux: [4, 5, 6] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { other: 'foo' },
+          column: 'profile',
+          table: 'users',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_profile) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      toStore,
+    )
+
+    const query: JsonContainsQuery = await encryptQuery(protectClient, {
+      plaintext: { foo: 'bar' },
+      column: 'profile',
+      table: 'users',
+      operator: '@>',
+    })
+
+    // NOTE: I realise this is pretty horrendous but the current EQL implementation isn't correct
+    const res: QueryResult<{ value: EncryptedSV<User> | null }> =
+      await pg.query(
+        `
+        SELECT encrypted_profile::jsonb as value from encrypted where encrypted_profile::jsonb @> $1::jsonb
       `,
         [query],
       )
 
-    console.log('ROWS:', res.rows[0].value)
-    const ciphertexts = res.rows.flatMap((row) =>
-      row.value === null
-        ? []
-        : [
-            {
-              ciphertext: { k: 'sve', sve: row.value } as EncryptedSVE,
-            },
-          ],
-    )
+    const ciphertexts = res.rows.map((row) => ({
+      ciphertext: row.value as EncryptedSV<User>,
+    }))
 
-    console.log('Ciphertexts:', JSON.stringify(ciphertexts))
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts,
     })
-    //const decrypted = await decrypt(protectClient, ciphertexts[0])
-    //expect(decrypted).toEqual('bar')
-    // FIXME: we should handle null as an input and just return null
-    expect(decrypted).toEqual(['bar', 'baz'])
+    expect(decrypted).toEqual([{ foo: 'bar', baz: [1, 2, 3] }])
   })
 })
 

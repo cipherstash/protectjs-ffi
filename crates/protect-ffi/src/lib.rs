@@ -332,12 +332,10 @@ async fn encrypt_query(
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    println!("Operator: {:?}", opts.operator);
     let plaintext: Plaintext = opts.plaintext.into();
     let index = column_config.index_for_operator(&opts.operator)
         .ok_or_else(|| Error::MissingIndexForOperator(ident, opts.operator))?;
 
-    dbg!(&index);
     let query_op = if let IndexType::SteVec { .. } = index.index_type {
         // NOTE: We don't currently use the QueryOp::SteVecTerm variant because a simpler approach was taken for proxy
         match opts.operator {
@@ -347,20 +345,10 @@ async fn encrypt_query(
     } else {
         QueryOp::Default
     };
-    println!("Using query op: {:?}", query_op);
 
     let query: Query = (index, plaintext)
-        // TODO: Better error
         .build_queryable(client.cipher, query_op).map_err(|e| Error::Unimplemented(format!("build queryable failed: {e}")))?
-        //.build_queryable(client.cipher, QueryOp::SteVecSelector)?
         .try_into()?;
-
-    // JSON is completely different
-    // TODO: Check the operator (from this crate) and build the JSON query if its a JSON operator
-    // Find an Index with type SteVec to get the prefix (see cipherstash_config IndexType) and create the JsonIndexerOptions
-    //let options: JsonIndexerOptions = todo!();
-    //let indexer = JsonIndexer::try_init(options)?;
-    // indexer.generate_selector(selector, &client.cipher.index_key());
 
     Ok(Json(query))
 }
@@ -370,15 +358,11 @@ async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
 ) -> Result<Json<JsPlaintext>, neon::types::extract::Error> {
-    //let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    //let encrypted_record = encrypted_record_from_mp_base85(opts.ciphertext, lock_context)?;
     let DecryptOptions {
         ciphertext,
         service_token,
         unverified_context,
     } = opts;
-
-    println!("Decrypting ciphertext: {:?}", ciphertext);
 
     let plaintext = client
         .zerokms
@@ -390,11 +374,7 @@ async fn decrypt(
         )
         .await
         .map_err(Error::from)
-        .inspect_err(|e| println!("Got error: {e}"))
-        .inspect(|o| println!("Got plaintext bytes: {:?}", o))
         .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from))?;
-
-    println!("Decrypted plaintext: {:?}", plaintext);
 
     JsPlaintext::try_from(plaintext)
         .map(Json)
@@ -406,21 +386,6 @@ async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<JsPlaintext>>, neon::types::extract::Error> {
-    /*let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
-        .ciphertexts
-        .into_iter()
-        .map(|payload| {
-            let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            (payload.ciphertext, lock_context)
-        })
-        .collect();
-
-    let encrypted_records = ciphertexts
-        .into_iter()
-        .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(ciphertext, encryption_context)
-        })
-        .collect::<Result<Vec<WithContext>, Error>>()?;*/
 
     let decrypted = client
         .zerokms
@@ -445,24 +410,6 @@ async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
-    /*let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
-        .ciphertexts
-        .into_iter()
-        .map(|payload| {
-            let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            (payload.ciphertext, lock_context)
-        })
-        .collect();
-
-    let encrypted_records: Result<Vec<WithContext>, Error> = ciphertexts
-        .into_iter()
-        .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(ciphertext, encryption_context)
-        })
-        .collect();
-
-    let encrypted_records = encrypted_records?;*/
-
     let decrypted = client
         .zerokms
         .decrypt_fallible(

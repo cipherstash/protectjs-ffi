@@ -7,6 +7,9 @@ import {
   type NumericOperator,
   type JsonbOperator,
   type JsPlaintext,
+  type JsonContainsQuery,
+  type JsonIsContainedByQuery,
+  type JsonSelect,
 } from '@cipherstash/protect-ffi'
 
 // Import a shared encryptConfig from common.js
@@ -32,17 +35,6 @@ const scoreValidOperators: { op: NumericOperator; index: string }[] = [
   { op: '>', index: 'ob' },
   { op: '<', index: 'ob' },
 ]
-
-const jsonValidOperators: {
-  op: JsonbOperator
-  index: string
-  v: JsPlaintext
-}[] = [
-  { op: '->', index: 's', v: '$.foo' },
-  { op: '@>', index: 'sv', v: { foo: 'bar' } },
-  // TODO: The rest
-]
-
 const emailInvalidOperators: { op: NumericOperator | JsonbOperator }[] = [
   { op: '@>' },
   { op: '<@' },
@@ -92,7 +84,7 @@ describe('query encryption', () => {
       test('fails to generate a query term', async () => {
         const client = await newClient({ encryptConfig })
 
-        expect(async () => {
+        await expect(async () => {
           await encryptQuery(client, {
             plaintext: 'foo@example.net',
             column: 'email',
@@ -130,7 +122,7 @@ describe('query encryption', () => {
       test('fails to generate a query term', async () => {
         const client = await newClient({ encryptConfig })
 
-        expect(async () => {
+        await expect(async () => {
           await encryptQuery(client, {
             plaintext: 5000,
             column: 'score',
@@ -144,24 +136,63 @@ describe('query encryption', () => {
     },
   )
 
-  describe.each(jsonValidOperators)(
-    'using operator $op for json column',
-    ({ op, index, v }) => {
-      test(`generates the correct query type: '${index}'`, async () => {
-        const client = await newClient({ encryptConfig })
+  // JSON operators are all special cases
+  describe('Valid JSON operators', () => {
+    test('-> generates an ejsonpath selector', async () => {
+      const client = await newClient({ encryptConfig })
 
-        const query = await encryptQuery(client, {
-          // TODO: This plaintext is _different_ to the JSON type
-          plaintext: v,
-          column: 'profile',
-          table: 'users',
-          operator: op,
-        })
-
-        expect(query).toHaveProperty(index)
+      const query: JsonSelect = await encryptQuery(client, {
+        // TODO: This plaintext is _different_ to the JSON type
+        plaintext: '$.foo',
+        column: 'profile',
+        table: 'users',
+        operator: '->',
       })
-    },
-  )
+
+      // Should have a selector in the response
+      expect(query).toHaveProperty('s')
+    })
+
+    test('@> generates ste_query_vec', async () => {
+      const client = await newClient({ encryptConfig })
+
+      const query: JsonContainsQuery = await encryptQuery(client, {
+        plaintext: { foo: 'bar' } as JsPlaintext,
+        column: 'profile',
+        table: 'users',
+        operator: '@>',
+      })
+
+      // Should have a ste_query_vec in the response
+      expect(query).toHaveProperty('sv')
+      expect(query.sv).toBeInstanceOf(Array)
+      expect(query.sv.length).toEqual(2)
+      expect(query.sv[0]).toHaveProperty('s')
+      expect(query.sv[0]).toHaveProperty('hm')
+      expect(query.sv[1]).toHaveProperty('s')
+      expect(query.sv[1]).toHaveProperty('ocv')
+    })
+
+    test('<@ generates ste_query_vec', async () => {
+      const client = await newClient({ encryptConfig })
+
+      const query: JsonIsContainedByQuery = await encryptQuery(client, {
+        plaintext: { foo: 'bar' } as JsPlaintext,
+        column: 'profile',
+        table: 'users',
+        operator: '<@',
+      })
+
+      // Should have a ste_query_vec in the response
+      expect(query).toHaveProperty('sv')
+      expect(query.sv).toBeInstanceOf(Array)
+      expect(query.sv.length).toEqual(2)
+      expect(query.sv[0]).toHaveProperty('s')
+      expect(query.sv[0]).toHaveProperty('hm')
+      expect(query.sv[1]).toHaveProperty('s')
+      expect(query.sv[1]).toHaveProperty('ocv')
+    })
+  })
 
   describe.each(jsonInvalidOperators)(
     'using operator $op for json column',
@@ -169,7 +200,7 @@ describe('query encryption', () => {
       test('fails to generate a query term', async () => {
         const client = await newClient({ encryptConfig })
 
-        expect(async () => {
+        await expect(async () => {
           await encryptQuery(client, {
             plaintext: '$["foo"]',
             column: 'profile',
