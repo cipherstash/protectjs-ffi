@@ -19,35 +19,44 @@ export type Client = { readonly [sym]: unknown }
 // which otherwise default to `any`.
 declare module './load.cjs' {
   function newClient(opts: NewClientOptions): Promise<Client>
-  function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
-  function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
-  function isEncrypted(encrypted: Encrypted): boolean
-  function encryptQuery(client: Client, opts: QueryOptions): Promise<EncryptedQueryTerm>
-  function encryptBulk(
+  function encrypt<T extends EncryptConfig>(
     client: Client,
-    opts: EncryptBulkOptions,
-  ): Promise<Encrypted[]>
-  function decryptBulk(
+    opts: EncryptOptions<T>,
+  ): Promise<AnyEncrypted<T>>
+  function decrypt<T extends EncryptConfig>(
     client: Client,
-    opts: DecryptBulkOptions,
+    opts: DecryptOptions<T>,
+  ): Promise<JsPlaintext>
+  function isEncrypted<T extends EncryptConfig>(
+    encrypted: AnyEncrypted<T>,
+  ): boolean
+  function encryptQuery<T extends EncryptConfig>(
+    client: Client,
+    opts: QueryOptions<T>,
+  ): Promise<EncryptedQueryTerm>
+  function encryptBulk<T extends EncryptConfig>(
+    client: Client,
+    opts: EncryptBulkOptions<T>,
+  ): Promise<AnyEncrypted<T>[]>
+  function decryptBulk<T extends EncryptConfig>(
+    client: Client,
+    opts: DecryptBulkOptions<T>,
   ): Promise<JsPlaintext[]>
-  function decryptBulkFallible(
+  function decryptBulkFallible<T extends EncryptConfig>(
     client: Client,
-    opts: DecryptBulkOptions,
+    opts: DecryptBulkOptions<T>,
   ): Promise<DecryptResult[]>
 }
 
 export type DecryptResult = { data: string } | { error: string }
 
-export type EncryptPayload = {
+export type EncryptPayload<T extends EncryptConfig> = {
   plaintext: JsPlaintext
-  column: string
-  table: string
   lockContext?: Context[]
-}
+} & Identifier<T>
 
-export type BulkDecryptPayload = {
-  ciphertext: Encrypted
+export type BulkDecryptPayload<T extends EncryptConfig> = {
+  ciphertext: AnyEncrypted<T>
   lockContext?: Context[]
 }
 
@@ -59,48 +68,54 @@ export type CtsToken = {
 // TODO: Handle the Value type as well
 export type Context = { identityClaim: string } | { tag: string }
 
-export type Versioned = { v: number };
+export type Versioned = { v: number }
 
 // Named term types
-export type Base85Ciphertext = string;
-export type BloomFilter = number[];
-export type HMAC = string;
-export type EncodedBlockOREArray = string[];
-export type EncodedFixedLengthORE = string;
-export type EncodedVariableLengthORE = string;
-export type JSONPathSelector = string;
+export type Base85Ciphertext = string
+export type BloomFilter = number[]
+export type HMAC = string
+export type EncodedBlockOREArray = string[]
+export type EncodedFixedLengthORE = string
+export type EncodedVariableLengthORE = string
+export type JSONPathSelector = string
 
-export type EncryptedCT = Versioned & {
-  k: 'ct';
-  c: Base85Ciphertext;
-  ob: EncodedBlockOREArray | null;
-  bf: BloomFilter | null;
-  hm: HMAC | null;
-  i: { c: string; t: string };
-};
+export type EncryptedCell<T extends EncryptConfig> = Versioned & {
+  k: 'ct'
+  c: Base85Ciphertext
+  ob: EncodedBlockOREArray | null
+  bf: BloomFilter | null
+  hm: HMAC | null
+  i: Identifier<T>
+}
 
-export type EncryptedSV = Versioned & {
-  k: 'sv';
-  sv: SteVecEncryptedEntry[];
-  i: { c: string; t: string };
-};
+export type EncryptedSV<T extends EncryptConfig> = Versioned & {
+  k: 'sv'
+  sv: SteVecEncryptedEntry[]
+  i: Identifier<T>
+}
 
 // NOTE: We don't currently get the version or identifiers back from an SteVec entry
 // This is a limitation of EQL v2
 export type EncryptedSVE = {
-  k: 'sve';
-  sve: SteVecEncryptedEntry;
+  k: 'sve'
+  sve: SteVecEncryptedEntry
 }
 
-export type Encrypted = EncryptedCT | EncryptedSV | EncryptedSVE;
+export type AnyEncrypted<T extends EncryptConfig> =
+  | EncryptedCell<T>
+  | EncryptedSV<T>
+  | EncryptedSVE
 
 export type SteVecEncryptedEntry = {
   s: JSONPathSelector
   c: Base85Ciphertext
   parent_is_array: boolean
-} & SteVecTerm;
+} & SteVecTerm
 
-export type SteVecTerm = { hm: HMAC } | { ocf: EncodedFixedLengthORE } | { ocv: EncodedVariableLengthORE };
+export type SteVecTerm =
+  | { hm: HMAC }
+  | { ocf: EncodedFixedLengthORE }
+  | { ocv: EncodedVariableLengthORE }
 
 export type EncryptConfig = {
   v: number
@@ -186,52 +201,43 @@ export type JsPlaintext =
   | Record<string, unknown>
   | JsPlaintext[]
 
-export type EncryptOptions = {
+export type EncryptOptions<T extends EncryptConfig> = {
   plaintext: JsPlaintext
-  column: string
-  table: string
+  lockContext?: Context[]
+  serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
+} & Identifier<T>
+
+export type EncryptBulkOptions<T extends EncryptConfig> = {
+  plaintexts: EncryptPayload<T>[]
+  serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
+}
+
+export type DecryptOptions<T extends EncryptConfig> = {
+  ciphertext: AnyEncrypted<T>
   lockContext?: Context[]
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
-export type EncryptBulkOptions = {
-  plaintexts: EncryptPayload[]
+export type DecryptBulkOptions<T extends EncryptConfig> = {
+  ciphertexts: BulkDecryptPayload<T>[]
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
-export type DecryptOptions = {
-  ciphertext: Encrypted
-  lockContext?: Context[]
-  serviceToken?: CtsToken
-  unverifiedContext?: Record<string, unknown>
-}
-
-export type DecryptBulkOptions = {
-  ciphertexts: BulkDecryptPayload[]
-  serviceToken?: CtsToken
-  unverifiedContext?: Record<string, unknown>
-}
-
-export type QueryOptions = {
+export type QueryOptions<T extends EncryptConfig> = {
   plaintext: JsPlaintext
-  column: string
-  table: string
   operator: QueryOperator
-}
+} & Identifier<T>
 
-export type QueryOperator =
-  | '<'
-  | '<='
-  | '='
-  | '>='
-  | '>'
-  | '~~'
-  | '~~*'
-  | '@>'
-  | '<@'
-  | '->'
+// TODO: Limit these based on the encrypt config
+export type NumericOperator = '>' | '>=' | '<' | '<=' | '='
+export type StringOperator = '~~' | '~~*' | '='
+export type JsonbOperator = '@>' | '<@' | '->'
+
+export type QueryOperator = NumericOperator | StringOperator | JsonbOperator
 
 // These types are included in responses from encryptQuery
 export type EncryptedQueryTerm =

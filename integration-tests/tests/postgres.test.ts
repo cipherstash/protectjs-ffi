@@ -6,12 +6,11 @@ import {
   newClient,
   encryptBulk,
   decryptBulk,
-  type Encrypted,
+  type EncryptedCell,
+  type EncryptedSV,
+  type SteVecEncryptedEntry,
+  type EncryptedSVE,
   type EncryptConfig,
-  EncryptedSV,
-  EncryptedCT,
-  SteVecEncryptedEntry,
-  EncryptedSVE,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
 import { encryptQuery } from '../../lib/load.cjs'
@@ -47,18 +46,18 @@ describe('postgres', async () => {
 
     // clean up function, called once after all tests run
     return async () => {
-      await pg.query('DROP TABLE ENCRYPTED')
+      //await pg.query('DROP TABLE ENCRYPTED')
       await pg.end()
     }
   })
 
   beforeEach(async () => {
     // called once before each test run
-    await pg.query('BEGIN')
+    //await pg.query('BEGIN')
 
     // clean up function, called once after each test run
     return async () => {
-      await pg.query('ROLLBACK')
+      //await pg.query('ROLLBACK')
     }
   })
 
@@ -76,9 +75,8 @@ describe('postgres', async () => {
       [ciphertext],
     )
 
-    const res: QueryResult<{ encrypted_text: EncryptedCT }> = await pg.query(
-      'SELECT encrypted_text::jsonb FROM encrypted',
-    )
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query('SELECT encrypted_text::jsonb FROM encrypted')
 
     expect(res.rowCount).toBe(1)
 
@@ -115,7 +113,8 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(`
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query(`
       SELECT encrypted_text::jsonb FROM encrypted
       ORDER BY eql_v2.order_by(encrypted_text) ASC
     `)
@@ -157,13 +156,14 @@ describe('postgres', async () => {
       operator: '~~',
     })
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
-      `
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query(
+        `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text LIKE $1::jsonb
       `,
-      [search],
-    )
+        [search],
+      )
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
@@ -207,13 +207,14 @@ describe('postgres', async () => {
       operator: '>=',
     })
 
-    const res: QueryResult<{ encrypted_score: Encrypted }> = await pg.query(
-      `
+    const res: QueryResult<{ encrypted_score: EncryptedCell<User> }> =
+      await pg.query(
+        `
       SELECT encrypted_score::jsonb FROM encrypted
       WHERE encrypted_score >= $1::jsonb ORDER BY eql_v2.order_by(encrypted_score) ASC
       `,
-      [search],
-    )
+        [search],
+      )
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
@@ -250,15 +251,16 @@ describe('postgres', async () => {
       column: 'email',
       table: 'users',
       operator: '=',
-    });
+    })
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
-      `
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query(
+        `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text = $1::jsonb
       `,
-      [query],
-    )
+        [query],
+      )
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
@@ -269,7 +271,7 @@ describe('postgres', async () => {
     expect(decrypted).toEqual(['b'])
   })
 
-  test.only('can use JSON stabby ->', async () => {
+  test('can use JSON stabby ->', async () => {
     const toStore = await encryptBulk(protectClient, {
       plaintexts: [
         {
@@ -290,8 +292,6 @@ describe('postgres', async () => {
       ],
     })
 
-    console.log("Ciphertexts:", JSON.stringify(toStore[0]));
-
     await pg.query(
       'INSERT INTO encrypted (encrypted_profile) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
       toStore,
@@ -305,50 +305,45 @@ describe('postgres', async () => {
       column: 'profile',
       table: 'users',
       operator: '->',
-    });
+    })
 
-    console.log("Query:", query);
-
-    const res1: QueryResult<{ encrypted_profile: EncryptedSV }> = await pg.query(
-      `
-      SELECT encrypted_profile::jsonb FROM encrypted
-      `
-    )
-
-    res1.rows[0].encrypted_profile.sv.forEach((entry) => {
-      console.log("Selector:", entry.s);
-    });
-
-    // Or jsonb_path_query
-    // eql_v2.jsonb_path_query(encrypted_profile, $1)
-
+    // SELECT jsonb_path_query(encrypted_profile::jsonb, '$.sv[*] ? (exists(@ ? (@.s == "d18aa290a20cf6413f50d5ca87a0a6c2"))).c') FROM encrypted
     // TODO: Use the jsonquery approach from the Json indexer docs
     //SELECT eql_v2."->"(encrypted_profile, eql_v2.selector($1::jsonb))::jsonb as value FROM encrypted
-    const res: QueryResult<{ value: SteVecEncryptedEntry | null }> = await pg.query(
-      `
+    const res: QueryResult<{ value: SteVecEncryptedEntry | null }> =
+      await pg.query(
+        `
       SELECT (encrypted_profile->eql_v2.selector($1::jsonb))::jsonb as value FROM encrypted
       `,
-      [query],
+        [query],
+      )
+
+    console.log('ROWS:', res.rows[0].value)
+    const ciphertexts = res.rows.flatMap((row) =>
+      row.value === null
+        ? []
+        : [
+            {
+              ciphertext: { k: 'sve', sve: row.value } as EncryptedSVE,
+            },
+          ],
     )
 
-    console.log("ROWS:", res.rows[0].value);
-    let ciphertexts = res.rows.flatMap((row) => (row.value === null ? [] : [{
-        ciphertext: { k: 'sve', sve: row.value } as EncryptedSVE,
-      }]));
-
-    console.log("Ciphertexts:", JSON.stringify(ciphertexts));
+    console.log('Ciphertexts:', JSON.stringify(ciphertexts))
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts,
     })
     //const decrypted = await decrypt(protectClient, ciphertexts[0])
-   //expect(decrypted).toEqual('bar')
-   // FIXME: we should handle null as an input and just return null
-   expect(decrypted).toEqual(['bar', 'baz'])
+    //expect(decrypted).toEqual('bar')
+    // FIXME: we should handle null as an input and just return null
+    expect(decrypted).toEqual(['bar', 'baz'])
   })
 })
 
+interface User extends EncryptConfig {}
+
 // TODO: Load the config from common
-function encryptConfig(): EncryptConfig {
+function encryptConfig(): User {
   return {
     v: 1,
     tables: {

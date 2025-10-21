@@ -31,7 +31,6 @@ impl TryFrom<IndexTerm> for Query {
             IndexTerm::Binary(b) => Ok(Query::Binary(b)),
             IndexTerm::BitMap(bm) => Ok(Query::BitMap(bm)),
             IndexTerm::OreLeft(ol) => Ok(Query::OreLeft(vec![OreTerm(ol)])),
-            // TODO: Truncate - or remove entirely?
             IndexTerm::OreFull(of) => Ok(Query::OreLeft(vec![OreTerm(of)])),
             IndexTerm::SteQueryVec(sqv) => Ok(Query::Json(sqv)),
             IndexTerm::SteVecSelector(ts) => Ok(Query::SteVecSelector(ts)),

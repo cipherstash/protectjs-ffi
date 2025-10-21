@@ -13,7 +13,7 @@ use cipherstash_client::{
     encryption::{
         self, EncryptionError, Plaintext, PlaintextTarget, QueryOp, Queryable, ReferencedPendingPipeline, ScopedCipher, TypeParseError
     },
-    schema::{column::IndexType, operator::Operator, ColumnConfig},
+    schema::{column::IndexType, operator::{Operator, STEVecOperator}, ColumnConfig},
     zerokms::{self, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     Crn, IdentifiedBy, UnverifiedContext,
 };
@@ -332,13 +332,18 @@ async fn encrypt_query(
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
+    println!("Operator: {:?}", opts.operator);
     let plaintext: Plaintext = opts.plaintext.into();
     let index = column_config.index_for_operator(&opts.operator)
         .ok_or_else(|| Error::MissingIndexForOperator(ident, opts.operator))?;
 
     dbg!(&index);
     let query_op = if let IndexType::SteVec { .. } = index.index_type {
-        QueryOp::SteVecSelector
+        // NOTE: We don't currently use the QueryOp::SteVecTerm variant because a simpler approach was taken for proxy
+        match opts.operator {
+            Operator::STEVecOperator(STEVecOperator::Selector) => QueryOp::SteVecSelector,
+            _ => QueryOp::Default,
+        }
     } else {
         QueryOp::Default
     };
@@ -781,6 +786,47 @@ mod tests {
             assert!(result.is_ok());
 
             Ok(())
+        }
+    }
+
+    mod query_options {
+        use cipherstash_client::schema::operator;
+        use super::*;
+
+        #[test]
+        fn test_deserialize_operator_selector() {
+            let json_data = serde_json::json!({
+                "plaintext": "$.foo",
+                "column": "profile",
+                "table": "users",
+                "operator": "->"
+            });
+
+            let result: Result<QueryOptions, _> = serde_json::from_value(json_data);
+            assert!(result.is_ok());
+            let query_options = result.unwrap();
+            assert_eq!(query_options.plaintext, JsPlaintext::String("$.foo".to_string()));
+            assert_eq!(query_options.column, "profile");
+            assert_eq!(query_options.table, "users");
+            assert_eq!(query_options.operator, Operator::STEVecOperator(operator::STEVecOperator::Selector));
+        }
+
+        #[test]
+        fn test_deserialize_operator_contains() {
+            let json_data = serde_json::json!({
+                "plaintext": {"foo": "bar"},
+                "column": "profile",
+                "table": "users",
+                "operator": "@>"
+            });
+
+            let result: Result<QueryOptions, _> = serde_json::from_value(json_data);
+            assert!(result.is_ok());
+            let query_options = result.unwrap();
+            assert_eq!(query_options.plaintext, JsPlaintext::JsonB(serde_json::json!({"foo": "bar"})));
+            assert_eq!(query_options.column, "profile");
+            assert_eq!(query_options.table, "users");
+            assert_eq!(query_options.operator, Operator::STEVecOperator(operator::STEVecOperator::LeftContainsRight));
         }
     }
 }

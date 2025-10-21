@@ -123,9 +123,7 @@ describe('encryptBulk and decryptBulk', async () => {
       await encryptBulk(client, {
         plaintexts: payloads.map((p) => ({
           ...p,
-          lockContext: [
-            {identityClaim: 'sub' },
-          ],
+          lockContext: [{ identityClaim: 'sub' }],
         })),
       })
       // NOTE: New ZeroKMS changes will report this as an authentication error
@@ -144,9 +142,11 @@ describe('encryptBulk and decryptBulk', async () => {
       await decryptBulk(client, {
         ciphertexts: ciphertexts.map((ciphertext) => ({
           ciphertext,
-          lockContext: [{
-            identityClaim: 'sub',
-          }],
+          lockContext: [
+            {
+              identityClaim: 'sub',
+            },
+          ],
         })),
       })
     }).rejects.toThrowError(/Failed to send request/)

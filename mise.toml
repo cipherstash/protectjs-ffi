@@ -9,9 +9,7 @@ PGPASSWORD = "password"
 PGHOST = "localhost"
 
 [task_config]
-includes = [
-  "integration-tests/tasks.toml",
-]
+includes = ["integration-tests/tasks.toml"]
 
 [tasks."build:debug"]
 description = "Build the project in debug mode"
