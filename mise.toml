@@ -7,6 +7,7 @@ PGDATABASE = "cipherstash"
 PGUSER = "cipherstash"
 PGPASSWORD = "password"
 PGHOST = "localhost"
+GIT_FETCH_WITH_CLI = "true"
 
 [task_config]
 includes = ["integration-tests/tasks.toml"]

@@ -11,7 +11,8 @@ crate-type = ["cdylib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cipherstash-client = { path = "../../../cipherstash-suite/packages/cipherstash-client", version = "0.28.0" }
+#cipherstash-client = { path = "../../../cipherstash-suite/packages/cipherstash-client", version = "0.28.0" }
+cipherstash-client = { git = "ssh://git@github.com/cipherstash/cipherstash-suite.git", version = "0.28.0", package = "cipherstash-client", branch = "fix/jsonindexer-fixes" }
 const-hex = "1.17.0"
 # 0.14.7 introduces deprecations we need to avoid for now
 # Protect.rs will not use GenericArray at all
