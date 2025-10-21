@@ -1,6 +1,6 @@
 {
   "name": "@cipherstash/protect-ffi",
-  "version": "0.18.0-5",
+  "version": "0.18.0-6",
   "description": "",
   "main": "./lib/index.cjs",
   "scripts": {
