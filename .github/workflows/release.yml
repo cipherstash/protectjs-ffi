@@ -106,6 +106,8 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/build.yml
+    secrets:
+      CIPHERSTASH_SUITE_PRIVATE_SSH_KEY: ${{ secrets.CIPHERSTASH_SUITE_PRIVATE_SSH_KEY }}
     with:
       ref: ${{ needs.setup.outputs.ref }}
       tag: ${{ needs.setup.outputs.tag }}

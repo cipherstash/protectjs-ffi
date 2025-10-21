@@ -27,6 +27,9 @@ on:
         required: false
         type: string
         default: ''
+    secrets:
+      CIPHERSTASH_SUITE_PRIVATE_SSH_KEY:
+        required: true
 
 jobs:
   matrix:
