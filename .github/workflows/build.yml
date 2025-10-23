@@ -31,7 +31,7 @@ on:
 jobs:
   matrix:
     name: Matrix
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       matrix: ${{ steps.matrix.outputs.result }}
     steps:
@@ -113,7 +113,7 @@ jobs:
   main:
     name: Main
     needs: [matrix]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
