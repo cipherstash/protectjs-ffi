@@ -91,13 +91,14 @@ jobs:
           git config --global user.name $ACTIONS_USER
           git config --global user.email $ACTIONS_EMAIL
           npm version ${{ inputs.version }} -m "v%s"
-      - name: Configure cross-rs authentication
-        shell: bash
-        run: |
-          # Create cross-rs config directory
-          mkdir -p ~/.cross
-          # Configure authentication for GHCR
-          echo '{"auths":{"ghcr.io":{"auth":"'$(echo -n "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" | base64 -w 0)'"}}}' > ~/.cross/config.json
+      -
+        name: Login to GitHub Container Registry
+        if: ${{ matrix.cfg.script == 'cross' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build
         shell: bash
         env:
