@@ -1,12 +1,8 @@
 [target.x86_64-unknown-linux-musl]
-env = { RUSTFLAGS = "-C target-feature=-crt-static" }
-
-# Original configuration using custom Docker image (currently unavailable)
-# [target.x86_64-unknown-linux-musl]
-# image = "ghcr.io/cipherstash/cli-x86_64-unknown-linux-musl:0.1.2"
-# [target.x86_64-unknown-linux-musl.env]
-# passthrough = [
-#   "OPENSSL_INCLUDE_DIR=/usr/local/musl/include",
-#   "OPENSSL_LIB_DIR=/usr/local/musl/lib",
-#   "RANLIB=/usr/local/bin/x86_64-linux-musl-ranlib",
-# ]
+image = "ghcr.io/cipherstash/cli-x86_64-unknown-linux-musl:0.1.2"
+[target.x86_64-unknown-linux-musl.env]
+passthrough = [
+  "OPENSSL_INCLUDE_DIR=/usr/local/musl/include",
+  "OPENSSL_LIB_DIR=/usr/local/musl/lib",
+  "RANLIB=/usr/local/bin/x86_64-linux-musl-ranlib",
+]
