@@ -24,7 +24,7 @@ on:
 jobs:
   pr:
     name: Pull Request Details
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: ${{ github.event_name == 'pull_request' }}
     outputs:
       branch: ${{ steps.pr-ref.outputs.branch || github.event.repository.default_branch }}
@@ -54,7 +54,7 @@ jobs:
 
   tests:
     name: Tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       CS_WORKSPACE_CRN: ${{ secrets.CS_WORKSPACE_CRN }}
       CS_CLIENT_ACCESS_KEY: ${{ secrets.CS_CLIENT_ACCESS_KEY }}
