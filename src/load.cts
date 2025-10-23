@@ -11,8 +11,11 @@ module.exports = require('@neon-rs/load').proxy({
     'darwin-x64': () => require('@cipherstash/protect-ffi-darwin-x64'),
     'darwin-arm64': () => require('@cipherstash/protect-ffi-darwin-arm64'),
     'linux-x64-gnu': () => require('@cipherstash/protect-ffi-linux-x64-gnu'),
+
     'linux-arm64-gnu': () =>
       require('@cipherstash/protect-ffi-linux-arm64-gnu'),
+
+    'linux-x64-musl': () => require('@cipherstash/protect-ffi-linux-x64-musl'),
   },
   debug: () => require('../index.node'),
 })
