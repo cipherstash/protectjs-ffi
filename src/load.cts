@@ -15,7 +15,7 @@ module.exports = require('@neon-rs/load').proxy({
     'linux-arm64-gnu': () =>
       require('@cipherstash/protect-ffi-linux-arm64-gnu'),
 
-    'linux-x64-musl': () => require('@cipherstash/protect-ffi-linux-x64-musl')
+    'linux-x64-musl': () => require('@cipherstash/protect-ffi-linux-x64-musl'),
   },
   debug: () => require('../index.node'),
 })
