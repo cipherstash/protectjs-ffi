@@ -123,12 +123,12 @@ describe('encryptBulk and decryptBulk', async () => {
       await encryptBulk(client, {
         plaintexts: payloads.map((p) => ({
           ...p,
-          lockContext: {
-            identityClaim: ['sub'],
-          },
+          lockContext: [{ identityClaim: 'sub' }],
         })),
       })
-    }).rejects.toThrowError(/Failed to send request/)
+      // NOTE: New ZeroKMS changes will report this as an authentication error
+      // See https://github.com/cipherstash/cipherstash-suite/pull/1516
+    }).rejects.toThrowError(/Unexpected error/)
   }, 10000)
 
   test('decryptBulk throws an error when identityClaim is used without a service token', async () => {
@@ -142,9 +142,11 @@ describe('encryptBulk and decryptBulk', async () => {
       await decryptBulk(client, {
         ciphertexts: ciphertexts.map((ciphertext) => ({
           ciphertext,
-          lockContext: {
-            identityClaim: ['sub'],
-          },
+          lockContext: [
+            {
+              identityClaim: 'sub',
+            },
+          ],
         })),
       })
     }).rejects.toThrowError(/Failed to send request/)

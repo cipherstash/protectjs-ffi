@@ -1,6 +1,8 @@
 import type { EncryptConfig } from '../../lib/index.cjs'
 
-export const encryptConfig: EncryptConfig = {
+export interface User extends EncryptConfig {}
+
+export const encryptConfig: User = {
   v: 1,
   tables: {
     users: {

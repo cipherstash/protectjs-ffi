@@ -44,11 +44,11 @@ describe('lock context', () => {
         plaintext: originalPlaintext,
         column: 'email',
         table: 'users',
-        lockContext: {
-          identityClaim: ['sub'],
-        },
+        lockContext: [{ identityClaim: 'sub' }],
       })
-    }).rejects.toThrowError(/Failed to send request/)
+      // NOTE: New ZeroKMS changes will report this as an authentication error
+      // See https://github.com/cipherstash/cipherstash-suite/pull/1516
+    }).rejects.toThrowError(/Unexpected error/)
   }, 10000)
 
   test('decrypt throws an error when identityClaim is used without a service token', async () => {
@@ -64,10 +64,8 @@ describe('lock context', () => {
     await expect(async () => {
       await decrypt(client, {
         ciphertext,
-        lockContext: {
-          identityClaim: ['sub'],
-        },
+        lockContext: [{ identityClaim: 'sub' }],
       })
-    }).rejects.toThrowError(/Failed to send request/)
+    }).rejects.toThrowError(/Failed to retrieve key/)
   }, 10000)
 })

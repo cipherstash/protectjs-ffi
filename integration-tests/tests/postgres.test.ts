@@ -6,10 +6,16 @@ import {
   newClient,
   encryptBulk,
   decryptBulk,
-  type Encrypted,
+  type EncryptedCell,
+  type EncryptedSV,
+  type SteVecEncryptedEntry,
+  type EncryptedSVE,
   type EncryptConfig,
+  type JsonSelect,
+  type JsonContainsQuery,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
+import { encryptQuery } from '../../lib/load.cjs'
 
 describe('postgres', async () => {
   const protectClient = await newClient({ encryptConfig: encryptConfig() })
@@ -23,13 +29,22 @@ describe('postgres', async () => {
     await pg.query(`
       CREATE TABLE encrypted (
         id SERIAL PRIMARY KEY,
-        encrypted_text eql_v2_encrypted
+        encrypted_text eql_v2_encrypted,
+        encrypted_score eql_v2_encrypted,
+        encrypted_profile eql_v2_encrypted
       )
     `)
 
     await pg.query(
       "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_text')",
     )
+    await pg.query(
+      "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_score')",
+    )
+    // FIXME: This doesn't work for ste_vec - should there be a different function?
+    //await pg.query(
+    //  "SELECT eql_v2.add_encrypted_constraint('encrypted', 'encrypted_profile')",
+    //)
 
     // clean up function, called once after all tests run
     return async () => {
@@ -62,9 +77,8 @@ describe('postgres', async () => {
       [ciphertext],
     )
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
-      'SELECT encrypted_text::jsonb FROM encrypted',
-    )
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query('SELECT encrypted_text::jsonb FROM encrypted')
 
     expect(res.rowCount).toBe(1)
 
@@ -101,7 +115,8 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(`
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query(`
       SELECT encrypted_text::jsonb FROM encrypted
       ORDER BY eql_v2.order_by(encrypted_text) ASC
     `)
@@ -136,19 +151,21 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const search = await encrypt(protectClient, {
+    const search = await encryptQuery(protectClient, {
       plaintext: 'ccc',
       column: 'email',
       table: 'users',
+      operator: '~~',
     })
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
-      `
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query(
+        `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text LIKE $1::jsonb
       `,
-      [search],
-    )
+        [search],
+      )
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
@@ -157,6 +174,57 @@ describe('postgres', async () => {
     })
 
     expect(decrypted).toEqual(['aaa ccc'])
+  })
+
+  test('can use an ORE query', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 1000,
+          column: 'score',
+          table: 'users',
+        },
+        {
+          plaintext: 75,
+          column: 'score',
+          table: 'users',
+        },
+        {
+          plaintext: 888,
+          column: 'score',
+          table: 'users',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_score) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      ciphertexts,
+    )
+
+    const search = await encryptQuery(protectClient, {
+      plaintext: 500,
+      column: 'score',
+      table: 'users',
+      operator: '>=',
+    })
+
+    const res: QueryResult<{ encrypted_score: EncryptedCell<User> }> =
+      await pg.query(
+        `
+      SELECT encrypted_score::jsonb FROM encrypted
+      WHERE encrypted_score >= $1::jsonb ORDER BY eql_v2.order_by(encrypted_score) ASC
+      `,
+        [search],
+      )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({
+        ciphertext: row.encrypted_score,
+      })),
+    })
+
+    expect(decrypted).toEqual([888, 1000])
   })
 
   test('can use an exact query', async () => {
@@ -180,19 +248,21 @@ describe('postgres', async () => {
       ciphertexts,
     )
 
-    const res: QueryResult<{ encrypted_text: Encrypted }> = await pg.query(
-      `
+    const query = await encryptQuery(protectClient, {
+      plaintext: 'b',
+      column: 'email',
+      table: 'users',
+      operator: '=',
+    })
+
+    const res: QueryResult<{ encrypted_text: EncryptedCell<User> }> =
+      await pg.query(
+        `
       SELECT encrypted_text::jsonb FROM encrypted
       WHERE encrypted_text = $1::jsonb
       `,
-      [
-        await encrypt(protectClient, {
-          plaintext: 'b',
-          column: 'email',
-          table: 'users',
-        }),
-      ],
-    )
+        [query],
+      )
 
     const decrypted = await decryptBulk(protectClient, {
       ciphertexts: res.rows.map((row) => ({
@@ -202,9 +272,120 @@ describe('postgres', async () => {
 
     expect(decrypted).toEqual(['b'])
   })
+
+  test('can use JSON stabby ->', async () => {
+    const toStore = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: { foo: 'bar', baz: [1, 2, 3] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { foo: 'baz', qux: [4, 5, 6] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { other: 'foo' },
+          column: 'profile',
+          table: 'users',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_profile) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      toStore,
+    )
+
+    const query: JsonSelect = await encryptQuery(protectClient, {
+      // FIXME: The first form fails (the selector doesn't map correctly)
+      // See JsonIndexer::tokenize_selector (the Dot variant behaves differently)
+      //plaintext: "$.foo",
+      plaintext: "$['foo']",
+      column: 'profile',
+      table: 'users',
+      operator: '->',
+    })
+
+    // NOTE: I realise this is pretty horrendous but the current EQL implementation isn't correct
+    const res: QueryResult<{ value: SteVecEncryptedEntry | null }> =
+      await pg.query(
+        `
+        SELECT jsonb_path_query(encrypted_profile::jsonb, '$.sv[*] ? (exists(@ ? (@.s == $v)))', jsonb_build_object('v', to_jsonb($1::text))) as value FROM encrypted
+      `,
+        [query.s],
+      )
+
+    expect(res.rowCount).toBe(2)
+    const ciphertexts = res.rows.map((row) => ({
+      ciphertext: { k: 'sve', sve: row.value } as EncryptedSVE,
+    }))
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts,
+    })
+    expect(decrypted).toEqual(['bar', 'baz'])
+  })
+
+  test('can use JSON contains @>', async () => {
+    const toStore = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: { foo: 'bar', baz: [1, 2, 3] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { foo: 'baz', qux: [4, 5, 6] },
+          column: 'profile',
+          table: 'users',
+        },
+        {
+          plaintext: { other: 'foo' },
+          column: 'profile',
+          table: 'users',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted (encrypted_profile) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      toStore,
+    )
+
+    const query: JsonContainsQuery = await encryptQuery(protectClient, {
+      plaintext: { foo: 'bar' },
+      column: 'profile',
+      table: 'users',
+      operator: '@>',
+    })
+
+    // NOTE: I realise this is pretty horrendous but the current EQL implementation isn't correct
+    const res: QueryResult<{ value: EncryptedSV<User> | null }> =
+      await pg.query(
+        `
+        SELECT encrypted_profile::jsonb as value from encrypted where encrypted_profile::jsonb @> $1::jsonb
+      `,
+        [query],
+      )
+
+    const ciphertexts = res.rows.map((row) => ({
+      ciphertext: row.value as EncryptedSV<User>,
+    }))
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts,
+    })
+    expect(decrypted).toEqual([{ foo: 'bar', baz: [1, 2, 3] }])
+  })
 })
 
-function encryptConfig(): EncryptConfig {
+interface User extends EncryptConfig {}
+
+// TODO: Load the config from common
+function encryptConfig(): User {
   return {
     v: 1,
     tables: {
@@ -228,6 +409,14 @@ function encryptConfig(): EncryptConfig {
             },
             unique: {},
           },
+        },
+        score: {
+          cast_as: 'double',
+          indexes: { ore: {} },
+        },
+        profile: {
+          cast_as: 'jsonb',
+          indexes: { ste_vec: { prefix: 'users/profile' } },
         },
       },
     },
