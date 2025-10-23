@@ -92,7 +92,6 @@ jobs:
           git config --global user.email $ACTIONS_EMAIL
           npm version ${{ inputs.version }} -m "v%s"
       - name: Configure cross-rs authentication
-        if: ${{ matrix.cfg.script == 'cross' }}
         shell: bash
         run: |
           # Create cross-rs config directory
