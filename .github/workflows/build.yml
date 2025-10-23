@@ -73,7 +73,6 @@ jobs:
     runs-on: ${{ matrix.cfg.os }}
     permissions:
       contents: write
-      packages: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
