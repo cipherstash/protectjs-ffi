@@ -10,7 +10,7 @@ pub enum Query {
     BitMap(Vec<u16>),
 
     #[serde(rename = "ob")]
-    OreLeft(Vec<OreTerm>),
+    OreFull(Vec<OreTerm>),
 
     // NOTE: This type doesn't current exist in the EQL spec but its convenient to give it the sv name
     // even though its the query type and not the full encrypted entry.
@@ -34,8 +34,9 @@ impl TryFrom<IndexTerm> for Query {
         match value {
             IndexTerm::Binary(b) => Ok(Query::Binary(b)),
             IndexTerm::BitMap(bm) => Ok(Query::BitMap(bm)),
-            IndexTerm::OreLeft(ol) => Ok(Query::OreLeft(vec![OreTerm(ol)])),
-            IndexTerm::OreFull(of) => Ok(Query::OreLeft(vec![OreTerm(of)])),
+            IndexTerm::OreLeft(ol) => Ok(Query::OreFull(vec![OreTerm(ol)])),
+            IndexTerm::OreFull(of) => Ok(Query::OreFull(vec![OreTerm(of)])),
+            IndexTerm::OreArray(of) => Ok(Query::OreFull(of.into_iter().map(OreTerm).collect())),
             IndexTerm::SteQueryVec(sqv) => Ok(Query::SteQuery(sqv)),
             IndexTerm::SteVecSelector(ts) => Ok(Query::SteVecSelector(ts)),
             IndexTerm::SteVecTerm(est) => Ok(Query::SteVecTerm(est)),
