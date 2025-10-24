@@ -1,5 +1,5 @@
 [target.x86_64-unknown-linux-musl]
-image = "ghcr.io/cipherstash/cli-x86_64-unknown-linux-musl:0.1.2"
+image = "ghcr.io/cipherstash/cli-multi-cross-build:latest"
 [target.x86_64-unknown-linux-musl.env]
 passthrough = [
   "OPENSSL_INCLUDE_DIR=/usr/local/musl/include",
