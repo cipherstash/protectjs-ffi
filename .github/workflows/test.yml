@@ -46,6 +46,7 @@ jobs:
     needs: [pr]
     permissions:
       contents: write
+      packages: read
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ needs.pr.outputs.branch }}
