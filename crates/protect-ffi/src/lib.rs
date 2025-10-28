@@ -252,7 +252,11 @@ async fn encrypt(
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
+    let plaintext = opts
+        .plaintext
+        .to_plaintext_with_type(column_config.cast_type)?;
+
+    let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
     plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
 
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
@@ -288,8 +292,11 @@ async fn encrypt_bulk(
                 .get(&ident)
                 .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-            let mut plaintext_target =
-                PlaintextTarget::new(payload.plaintext, column_config.clone());
+            let plaintext = payload
+                .plaintext
+                .to_plaintext_with_type(column_config.cast_type)?;
+
+            let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
             plaintext_target.context = payload.lock_context.map(Into::into).unwrap_or_default();
 
             Ok((plaintext_target, ident))
@@ -451,9 +458,7 @@ async fn decrypt_bulk_fallible(
 }
 
 #[neon::export]
-fn is_encrypted(
-    Json(raw): Json<serde_json::Value>,
-) -> bool {
+fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
     let result: Result<Encrypted, _> = serde_json::from_value(raw);
     result.is_ok()
 }
@@ -584,8 +589,8 @@ mod tests {
     use super::*;
 
     mod is_encrypted {
-        use serde_json::json;
         use super::*;
+        use serde_json::json;
 
         #[test]
         fn valid_ciphertext_is_encrypted() {
@@ -607,7 +612,8 @@ mod tests {
 
         #[test]
         fn invalid_ciphertext_is_not_encrypted() {
-            let invalid_encrypted = json!({"k":"invalid","c":"3q2+7w==","i":{"t":"users","c":"email"},"v":2});
+            let invalid_encrypted =
+                json!({"k":"invalid","c":"3q2+7w==","i":{"t":"users","c":"email"},"v":2});
             assert!(!is_encrypted(Json(invalid_encrypted)));
         }
     }

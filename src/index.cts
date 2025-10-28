@@ -100,15 +100,12 @@ export type Column = {
 }
 
 export type CastAs =
-  | 'big_int'
+  | 'bigint'
   | 'boolean'
   | 'date'
-  | 'real'
-  | 'double'
-  | 'int'
-  | 'small_int'
-  | 'text'
-  | 'jsonb'
+  | 'number'
+  | 'string'
+  | 'json'
 
 // Extract the tables from a specific config
 type TablesOf<C extends EncryptConfig> = C['tables']

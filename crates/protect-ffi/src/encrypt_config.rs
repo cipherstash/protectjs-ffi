@@ -66,19 +66,15 @@ pub struct Column {
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum CastAs {
     BigInt,
     Boolean,
     Date,
-    Real,
-    Double,
-    Int,
-    SmallInt,
+    Number,
     #[default]
-    Text,
-    #[serde(rename = "jsonb")]
-    JsonB,
+    String,
+    Json,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
@@ -137,13 +133,11 @@ impl From<CastAs> for ColumnType {
     fn from(value: CastAs) -> Self {
         match value {
             CastAs::BigInt => ColumnType::BigInt,
-            CastAs::SmallInt => ColumnType::SmallInt,
-            CastAs::Int => ColumnType::Int,
             CastAs::Boolean => ColumnType::Boolean,
             CastAs::Date => ColumnType::Date,
-            CastAs::Real | CastAs::Double => ColumnType::Float,
-            CastAs::Text => ColumnType::Utf8Str,
-            CastAs::JsonB => ColumnType::JsonB,
+            CastAs::Number => ColumnType::Float,
+            CastAs::String => ColumnType::Utf8Str,
+            CastAs::Json => ColumnType::JsonB,
         }
     }
 }
@@ -243,7 +237,7 @@ mod tests {
             "tables": {
                 "users": {
                     "favourite_int": {
-                        "cast_as": "int"
+                        "cast_as": "number"
                     }
                 }
             }
@@ -255,7 +249,7 @@ mod tests {
 
         let column = encrypt_config.get(&ident).expect("column exists");
 
-        assert_eq!(column.cast_type, ColumnType::Int);
+        assert_eq!(column.cast_type, ColumnType::Float);
         assert_eq!(column.name, "favourite_int");
         assert!(column.indexes.is_empty());
     }

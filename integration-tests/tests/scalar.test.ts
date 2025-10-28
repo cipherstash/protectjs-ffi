@@ -14,18 +14,24 @@ import { encryptConfig } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>
 
-const textColumn: UserColumn = {
+const stringColumn: UserColumn = {
   table: 'users',
   column: 'email',
 }
 
-const numberColumn: UserColumn = {
+const intColumn: UserColumn = {
   table: 'users',
   column: 'score',
 }
 
+const numberColumn: UserColumn = {
+  table: 'users',
+  column: 'score_float',
+}
+
 const cases: { identifier: UserColumn; plaintext: string | number }[] = [
-  { identifier: textColumn, plaintext: 'abc' },
+  { identifier: stringColumn, plaintext: 'abc' },
+  { identifier: intColumn, plaintext: 123 },
   { identifier: numberColumn, plaintext: 123.456 },
 ]
 
@@ -69,3 +75,65 @@ describe.each(cases)(
     })
   },
 )
+
+describe('coercion', async () => {
+  test('encrypting a float as an integer will truncate the value', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const floatValue = 123.987
+    const expectedTruncatedValue = 123
+
+    const ciphertext = await encrypt(client, {
+      plaintext: floatValue,
+      table: 'users',
+      column: 'score',
+    })
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toBe(expectedTruncatedValue)
+  })
+
+  test('encrypting an integer as a float will preserve the value', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const intValue = 123
+    const expectedFloatValue = 123.0
+
+    const ciphertext = await encrypt(client, {
+      plaintext: intValue,
+      table: 'users',
+      column: 'score_float',
+    })
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toBe(expectedFloatValue)
+  })
+
+  test('encrypting a string as an integer will error', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const stringValue = 'not-a-number'
+
+    await expect(
+      encrypt(client, {
+        plaintext: stringValue,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrowError()
+  })
+
+  test('encrypting a string as a float will error', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const stringValue = 'not-a-number'
+
+    await expect(
+      encrypt(client, {
+        plaintext: stringValue,
+        table: 'users',
+        column: 'score_float',
+      }),
+    ).rejects.toThrowError()
+  })
+})

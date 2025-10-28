@@ -5,7 +5,7 @@ export const encryptConfig: EncryptConfig = {
   tables: {
     users: {
       email: {
-        cast_as: 'text',
+        cast_as: 'string',
         indexes: {
           ore: {},
           match: {},
@@ -13,11 +13,15 @@ export const encryptConfig: EncryptConfig = {
         },
       },
       score: {
-        cast_as: 'double',
+        cast_as: 'bigint',
+        indexes: { ore: {} },
+      },
+      score_float: {
+        cast_as: 'number',
         indexes: { ore: {} },
       },
       profile: {
-        cast_as: 'jsonb',
+        cast_as: 'json',
         indexes: { ste_vec: { prefix: 'users/profile' } },
       },
     },
@@ -30,7 +34,7 @@ export const jsonOpaque: EncryptConfig = {
   tables: {
     users: {
       profile: {
-        cast_as: 'jsonb',
+        cast_as: 'json',
         indexes: {},
       },
     },
@@ -43,7 +47,7 @@ export const jsonSteVec: EncryptConfig = {
   tables: {
     users: {
       profile: {
-        cast_as: 'jsonb',
+        cast_as: 'json',
         indexes: { ste_vec: { prefix: 'users/profile' } },
       },
     },
