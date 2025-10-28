@@ -73,7 +73,6 @@ jobs:
     runs-on: ${{ matrix.cfg.os }}
     permissions:
       contents: write
-      packages: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -92,14 +91,6 @@ jobs:
           git config --global user.name $ACTIONS_USER
           git config --global user.email $ACTIONS_EMAIL
           npm version ${{ inputs.version }} -m "v%s"
-      -
-        name: Login to GitHub Container Registry
-        if: ${{ matrix.cfg.script == 'cross' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build
         shell: bash
         env:

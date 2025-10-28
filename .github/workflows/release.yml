@@ -105,7 +105,6 @@ jobs:
     needs: [setup]
     permissions:
       contents: write
-      packages: read
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ needs.setup.outputs.ref }}
