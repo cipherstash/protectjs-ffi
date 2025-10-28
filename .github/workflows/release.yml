@@ -41,7 +41,7 @@ jobs:
     outputs:
       dryrun: ${{ steps.dryrun.outputs.dryrun }}
       publish: ${{ steps.publish.outputs.publish }}
-      ref: ${{ steps.tag.outputs.tag || github.event.repository.default_branch }}
+      ref: ${{ steps.tag.outputs.tag || github.ref_name || github.event.repository.default_branch }}
       tag: ${{ steps.tag.outputs.tag || '' }}
     steps:
       - name: Validate Workflow Inputs
