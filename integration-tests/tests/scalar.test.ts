@@ -14,19 +14,19 @@ import { encryptConfig } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>
 
-const textColumn: UserColumn = {
+const stringColumn: UserColumn = {
   table: 'users',
   column: 'email',
 }
 
-const numberColumn: UserColumn = {
+const intColumn: UserColumn = {
   table: 'users',
   column: 'score',
 }
 
 const cases: { identifier: UserColumn; plaintext: string | number }[] = [
-  { identifier: textColumn, plaintext: 'abc' },
-  { identifier: numberColumn, plaintext: 123.456 },
+  { identifier: stringColumn, plaintext: 'abc' },
+  { identifier: intColumn, plaintext: 123 },
 ]
 
 describe.each(cases)(

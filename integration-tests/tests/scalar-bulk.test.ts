@@ -15,19 +15,19 @@ import { encryptConfig } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>
 
-const textColumn: UserColumn = {
+const stringColumn: UserColumn = {
   table: 'users',
   column: 'email',
 }
 
-const numberColumn: UserColumn = {
+const intColumn: UserColumn = {
   table: 'users',
   column: 'score',
 }
 
 const payloads: EncryptPayload[] = [
-  { ...textColumn, plaintext: 'abc' },
-  { ...numberColumn, plaintext: 123.456 },
+  { ...stringColumn, plaintext: 'abc' },
+  { ...intColumn, plaintext: 123 },
 ]
 
 describe('encryptBulk and decryptBulk', async () => {

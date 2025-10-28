@@ -2,19 +2,12 @@ mod encrypt_config;
 mod js_plaintext;
 
 use cipherstash_client::{
-    config::{
-        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
-        EnvSource, FileSource,
-    },
-    credentials::{ServiceCredentials, ServiceToken},
-    encryption::{
+    UnverifiedContext, config::{
+        CipherStashConfigFile, CipherStashSecretConfigFile, EnvSource, FileSource, console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError, zero_kms_config::ZeroKMSConfig
+    }, credentials::{ServiceCredentials, ServiceToken}, encryption::{
         self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
         ScopedCipher, SteVec, TypeParseError,
-    },
-    schema::ColumnConfig,
-    zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
-    UnverifiedContext,
+    }, schema::ColumnConfig, zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey}
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -252,7 +245,9 @@ async fn encrypt(
         .get(&ident)
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-    let mut plaintext_target = PlaintextTarget::new(opts.plaintext, column_config.clone());
+    let plaintext = opts.plaintext.to_plaintext_with_type(column_config.cast_type)?;
+
+    let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
     plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
 
     let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
@@ -288,8 +283,10 @@ async fn encrypt_bulk(
                 .get(&ident)
                 .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
+            let plaintext = payload.plaintext.to_plaintext_with_type(column_config.cast_type)?;
+
             let mut plaintext_target =
-                PlaintextTarget::new(payload.plaintext, column_config.clone());
+                PlaintextTarget::new(plaintext, column_config.clone());
             plaintext_target.context = payload.lock_context.map(Into::into).unwrap_or_default();
 
             Ok((plaintext_target, ident))
