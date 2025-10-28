@@ -25,9 +25,15 @@ const intColumn: UserColumn = {
   column: 'score',
 }
 
+const numberColumn: UserColumn = {
+  table: 'users',
+  column: 'score_float',
+}
+
 const payloads: EncryptPayload[] = [
   { ...stringColumn, plaintext: 'abc' },
   { ...intColumn, plaintext: 123 },
+  { ...numberColumn, plaintext: 123.456 },
 ]
 
 describe('encryptBulk and decryptBulk', async () => {
