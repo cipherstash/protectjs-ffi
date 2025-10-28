@@ -45,7 +45,7 @@ runs:
         cache: npm
 
     - name: Install Dependencies
-      shell: bash  
+      shell: bash
       run: npm ci
 
     - name: Compute Rust Target
@@ -78,11 +78,11 @@ runs:
       id: node
       shell: bash
       run: |
-        echo version=$(node -e 'console.log(process.versions.node)') | tee -a $GITHUB_OUTPUT
+        echo node_version=$(node -e 'console.log(process.versions.node)') | tee -a $GITHUB_OUTPUT
 
     - name: Rust Version
       if: ${{ inputs['use-rust'] == 'true' }}
       id: rust
       shell: bash
       run: |
-        echo version=$(cargo -Vv | fgrep release: | cut -d' ' -f2) | tee -a $GITHUB_OUTPUT
+        echo rust_version=$(cargo -Vv | fgrep release: | cut -d' ' -f2) | tee -a $GITHUB_OUTPUT
