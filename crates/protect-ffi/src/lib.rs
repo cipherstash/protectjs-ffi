@@ -244,7 +244,7 @@ pub async fn new_client(
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset.or(None)).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset.clone().or(None)).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
@@ -366,6 +366,7 @@ async fn decrypt(
         .zerokms
         .decrypt_single(
             encrypted_record,
+            // Specifying None here will result in the client using the keyset identifier from the client
             None,
             opts.service_token,
             opts.unverified_context,
@@ -404,6 +405,7 @@ async fn decrypt_bulk(
         .zerokms
         .decrypt(
             encrypted_records,
+            // Specifying None here will result in the client using the keyset identifier from the client
             None,
             opts.service_token,
             opts.unverified_context,
