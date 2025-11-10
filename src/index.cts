@@ -158,6 +158,8 @@ export type ClientOpts = {
   accessKey?: string
   clientId?: string
   clientKey?: string
+  keysetId?: string
+  keysetName?: string
 }
 
 export type JsPlaintext =

@@ -14,7 +14,7 @@ use cipherstash_client::{
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
-    UnverifiedContext,
+    IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -43,6 +43,9 @@ struct Client {
 }
 
 impl Finalize for Client {}
+
+#[derive(Clone)]
+pub struct KeysetIdentifier(pub IdentifiedBy);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "k")]
@@ -106,6 +109,8 @@ struct ClientOpts {
     access_key: Option<String>,
     client_id: Option<String>,
     client_key: Option<String>,
+    keyset_id: Option<String>,
+    keyset_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -225,11 +230,21 @@ pub async fn new_client(
         zerokms_config_builder
     };
 
+    let defined_keyset_name = client_opts
+        .keyset_name
+        .map(|name| KeysetIdentifier(IdentifiedBy::Name(name.into())));
+
+    let defined_keyset_id = client_opts
+        .keyset_id
+        .map(|id| KeysetIdentifier(IdentifiedBy::Uuid(id.parse().unwrap())));
+
+    let keyset = defined_keyset_id.or(defined_keyset_name).map(|id| id.0);
+
     let zerokms_config = zerokms_config_builder.build_with_client_key()?;
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), None).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset.or(None)).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
@@ -351,6 +366,7 @@ async fn decrypt(
         .zerokms
         .decrypt_single(
             encrypted_record,
+            None,
             opts.service_token,
             opts.unverified_context,
         )
@@ -388,6 +404,7 @@ async fn decrypt_bulk(
         .zerokms
         .decrypt(
             encrypted_records,
+            None,
             opts.service_token,
             opts.unverified_context,
         )
