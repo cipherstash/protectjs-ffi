@@ -232,7 +232,7 @@ pub async fn new_client(
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset.or(None)).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
