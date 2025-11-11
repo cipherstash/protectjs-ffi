@@ -22,7 +22,6 @@ serde_json = "1.0.139"
 thiserror = "2.0.8"
 tokio = { version = "1", features = ["full"] }
 vitaminc-protected = { version = "0.1.0-pre2", git = "https://github.com/cipherstash/vitaminc" }
-uuid = "1.11"
 
 [dev-dependencies]
 chrono = "0.4.42"

@@ -19,31 +19,24 @@ const stringColumn: UserColumn = {
   column: 'email',
 }
 
-const cases: { identifier: UserColumn; plaintext: string | number }[] = [
-  { identifier: stringColumn, plaintext: 'abc' },
-]
+test('can round-trip encrypt and decrypt a string using keyset', async () => {
+  const client = await newClient({
+    encryptConfig,
+    clientOpts: {
+      keyset: { Name: 'default' },
+    },
+  })
 
-describe.each(cases)(
-  'encrypt and decrypt',
-  async ({ identifier, plaintext }) => {
-    describe(`using column ${identifier.column} with ${typeof plaintext} value`, () => {
-      test('can round-trip encrypt and decrypt a string', async () => {
-        const client = await newClient({
-          encryptConfig,
-          clientOpts: {
-            keysetName: 'Test',
-          },
-        })
-        const ciphertext = await encrypt(client, {
-          plaintext,
-          ...identifier,
-        })
+  const identifier = stringColumn
+  const plaintext = 'abc'
 
-        expect(isEncrypted(ciphertext)).toBe(true)
+  const ciphertext = await encrypt(client, {
+    plaintext,
+    ...identifier,
+  })
 
-        const decrypted = await decrypt(client, { ciphertext })
-        expect(decrypted).toBe(plaintext)
-      })
-    })
-  },
-)
+  expect(isEncrypted(ciphertext)).toBe(true)
+
+  const decrypted = await decrypt(client, { ciphertext })
+  expect(decrypted).toBe(plaintext)
+})

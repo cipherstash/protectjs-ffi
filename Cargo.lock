@@ -2081,7 +2081,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
- "uuid",
  "vitaminc-protected 0.1.0-pre2 (git+https://github.com/cipherstash/vitaminc)",
 ]
 

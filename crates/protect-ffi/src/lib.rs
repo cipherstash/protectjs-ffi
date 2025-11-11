@@ -44,9 +44,6 @@ struct Client {
 
 impl Finalize for Client {}
 
-#[derive(Clone)]
-pub struct KeysetIdentifier(pub IdentifiedBy);
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "k")]
 pub enum Encrypted {
@@ -109,8 +106,7 @@ struct ClientOpts {
     access_key: Option<String>,
     client_id: Option<String>,
     client_key: Option<String>,
-    keyset_id: Option<String>,
-    keyset_name: Option<String>,
+    keyset: Option<IdentifiedBy>,
 }
 
 #[derive(Deserialize)]
@@ -230,21 +226,13 @@ pub async fn new_client(
         zerokms_config_builder
     };
 
-    let defined_keyset_name = client_opts
-        .keyset_name
-        .map(|name| KeysetIdentifier(IdentifiedBy::Name(name.into())));
-
-    let defined_keyset_id = client_opts
-        .keyset_id
-        .map(|id| KeysetIdentifier(IdentifiedBy::Uuid(id.parse().unwrap())));
-
-    let keyset = defined_keyset_id.or(defined_keyset_name).map(|id| id.0);
+    let keyset = client_opts.keyset.map(Into::into);
 
     let zerokms_config = zerokms_config_builder.build_with_client_key()?;
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset.clone().or(None)).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), keyset.or(None)).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
