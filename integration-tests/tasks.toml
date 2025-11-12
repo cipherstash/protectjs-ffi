@@ -44,7 +44,4 @@ run = [
 ["test:integration:all"]
 description = "Run all integration tests (includes lock context tests)"
 dir = "{{ config_root }}/integration-tests"
-run = [
-    "mise run build:debug",
-    "npx vitest",
-]
+run = ["mise run build:debug", "npx vitest"]

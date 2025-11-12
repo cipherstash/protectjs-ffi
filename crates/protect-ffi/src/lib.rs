@@ -14,7 +14,7 @@ use cipherstash_client::{
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
-    UnverifiedContext,
+    IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -106,6 +106,7 @@ struct ClientOpts {
     access_key: Option<String>,
     client_id: Option<String>,
     client_key: Option<String>,
+    keyset: Option<IdentifiedBy>,
 }
 
 #[derive(Deserialize)]
@@ -229,7 +230,7 @@ pub async fn new_client(
 
     let zerokms = Arc::new(zerokms_config.create_client());
 
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), None).await?;
+    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), client_opts.keyset).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
@@ -351,6 +352,8 @@ async fn decrypt(
         .zerokms
         .decrypt_single(
             encrypted_record,
+            // Specifying None here will result in the client using the keyset identifier from the client
+            None,
             opts.service_token,
             opts.unverified_context,
         )
@@ -388,6 +391,8 @@ async fn decrypt_bulk(
         .zerokms
         .decrypt(
             encrypted_records,
+            // Specifying None here will result in the client using the keyset identifier from the client
+            None,
             opts.service_token,
             opts.unverified_context,
         )

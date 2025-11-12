@@ -158,7 +158,10 @@ export type ClientOpts = {
   accessKey?: string
   clientId?: string
   clientKey?: string
+  keyset?: KeysetIdentifier
 }
+
+export type KeysetIdentifier = { Uuid: string } | { Name: string }
 
 export type JsPlaintext =
   | string
