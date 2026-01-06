@@ -8,7 +8,7 @@ use cipherstash_client::{
         EnvSource, FileSource,
     },
     credentials::{ServiceCredentials, ServiceToken},
-    encryption::{EncryptionError, Plaintext, ScopedCipher, SteVec, TypeParseError},
+    encryption::{EncryptionError, Plaintext, ScopedCipher, TypeParseError},
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
         Identifier as EqlIdentifier, PreparedPlaintext,
@@ -46,6 +46,30 @@ struct Client {
 
 impl Finalize for Client {}
 
+/// Entry in an SteVec (structured encryption vector) for JSON field encryption.
+/// Each entry represents an encrypted path/value pair in the JSON structure.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SteVecEntry {
+    /// Entry ciphertext (mp_base85 encoded)
+    #[serde(rename = "c")]
+    pub ciphertext: String,
+    /// Tokenized selector (hex encoded)
+    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Blake3 hash for exact matches
+    #[serde(rename = "b3", skip_serializing_if = "Option::is_none")]
+    pub blake3: Option<String>,
+    /// ORE fixed-width for numeric comparisons
+    #[serde(rename = "ocf", skip_serializing_if = "Option::is_none")]
+    pub ore_fixed: Option<String>,
+    /// ORE variable-width for string comparisons
+    #[serde(rename = "ocv", skip_serializing_if = "Option::is_none")]
+    pub ore_variable: Option<String>,
+    /// Whether entry is in an array
+    #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
+    pub is_array_item: Option<bool>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "k")]
 pub enum Encrypted {
@@ -66,8 +90,12 @@ pub enum Encrypted {
     },
     #[serde(rename = "sv")]
     SteVec {
+        /// The root ciphertext (encrypted JSON value, mp_base85 encoded)
+        #[serde(rename = "c")]
+        ciphertext: String,
+        /// The SteVec entries in EQL format
         #[serde(rename = "sv")]
-        ste_vec_index: SteVec<16>,
+        ste_vec_entries: Vec<SteVecEntry>,
         #[serde(rename = "i")]
         identifier: Identifier,
         #[serde(rename = "v")]
@@ -470,11 +498,11 @@ fn encrypted_record_from_mp_base85(
 ) -> Result<WithContext<'static>, Error> {
     let encrypted_record = match encrypted {
         Encrypted::Ciphertext { ciphertext, .. } => EncryptedRecord::from_mp_base85(&ciphertext)
-            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-            // Instead, we use `map_err`.
             .map_err(|err| Error::Base85(err.to_string()))?,
-        Encrypted::SteVec { ste_vec_index, .. } => {
-            ste_vec_index.into_root_ciphertext().map_err(Error::from)?
+        Encrypted::SteVec { ciphertext, .. } => {
+            // For SteVec, use the root ciphertext for decryption
+            EncryptedRecord::from_mp_base85(&ciphertext)
+                .map_err(|err| Error::Base85(err.to_string()))?
         }
     };
 
@@ -490,10 +518,46 @@ fn eql_ciphertext_to_encrypted(
     ident: &Identifier,
 ) -> Result<Encrypted, Error> {
     // Check if this is an SteVec (has ste_vec in sem)
-    if eql.body.sem.ste_vec.is_some() {
-        // SteVec handling requires reconstructing from EQL format
-        // For now, return an error as this is a complex case
-        return Err(Error::Unimplemented("SteVec via encrypt_eql".to_string()));
+    if let Some(ste_vec_bodies) = eql.body.sem.ste_vec {
+        // Get root ciphertext
+        let root_ciphertext = eql
+            .body
+            .ciphertext
+            .ok_or_else(|| {
+                Error::InvariantViolation("Missing root ciphertext in SteVec".to_string())
+            })?
+            .to_mp_base85()
+            .map_err(|err| Error::Base85(err.to_string()))?;
+
+        // Convert EqlCiphertextBody entries to SteVecEntry
+        let entries: Vec<SteVecEntry> = ste_vec_bodies
+            .into_iter()
+            .map(|body| -> Result<SteVecEntry, Error> {
+                let ciphertext = body
+                    .ciphertext
+                    .ok_or_else(|| {
+                        Error::InvariantViolation("Missing ciphertext in SteVec entry".to_string())
+                    })?
+                    .to_mp_base85()
+                    .map_err(|err| Error::Base85(err.to_string()))?;
+
+                Ok(SteVecEntry {
+                    ciphertext,
+                    selector: body.sem.selector,
+                    blake3: body.sem.blake3,
+                    ore_fixed: body.sem.ore_cllw_u64_8,
+                    ore_variable: body.sem.ore_cllw_var_8,
+                    is_array_item: body.is_array_item,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        return Ok(Encrypted::SteVec {
+            ciphertext: root_ciphertext,
+            ste_vec_entries: entries,
+            identifier: ident.clone(),
+            version: 2,
+        });
     }
 
     // Standard ciphertext case
