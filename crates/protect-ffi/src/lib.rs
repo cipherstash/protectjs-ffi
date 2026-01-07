@@ -319,50 +319,87 @@ async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptBulkOptions>,
 ) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
-    let mut prepared_plaintexts = Vec::with_capacity(opts.plaintexts.len());
-    let mut identifiers = Vec::with_capacity(opts.plaintexts.len());
+    // Group payloads by lock_context for batch processing
+    // BTreeMap provides deterministic ordering of groups
+    let mut groups: BTreeMap<Vec<String>, Vec<(usize, PlaintextPayload)>> = BTreeMap::new();
 
-    for payload in opts.plaintexts {
-        let ident = Identifier::new(payload.table.clone(), payload.column.clone());
-
-        let column_config = client
-            .encrypt_config
-            .get(&ident)
-            .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-
-        let plaintext = payload
-            .plaintext
-            .to_plaintext_with_type(column_config.cast_type)?;
-
-        let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
-        let prepared = PreparedPlaintext::new(
-            Cow::Borrowed(column_config),
-            eql_ident,
-            plaintext,
-            EqlOperation::Store,
-        );
-
-        prepared_plaintexts.push(prepared);
-        identifiers.push(ident);
+    for (idx, payload) in opts.plaintexts.into_iter().enumerate() {
+        let key = payload
+            .lock_context
+            .as_ref()
+            .map(|lc| lc.identity_claim.clone())
+            .unwrap_or_default();
+        groups.entry(key).or_default().push((idx, payload));
     }
 
-    let eql_opts = EqlEncryptOpts {
-        keyset_id: None,
-        lock_context: Cow::Borrowed(&[]),
-        service_token: opts.service_token.map(Cow::Owned),
-        unverified_context: opts.unverified_context.map(Cow::Owned),
-        index_types: None,
-    };
+    // Pre-allocate results vector
+    let total_count: usize = groups.values().map(|g| g.len()).sum();
+    let mut results: Vec<Option<Encrypted>> = (0..total_count).map(|_| None).collect();
 
-    let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+    // Process each lock_context group
+    for (lock_context_claims, payloads) in groups {
+        let lock_context: Vec<zerokms::Context> = lock_context_claims
+            .into_iter()
+            .map(zerokms::Context::IdentityClaim)
+            .collect();
 
-    let results: Vec<Encrypted> = encrypted
+        // Build PreparedPlaintext items for this group
+        let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
+
+        for (original_idx, payload) in payloads {
+            let ident = Identifier::new(payload.table.clone(), payload.column.clone());
+
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+
+            let plaintext = payload
+                .plaintext
+                .to_plaintext_with_type(column_config.cast_type)?;
+
+            let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
+            let prepared = PreparedPlaintext::new(
+                Cow::Borrowed(column_config),
+                eql_ident,
+                plaintext,
+                EqlOperation::Store,
+            );
+
+            prepared_plaintexts.push(prepared);
+            payload_data.push((original_idx, ident));
+        }
+
+        let eql_opts = EqlEncryptOpts {
+            keyset_id: None,
+            lock_context: Cow::Owned(lock_context),
+            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
+            unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
+            index_types: None,
+        };
+
+        let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+
+        // Place results back in original order
+        for (eql_ciphertext, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let enc = eql_ciphertext_to_encrypted(eql_ciphertext, &ident)?;
+            results[original_idx] = Some(enc);
+        }
+    }
+
+    // Unwrap all results (all should be Some)
+    let final_results: Vec<Encrypted> = results
         .into_iter()
-        .zip(identifiers.iter())
-        .map(|(eql, ident)| eql_ciphertext_to_encrypted(eql, ident))
+        .enumerate()
+        .map(|(i, opt)| {
+            opt.ok_or_else(|| {
+                Error::InvariantViolation(format!("Missing encryption result for index {}", i))
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Json(results))
+    Ok(Json(final_results))
 }
 
 #[neon::export]
