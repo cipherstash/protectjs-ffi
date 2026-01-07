@@ -134,7 +134,7 @@ describe('encryptBulk and decryptBulk', async () => {
           },
         })),
       })
-    }).rejects.toThrowError(/Failed to send request/)
+    }).rejects.toThrowError(/Request forbidden/)
   }, 10000)
 
   test('decryptBulk throws an error when identityClaim is used without a service token', async () => {
