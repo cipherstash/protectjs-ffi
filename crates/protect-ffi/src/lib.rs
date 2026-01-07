@@ -664,4 +664,84 @@ mod tests {
             assert!(!is_encrypted(Json(invalid_encrypted)));
         }
     }
+
+    mod lock_context_grouping {
+        use std::collections::BTreeMap;
+
+        // Helper to simulate the grouping logic
+        fn group_by_lock_context(
+            payloads: Vec<(String, Option<Vec<String>>)>,
+        ) -> BTreeMap<Vec<String>, Vec<(usize, String)>> {
+            let mut groups: BTreeMap<Vec<String>, Vec<(usize, String)>> = BTreeMap::new();
+            for (idx, (data, lock_context)) in payloads.into_iter().enumerate() {
+                let key = lock_context.unwrap_or_default();
+                groups.entry(key).or_default().push((idx, data));
+            }
+            groups
+        }
+
+        #[test]
+        fn same_lock_context_groups_together() {
+            let payloads = vec![
+                ("a".to_string(), Some(vec!["user:1".to_string()])),
+                ("b".to_string(), Some(vec!["user:1".to_string()])),
+                ("c".to_string(), Some(vec!["user:1".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[&vec!["user:1".to_string()]].len(), 3);
+        }
+
+        #[test]
+        fn different_lock_contexts_separate_groups() {
+            let payloads = vec![
+                ("a".to_string(), Some(vec!["user:1".to_string()])),
+                ("b".to_string(), Some(vec!["user:2".to_string()])),
+                ("c".to_string(), Some(vec!["user:1".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[&vec!["user:1".to_string()]].len(), 2);
+            assert_eq!(groups[&vec!["user:2".to_string()]].len(), 1);
+        }
+
+        #[test]
+        fn none_lock_context_groups_together() {
+            let payloads = vec![
+                ("a".to_string(), None),
+                ("b".to_string(), None),
+                ("c".to_string(), Some(vec!["user:1".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[&vec![]].len(), 2); // None becomes empty vec
+            assert_eq!(groups[&vec!["user:1".to_string()]].len(), 1);
+        }
+
+        #[test]
+        fn preserves_original_indices() {
+            let payloads = vec![
+                ("a".to_string(), Some(vec!["user:2".to_string()])),
+                ("b".to_string(), Some(vec!["user:1".to_string()])),
+                ("c".to_string(), Some(vec!["user:2".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            // user:1 group should have index 1
+            let user1_group = &groups[&vec!["user:1".to_string()]];
+            assert_eq!(user1_group[0], (1, "b".to_string()));
+
+            // user:2 group should have indices 0 and 2
+            let user2_group = &groups[&vec!["user:2".to_string()]];
+            assert_eq!(user2_group[0], (0, "a".to_string()));
+            assert_eq!(user2_group[1], (2, "c".to_string()));
+        }
+    }
 }
