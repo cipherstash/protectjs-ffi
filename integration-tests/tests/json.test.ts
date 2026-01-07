@@ -116,7 +116,7 @@ describe('SteVec output structure', () => {
 
     // SteVec variant must have these fields
     expect(ciphertext.k).toBe('sv')
-    expect(ciphertext).toHaveProperty('c')  // Root ciphertext
+    expect(ciphertext).toHaveProperty('c') // Root ciphertext
     expect(ciphertext).toHaveProperty('sv')
     expect(ciphertext).toHaveProperty('i')
     expect(ciphertext).toHaveProperty('v')
@@ -127,7 +127,7 @@ describe('SteVec output structure', () => {
     expect(encrypted.sv.length).toBeGreaterThan(0)
 
     const entry = encrypted.sv[0] as Record<string, unknown>
-    expect(entry).toHaveProperty('c')  // Entry ciphertext (new format)
+    expect(entry).toHaveProperty('c') // Entry ciphertext (new format)
 
     // Old field names should NOT exist
     expect(entry).not.toHaveProperty('tokenized_selector')
