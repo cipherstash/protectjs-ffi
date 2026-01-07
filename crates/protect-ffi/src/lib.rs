@@ -180,9 +180,8 @@ struct PlaintextPayload {
     plaintext: JsPlaintext,
     column: String,
     table: String,
-    // Note: Per-payload lock_context is accepted for API compatibility but not yet used.
-    // The encrypt_eql API uses a shared lock_context for all payloads in a batch.
-    #[allow(dead_code)]
+    /// Lock context for this payload. Payloads with different lock_context values
+    /// will be encrypted in separate batches to preserve per-payload context binding.
     lock_context: Option<LockContext>,
 }
 
