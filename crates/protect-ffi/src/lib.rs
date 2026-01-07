@@ -17,7 +17,7 @@ use cipherstash_client::{
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     IdentifiedBy, UnverifiedContext,
 };
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
 use js_plaintext::JsPlaintext;
