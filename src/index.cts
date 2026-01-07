@@ -74,7 +74,9 @@ export type Encrypted =
     }
   | {
       k: 'sv'
-      sv: SteVecEncryptedEntry[]
+      /** Root ciphertext (encrypted JSON value, mp_base85 encoded) */
+      c: string
+      sv: SteVecEntry[]
       i: {
         c: string
         t: string
@@ -82,11 +84,19 @@ export type Encrypted =
       v: number
     }
 
-export type SteVecEncryptedEntry = {
-  tokenized_selector: string
-  term: string
-  record: string
-  parent_is_array: boolean
+export type SteVecEntry = {
+  /** Entry ciphertext (mp_base85 encoded) */
+  c: string
+  /** Tokenized selector (hex encoded) */
+  s?: string
+  /** Blake3 hash for exact matches */
+  b3?: string
+  /** ORE fixed-width for numeric comparisons */
+  ocf?: string
+  /** ORE variable-width for string comparisons */
+  ocv?: string
+  /** Whether entry is in an array */
+  a?: boolean
 }
 
 export type EncryptConfig = {
