@@ -115,7 +115,7 @@ describe('SteVec output structure', () => {
     })
 
     // SteVec variant must have these fields
-    expect(ciphertext.k).toBe('sv')
+    expect(ciphertext.sv).toBeDefined()
     expect(ciphertext).toHaveProperty('c') // Root ciphertext
     expect(ciphertext).toHaveProperty('sv')
     expect(ciphertext).toHaveProperty('i')
@@ -148,7 +148,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ s?: string; c: string }> }
 
       // At least one entry should have a selector
@@ -172,7 +172,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
 
       // Array items should have a: true
@@ -189,7 +189,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
 
       // Non-array items should not have a: true
@@ -210,7 +210,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ ocf?: string; ocv?: string; c: string }> }
 
       // Numeric entries should have ORE fixed field
@@ -233,7 +233,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ ocf?: string; ocv?: string; c: string }> }
 
       // String entries should have ORE variable field
@@ -258,7 +258,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
 
       // String entries should have blake3 hash
@@ -281,7 +281,7 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
-      expect(ciphertext.k).toBe('sv')
+      expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
 
       // Numeric entries should also have blake3 hash for exact matching
