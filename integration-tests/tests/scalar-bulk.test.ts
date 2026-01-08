@@ -156,3 +156,73 @@ describe('encryptBulk and decryptBulk', async () => {
     }).rejects.toThrowError(/Request forbidden/)
   }, 10000)
 })
+
+describe('bulk encryption order preservation', async () => {
+  test('should preserve order with mixed column types', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // Create payloads with different column types that may be grouped internally
+    const payloads: EncryptPayload[] = [
+      { ...stringColumn, plaintext: 'string-1' },
+      { ...intColumn, plaintext: 100 },
+      { ...stringColumn, plaintext: 'string-2' },
+      { ...numberColumn, plaintext: 99.99 },
+      { ...stringColumn, plaintext: 'string-3' },
+    ]
+
+    const ciphertexts = await encryptBulk(client, { plaintexts: payloads })
+    expect(ciphertexts).toHaveLength(5)
+
+    const decrypted = await decryptBulk(client, {
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
+    })
+
+    expect(decrypted).toEqual(['string-1', 100, 'string-2', 99.99, 'string-3'])
+  })
+
+  test('should handle large batch with interleaved types', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // Create a larger batch to stress test order preservation
+    const payloads: EncryptPayload[] = []
+    for (let i = 0; i < 20; i++) {
+      payloads.push({ ...stringColumn, plaintext: `string-${i}` })
+      payloads.push({ ...intColumn, plaintext: i })
+    }
+
+    const ciphertexts = await encryptBulk(client, { plaintexts: payloads })
+    expect(ciphertexts).toHaveLength(40)
+
+    const decrypted = await decryptBulk(client, {
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
+    })
+
+    // Verify interleaved order preserved
+    for (let i = 0; i < 20; i++) {
+      expect(decrypted[i * 2]).toBe(`string-${i}`)
+      expect(decrypted[i * 2 + 1]).toBe(i)
+    }
+  })
+
+  test('should preserve order with repeated values', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // Same plaintext values at different positions
+    const payloads: EncryptPayload[] = [
+      { ...stringColumn, plaintext: 'duplicate' },
+      { ...intColumn, plaintext: 42 },
+      { ...stringColumn, plaintext: 'duplicate' },
+      { ...intColumn, plaintext: 42 },
+      { ...stringColumn, plaintext: 'unique' },
+    ]
+
+    const ciphertexts = await encryptBulk(client, { plaintexts: payloads })
+    expect(ciphertexts).toHaveLength(5)
+
+    const decrypted = await decryptBulk(client, {
+      ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
+    })
+
+    expect(decrypted).toEqual(['duplicate', 42, 'duplicate', 42, 'unique'])
+  })
+})
