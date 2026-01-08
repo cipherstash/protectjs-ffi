@@ -153,6 +153,6 @@ describe('encryptBulk and decryptBulk', async () => {
           },
         })),
       })
-    }).rejects.toThrowError(/Failed to send request/)
+    }).rejects.toThrowError(/Request forbidden/)
   }, 10000)
 })
