@@ -136,3 +136,162 @@ describe('SteVec output structure', () => {
     expect(entry).not.toHaveProperty('parent_is_array')
   })
 })
+
+describe('SteVec index field generation', () => {
+  describe('selector field (s)', () => {
+    test('should include selector field for entries', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'test' },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ s?: string; c: string }> }
+
+      // At least one entry should have a selector
+      const entriesWithSelector = encrypted.sv.filter((e) => e.s !== undefined)
+      expect(entriesWithSelector.length).toBeGreaterThan(0)
+
+      // Selector should be hex encoded
+      for (const entry of entriesWithSelector) {
+        expect(entry.s).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+  })
+
+  describe('array flag (a)', () => {
+    test('should set array flag for array elements', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      const ciphertext = await encrypt(client, {
+        plaintext: { items: ['apple', 'banana', 'cherry'] },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
+
+      // Array items should have a: true
+      const arrayEntries = encrypted.sv.filter((e) => e.a === true)
+      expect(arrayEntries.length).toBeGreaterThan(0)
+    })
+
+    test('should not set array flag for non-array elements', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'test', count: 42 },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
+
+      // Non-array items should not have a: true
+      for (const entry of encrypted.sv) {
+        expect(entry.a).not.toBe(true)
+      }
+    })
+  })
+
+  describe('ORE index fields (ocf/ocv)', () => {
+    test('should include ORE fixed field (ocf) for numeric values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec automatically generates ORE fields for numeric values
+      const ciphertext = await encrypt(client, {
+        plaintext: { count: 42, price: 99.99 },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ ocf?: string; ocv?: string; c: string }> }
+
+      // Numeric entries should have ORE fixed field
+      const entriesWithOreFixed = encrypted.sv.filter((e) => e.ocf !== undefined)
+      expect(entriesWithOreFixed.length).toBeGreaterThan(0)
+
+      // ORE fields should be hex encoded
+      for (const entry of entriesWithOreFixed) {
+        expect(entry.ocf).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+
+    test('should include ORE variable field (ocv) for string values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec automatically generates ORE variable fields for string values
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'alice', city: 'london' },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ ocf?: string; ocv?: string; c: string }> }
+
+      // String entries should have ORE variable field
+      const entriesWithOreVariable = encrypted.sv.filter((e) => e.ocv !== undefined)
+      expect(entriesWithOreVariable.length).toBeGreaterThan(0)
+
+      // ORE fields should be hex encoded
+      for (const entry of entriesWithOreVariable) {
+        expect(entry.ocv).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+  })
+
+  describe('unique index field (b3)', () => {
+    test('should include blake3 hash for string values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec automatically generates blake3 hash for string values
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'test', email: 'test@example.com' },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
+
+      // String entries should have blake3 hash
+      const entriesWithB3 = encrypted.sv.filter((e) => e.b3 !== undefined)
+      expect(entriesWithB3.length).toBeGreaterThan(0)
+
+      // b3 should be hex encoded
+      for (const entry of entriesWithB3) {
+        expect(entry.b3).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+
+    test('should include blake3 hash for numeric values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec also generates blake3 hash for numeric values for exact match lookups
+      const ciphertext = await encrypt(client, {
+        plaintext: { count: 42, price: 99.99 },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.k).toBe('sv')
+      const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
+
+      // Numeric entries should also have blake3 hash for exact matching
+      const entriesWithB3 = encrypted.sv.filter((e) => e.b3 !== undefined)
+      expect(entriesWithB3.length).toBeGreaterThan(0)
+
+      // b3 should be hex encoded
+      for (const entry of entriesWithB3) {
+        expect(entry.b3).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+  })
+})
