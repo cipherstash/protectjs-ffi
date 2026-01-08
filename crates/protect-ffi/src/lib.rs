@@ -14,7 +14,7 @@ use cipherstash_client::{
         Identifier as EqlIdentifier, PreparedPlaintext,
     },
     schema::ColumnConfig,
-    zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
+    zerokms::{self, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     IdentifiedBy, UnverifiedContext,
 };
 use std::{borrow::Cow, collections::BTreeMap};
@@ -46,62 +46,13 @@ struct Client {
 
 impl Finalize for Client {}
 
-/// Entry in an SteVec (structured encryption vector) for JSON field encryption.
-/// Each entry represents an encrypted path/value pair in the JSON structure.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct SteVecEntry {
-    /// Entry ciphertext (mp_base85 encoded)
-    #[serde(rename = "c")]
-    pub ciphertext: String,
-    /// Tokenized selector (hex encoded)
-    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
-    pub selector: Option<String>,
-    /// Blake3 hash for exact matches
-    #[serde(rename = "b3", skip_serializing_if = "Option::is_none")]
-    pub blake3: Option<String>,
-    /// ORE fixed-width for numeric comparisons
-    #[serde(rename = "ocf", skip_serializing_if = "Option::is_none")]
-    pub ore_fixed: Option<String>,
-    /// ORE variable-width for string comparisons
-    #[serde(rename = "ocv", skip_serializing_if = "Option::is_none")]
-    pub ore_variable: Option<String>,
-    /// Whether entry is in an array
-    #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
-    pub is_array_item: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "k")]
-pub enum Encrypted {
-    #[serde(rename = "ct")]
-    Ciphertext {
-        #[serde(rename = "c")]
-        ciphertext: String,
-        #[serde(rename = "ob")]
-        ore_index: Option<Vec<String>>,
-        #[serde(rename = "bf")]
-        match_index: Option<Vec<u16>>,
-        #[serde(rename = "hm")]
-        unique_index: Option<String>,
-        #[serde(rename = "i")]
-        identifier: Identifier,
-        #[serde(rename = "v")]
-        version: u16,
-    },
-    #[serde(rename = "sv")]
-    SteVec {
-        /// The root ciphertext (encrypted JSON value, mp_base85 encoded)
-        #[serde(rename = "c")]
-        ciphertext: String,
-        /// The SteVec entries in EQL format
-        #[serde(rename = "sv")]
-        ste_vec_entries: Vec<SteVecEntry>,
-        #[serde(rename = "i")]
-        identifier: Identifier,
-        #[serde(rename = "v")]
-        version: u16,
-    },
-}
+/// Re-export EqlCiphertext as Encrypted for backward compatibility.
+///
+/// This is a unified structure that contains the identifier, version, and the encrypted body
+/// with all associated cryptographic searchable encrypted metadata (SEM).
+///
+/// Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
+pub type Encrypted = EqlCiphertext;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -311,7 +262,7 @@ async fn encrypt(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_ciphertext = encrypted.remove(0);
 
-    Ok(Json(eql_ciphertext_to_encrypted(eql_ciphertext, &ident)?))
+    Ok(Json(eql_ciphertext))
 }
 
 #[neon::export]
@@ -334,7 +285,7 @@ async fn encrypt_bulk(
 
     // Pre-allocate results vector
     let total_count: usize = groups.values().map(|g| g.len()).sum();
-    let mut results: Vec<Option<Encrypted>> = (0..total_count).map(|_| None).collect();
+    let mut results: Vec<Option<EqlCiphertext>> = (0..total_count).map(|_| None).collect();
 
     // Process each lock_context group
     for (lock_context_claims, payloads) in groups {
@@ -382,14 +333,13 @@ async fn encrypt_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_ciphertext, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
-            let enc = eql_ciphertext_to_encrypted(eql_ciphertext, &ident)?;
-            results[original_idx] = Some(enc);
+        for (eql_ciphertext, (original_idx, _ident)) in encrypted.into_iter().zip(payload_data) {
+            results[original_idx] = Some(eql_ciphertext);
         }
     }
 
     // Unwrap all results (all should be Some)
-    let final_results: Vec<Encrypted> = results
+    let final_results: Vec<EqlCiphertext> = results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -524,95 +474,23 @@ async fn decrypt_bulk_fallible(
 
 #[neon::export]
 fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
-    let result: Result<Encrypted, _> = serde_json::from_value(raw);
+    let result: Result<EqlCiphertext, _> = serde_json::from_value(raw);
     result.is_ok()
 }
 
 fn encrypted_record_from_mp_base85(
-    encrypted: Encrypted,
+    encrypted: EqlCiphertext,
     encryption_context: Vec<zerokms::Context>,
 ) -> Result<WithContext<'static>, Error> {
-    let encrypted_record = match encrypted {
-        Encrypted::Ciphertext { ciphertext, .. } => EncryptedRecord::from_mp_base85(&ciphertext)
-            .map_err(|err| Error::Base85(err.to_string()))?,
-        Encrypted::SteVec { ciphertext, .. } => {
-            // For SteVec, use the root ciphertext for decryption
-            EncryptedRecord::from_mp_base85(&ciphertext)
-                .map_err(|err| Error::Base85(err.to_string()))?
-        }
-    };
+    // EqlCiphertext.body.ciphertext is already deserialized from mp_base85 by serde
+    let encrypted_record = encrypted
+        .body
+        .ciphertext
+        .ok_or_else(|| Error::InvariantViolation("Missing ciphertext in EQL payload".to_string()))?;
 
     Ok(WithContext {
         record: encrypted_record,
         context: Cow::Owned(encryption_context),
-    })
-}
-
-/// Converts an `EqlCiphertext` (from `encrypt_eql`) to protect-ffi's `Encrypted` format.
-fn eql_ciphertext_to_encrypted(
-    eql: EqlCiphertext,
-    ident: &Identifier,
-) -> Result<Encrypted, Error> {
-    // Check if this is an SteVec (has ste_vec in sem)
-    if let Some(ste_vec_bodies) = eql.body.sem.ste_vec {
-        // Get root ciphertext
-        let root_ciphertext = eql
-            .body
-            .ciphertext
-            .ok_or_else(|| {
-                Error::InvariantViolation("Missing root ciphertext in SteVec".to_string())
-            })?
-            .to_mp_base85()
-            .map_err(|err| Error::Base85(err.to_string()))?;
-
-        // Convert EqlCiphertextBody entries to SteVecEntry
-        let entries: Vec<SteVecEntry> = ste_vec_bodies
-            .into_iter()
-            .map(|body| -> Result<SteVecEntry, Error> {
-                let ciphertext = body
-                    .ciphertext
-                    .ok_or_else(|| {
-                        Error::InvariantViolation("Missing ciphertext in SteVec entry".to_string())
-                    })?
-                    .to_mp_base85()
-                    .map_err(|err| Error::Base85(err.to_string()))?;
-
-                Ok(SteVecEntry {
-                    ciphertext,
-                    selector: body.sem.selector,
-                    blake3: body.sem.blake3,
-                    ore_fixed: body.sem.ore_cllw_u64_8,
-                    ore_variable: body.sem.ore_cllw_var_8,
-                    is_array_item: body.is_array_item,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        return Ok(Encrypted::SteVec {
-            ciphertext: root_ciphertext,
-            ste_vec_entries: entries,
-            identifier: ident.clone(),
-            version: 2,
-        });
-    }
-
-    // Standard ciphertext case
-    let ciphertext = eql
-        .body
-        .ciphertext
-        .ok_or_else(|| {
-            Error::InvariantViolation("Missing ciphertext in EQL result".to_string())
-        })?
-        .to_mp_base85()
-        .map_err(|err| Error::Base85(err.to_string()))?;
-
-    Ok(Encrypted::Ciphertext {
-        ciphertext,
-        ore_index: eql.body.sem.ore_block_u64_8_256,
-        match_index: eql.body.sem.bloom_filter,
-        unique_index: eql.body.sem.hmac_256,
-        identifier: ident.clone(),
-        version: 2,
     })
 }
 
@@ -640,28 +518,47 @@ mod tests {
         use serde_json::json;
 
         #[test]
-        fn valid_ciphertext_is_encrypted() {
-            let encrypted: Encrypted = Encrypted::Ciphertext {
-                ciphertext: "3q2+7w==".to_string(),
-                ore_index: None,
-                match_index: None,
-                unique_index: None,
-                identifier: crate::encrypt_config::Identifier {
-                    table: "users".to_string(),
-                    column: "email".to_string(),
-                },
-                version: 2,
-            };
+        fn valid_eql_ciphertext_is_encrypted() {
+            // EqlCiphertext with minimal required fields (no ciphertext needed for validation)
+            let valid_encrypted = json!({
+                "i": {"t": "users", "c": "email"},
+                "v": 2
+            });
 
-            let valid_encrypted = serde_json::to_value(&encrypted).unwrap();
+            assert!(is_encrypted(Json(valid_encrypted)));
+        }
+
+        #[test]
+        fn valid_eql_ciphertext_with_ste_vec_is_encrypted() {
+            // EqlCiphertext with SteVec entries (no ciphertext values needed)
+            let valid_encrypted = json!({
+                "i": {"t": "users", "c": "profile"},
+                "v": 2,
+                "sv": [
+                    {"s": "deadbeef"}
+                ]
+            });
+
             assert!(is_encrypted(Json(valid_encrypted)));
         }
 
         #[test]
         fn invalid_ciphertext_is_not_encrypted() {
-            let invalid_encrypted =
-                json!({"k":"invalid","c":"3q2+7w==","i":{"t":"users","c":"email"},"v":2});
+            // Missing required fields
+            let invalid_encrypted = json!({"random": "data"});
             assert!(!is_encrypted(Json(invalid_encrypted)));
+        }
+
+        #[test]
+        fn old_format_with_k_tag_is_not_encrypted() {
+            // Old format with "k" discriminant - should no longer be valid
+            let old_format = json!({
+                "k": "ct",
+                "c": "3q2+7w==",
+                "i": {"t": "users", "c": "email"},
+                "v": 2
+            });
+            assert!(!is_encrypted(Json(old_format)));
         }
     }
 
