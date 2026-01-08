@@ -551,7 +551,11 @@ mod tests {
 
         #[test]
         fn old_format_with_k_tag_is_not_encrypted() {
-            // Old format with "k" discriminant - should no longer be valid
+            // Prior to cipherstash-client 0.32.0, protect-ffi used a discriminated union
+            // with a "k" tag field ("ct" for ciphertext, "sv" for ste_vec). The new
+            // EqlCiphertext format is a unified flat structure without the discriminant.
+            // This test ensures old-format payloads are correctly rejected, which helps
+            // detect migration issues where old encrypted data is passed to new code.
             let old_format = json!({
                 "k": "ct",
                 "c": "3q2+7w==",

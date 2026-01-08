@@ -62,8 +62,14 @@ export type Context = {
 /**
  * Represents encrypted data in the EQL format.
  *
- * This is a unified structure that contains the identifier, version, and the encrypted body
- * with all associated cryptographic searchable encrypted metadata (SEM).
+ * This TypeScript type mirrors the Rust `EqlCiphertext` structure from `cipherstash-client`.
+ * The Rust type hierarchy is:
+ * - `EqlCiphertext` (identifier + version + body)
+ *   - `EqlCiphertextBody` (ciphertext + SEM fields + array flag)
+ *     - `EqlSEM` (all searchable encrypted metadata fields)
+ *
+ * In the serialized JSON format, `#[serde(flatten)]` is used in Rust to produce a flat
+ * structure where all fields appear at the top level rather than nested.
  *
  * Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
  */
