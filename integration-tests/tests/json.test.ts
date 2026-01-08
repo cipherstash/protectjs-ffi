@@ -103,3 +103,36 @@ describe.each([
     })
   },
 )
+
+describe('SteVec output structure', () => {
+  test('encrypted output has expected fields', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: { foo: 'bar' },
+      table: 'users',
+      column: 'profile',
+    })
+
+    // SteVec variant must have these fields
+    expect(ciphertext.k).toBe('sv')
+    expect(ciphertext).toHaveProperty('c') // Root ciphertext
+    expect(ciphertext).toHaveProperty('sv')
+    expect(ciphertext).toHaveProperty('i')
+    expect(ciphertext).toHaveProperty('v')
+
+    // Validate entry structure uses new field names
+    const encrypted = ciphertext as { sv: unknown[] }
+    expect(Array.isArray(encrypted.sv)).toBe(true)
+    expect(encrypted.sv.length).toBeGreaterThan(0)
+
+    const entry = encrypted.sv[0] as Record<string, unknown>
+    expect(entry).toHaveProperty('c') // Entry ciphertext (new format)
+
+    // Old field names should NOT exist
+    expect(entry).not.toHaveProperty('tokenized_selector')
+    expect(entry).not.toHaveProperty('term')
+    expect(entry).not.toHaveProperty('record')
+    expect(entry).not.toHaveProperty('parent_is_array')
+  })
+})

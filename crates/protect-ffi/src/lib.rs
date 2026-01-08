@@ -8,14 +8,16 @@ use cipherstash_client::{
         EnvSource, FileSource,
     },
     credentials::{ServiceCredentials, ServiceToken},
-    encryption::{
-        self, EncryptionError, IndexTerm, Plaintext, PlaintextTarget, ReferencedPendingPipeline,
-        ScopedCipher, SteVec, TypeParseError,
+    encryption::{EncryptionError, Plaintext, ScopedCipher, TypeParseError},
+    eql::{
+        encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
+        Identifier as EqlIdentifier, PreparedPlaintext,
     },
     schema::ColumnConfig,
     zerokms::{self, EncryptedRecord, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     IdentifiedBy, UnverifiedContext,
 };
+use std::{borrow::Cow, collections::BTreeMap};
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
 use js_plaintext::JsPlaintext;
@@ -44,6 +46,30 @@ struct Client {
 
 impl Finalize for Client {}
 
+/// Entry in an SteVec (structured encryption vector) for JSON field encryption.
+/// Each entry represents an encrypted path/value pair in the JSON structure.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SteVecEntry {
+    /// Entry ciphertext (mp_base85 encoded)
+    #[serde(rename = "c")]
+    pub ciphertext: String,
+    /// Tokenized selector (hex encoded)
+    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Blake3 hash for exact matches
+    #[serde(rename = "b3", skip_serializing_if = "Option::is_none")]
+    pub blake3: Option<String>,
+    /// ORE fixed-width for numeric comparisons
+    #[serde(rename = "ocf", skip_serializing_if = "Option::is_none")]
+    pub ore_fixed: Option<String>,
+    /// ORE variable-width for string comparisons
+    #[serde(rename = "ocv", skip_serializing_if = "Option::is_none")]
+    pub ore_variable: Option<String>,
+    /// Whether entry is in an array
+    #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
+    pub is_array_item: Option<bool>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "k")]
 pub enum Encrypted {
@@ -64,8 +90,12 @@ pub enum Encrypted {
     },
     #[serde(rename = "sv")]
     SteVec {
+        /// The root ciphertext (encrypted JSON value, mp_base85 encoded)
+        #[serde(rename = "c")]
+        ciphertext: String,
+        /// The SteVec entries in EQL format
         #[serde(rename = "sv")]
-        ste_vec_index: SteVec<16>,
+        ste_vec_entries: Vec<SteVecEntry>,
         #[serde(rename = "i")]
         identifier: Identifier,
         #[serde(rename = "v")]
@@ -83,6 +113,8 @@ pub enum Error {
     TypeParse(#[from] TypeParseError),
     #[error(transparent)]
     Encryption(#[from] EncryptionError),
+    #[error(transparent)]
+    Eql(#[from] EqlError),
     #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs/issues.")]
     InvariantViolation(String),
     #[error("{0}")]
@@ -148,6 +180,8 @@ struct PlaintextPayload {
     plaintext: JsPlaintext,
     column: String,
     table: String,
+    /// Lock context for this payload. Payloads with different lock_context values
+    /// will be encrypted in separate batches to preserve per-payload context binding.
     lock_context: Option<LockContext>,
 }
 
@@ -246,7 +280,7 @@ async fn encrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptOptions>,
 ) -> Result<Json<Encrypted>, neon::types::extract::Error> {
-    let ident = Identifier::new(opts.table, opts.column);
+    let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
         .encrypt_config
@@ -257,24 +291,27 @@ async fn encrypt(
         .plaintext
         .to_plaintext_with_type(column_config.cast_type)?;
 
-    let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
-    plaintext_target.context = opts.lock_context.map(Into::into).unwrap_or_default();
+    // Prepare for encrypt_eql
+    let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
+    let prepared = PreparedPlaintext::new(
+        Cow::Borrowed(column_config),
+        eql_ident,
+        plaintext,
+        EqlOperation::Store,
+    );
 
-    let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
+    let eql_opts = EqlEncryptOpts {
+        keyset_id: None, // Use cipher's default
+        lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
+        service_token: opts.service_token.map(Cow::Owned),
+        unverified_context: opts.unverified_context.map(Cow::Owned),
+        index_types: None,
+    };
 
-    pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, 0)?;
+    let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
+    let eql_ciphertext = encrypted.remove(0);
 
-    let mut source_encrypted = pipeline
-        .encrypt(opts.service_token, opts.unverified_context)
-        .await?;
-
-    let encrypted = source_encrypted.remove(0).ok_or_else(|| {
-        Error::InvariantViolation(
-            "`encrypt` expected a single result in the pipeline, but there were none".to_string(),
-        )
-    })?;
-
-    Ok(Json(to_eql_encrypted(encrypted, &ident)?))
+    Ok(Json(eql_ciphertext_to_encrypted(eql_ciphertext, &ident)?))
 }
 
 #[neon::export]
@@ -282,11 +319,36 @@ async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptBulkOptions>,
 ) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
-    let plaintext_targets = opts
-        .plaintexts
-        .into_iter()
-        .map(|payload| {
-            let ident = Identifier::new(payload.table, payload.column);
+    // Group payloads by lock_context for batch processing
+    // BTreeMap provides deterministic ordering of groups
+    let mut groups: BTreeMap<Vec<String>, Vec<(usize, PlaintextPayload)>> = BTreeMap::new();
+
+    for (idx, payload) in opts.plaintexts.into_iter().enumerate() {
+        let key = payload
+            .lock_context
+            .as_ref()
+            .map(|lc| lc.identity_claim.clone())
+            .unwrap_or_default();
+        groups.entry(key).or_default().push((idx, payload));
+    }
+
+    // Pre-allocate results vector
+    let total_count: usize = groups.values().map(|g| g.len()).sum();
+    let mut results: Vec<Option<Encrypted>> = (0..total_count).map(|_| None).collect();
+
+    // Process each lock_context group
+    for (lock_context_claims, payloads) in groups {
+        let lock_context: Vec<zerokms::Context> = lock_context_claims
+            .into_iter()
+            .map(zerokms::Context::IdentityClaim)
+            .collect();
+
+        // Build PreparedPlaintext items for this group
+        let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
+
+        for (original_idx, payload) in payloads {
+            let ident = Identifier::new(payload.table.clone(), payload.column.clone());
 
             let column_config = client
                 .encrypt_config
@@ -297,47 +359,47 @@ async fn encrypt_bulk(
                 .plaintext
                 .to_plaintext_with_type(column_config.cast_type)?;
 
-            let mut plaintext_target = PlaintextTarget::new(plaintext, column_config.clone());
-            plaintext_target.context = payload.lock_context.map(Into::into).unwrap_or_default();
+            let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
+            let prepared = PreparedPlaintext::new(
+                Cow::Borrowed(column_config),
+                eql_ident,
+                plaintext,
+                EqlOperation::Store,
+            );
 
-            Ok((plaintext_target, ident))
+            prepared_plaintexts.push(prepared);
+            payload_data.push((original_idx, ident));
+        }
+
+        let eql_opts = EqlEncryptOpts {
+            keyset_id: None,
+            lock_context: Cow::Owned(lock_context),
+            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
+            unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
+            index_types: None,
+        };
+
+        let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+
+        // Place results back in original order
+        for (eql_ciphertext, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let enc = eql_ciphertext_to_encrypted(eql_ciphertext, &ident)?;
+            results[original_idx] = Some(enc);
+        }
+    }
+
+    // Unwrap all results (all should be Some)
+    let final_results: Vec<Encrypted> = results
+        .into_iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            opt.ok_or_else(|| {
+                Error::InvariantViolation(format!("Missing encryption result for index {}", i))
+            })
         })
-        .collect::<Result<Vec<(PlaintextTarget, Identifier)>, Error>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let len = plaintext_targets.len();
-    let mut pipeline = ReferencedPendingPipeline::new(client.cipher);
-    let (plaintext_targets, identifiers): (Vec<PlaintextTarget>, Vec<Identifier>) =
-        plaintext_targets.into_iter().unzip();
-
-    for (i, plaintext_target) in plaintext_targets.into_iter().enumerate() {
-        pipeline.add_with_ref::<PlaintextTarget>(plaintext_target, i)?;
-    }
-
-    let mut source_encrypted = pipeline
-        .encrypt(opts.service_token, opts.unverified_context)
-        .await?;
-
-    let mut results: Vec<Encrypted> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let encrypted = source_encrypted.remove(i).ok_or_else(|| {
-            Error::InvariantViolation(format!(
-                "`encrypt_bulk` expected a result in the pipeline at index {i}, but there was none"
-            ))
-        })?;
-
-        let ident = identifiers.get(i).ok_or_else(|| {
-            Error::InvariantViolation(format!(
-                "`encrypt_bulk` expected an identifier to exist for index {i}, but there was none"
-            ))
-        })?;
-
-        let eql_payload = to_eql_encrypted(encrypted, ident)?;
-
-        results.push(eql_payload);
-    }
-
-    Ok(Json(results))
+    Ok(Json(final_results))
 }
 
 #[neon::export]
@@ -354,8 +416,8 @@ async fn decrypt(
             encrypted_record,
             // Specifying None here will result in the client using the keyset identifier from the client
             None,
-            opts.service_token,
-            opts.unverified_context,
+            opts.service_token.map(Cow::Owned),
+            opts.unverified_context.as_ref(),
         )
         .await
         .map_err(Error::from)
@@ -380,12 +442,12 @@ async fn decrypt_bulk(
         })
         .collect();
 
-    let encrypted_records = ciphertexts
+    let encrypted_records: Vec<WithContext<'static>> = ciphertexts
         .into_iter()
         .map(|(ciphertext, encryption_context)| {
             encrypted_record_from_mp_base85(ciphertext, encryption_context)
         })
-        .collect::<Result<Vec<WithContext>, Error>>()?;
+        .collect::<Result<Vec<_>, Error>>()?;
 
     let decrypted = client
         .zerokms
@@ -393,8 +455,8 @@ async fn decrypt_bulk(
             encrypted_records,
             // Specifying None here will result in the client using the keyset identifier from the client
             None,
-            opts.service_token,
-            opts.unverified_context,
+            opts.service_token.map(Cow::Owned),
+            opts.unverified_context.as_ref(),
         )
         .await?;
 
@@ -420,27 +482,25 @@ async fn decrypt_bulk_fallible(
         })
         .collect();
 
-    let encrypted_records: Result<Vec<WithContext>, Error> = ciphertexts
+    let encrypted_records: Vec<WithContext<'static>> = ciphertexts
         .into_iter()
         .map(|(ciphertext, encryption_context)| {
             encrypted_record_from_mp_base85(ciphertext, encryption_context)
         })
-        .collect();
+        .collect::<Result<Vec<_>, Error>>()?;
 
-    let encrypted_records = encrypted_records?;
-
-    let decrypted = client
+    let decrypted: Vec<Result<Vec<u8>, RecordDecryptError>> = client
         .zerokms
         .decrypt_fallible(
             encrypted_records,
-            opts.service_token,
-            opts.unverified_context,
+            opts.service_token.map(Cow::Owned),
+            opts.unverified_context.map(Cow::Owned),
         )
         .await?;
 
-    let plaintexts: Vec<Result<JsPlaintext, _>> = decrypted
+    let plaintexts: Vec<Result<JsPlaintext, Error>> = decrypted
         .into_iter()
-        .map(|item| {
+        .map(|item: Result<Vec<u8>, RecordDecryptError>| {
             item.map_err(Error::from).and_then(|bytes| {
                 Plaintext::from_slice(&bytes)
                     .map_err(Error::from)
@@ -471,107 +531,89 @@ fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
 fn encrypted_record_from_mp_base85(
     encrypted: Encrypted,
     encryption_context: Vec<zerokms::Context>,
-) -> Result<WithContext, Error> {
+) -> Result<WithContext<'static>, Error> {
     let encrypted_record = match encrypted {
         Encrypted::Ciphertext { ciphertext, .. } => EncryptedRecord::from_mp_base85(&ciphertext)
-            // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-            // Instead, we use `map_err`.
             .map_err(|err| Error::Base85(err.to_string()))?,
-        Encrypted::SteVec { ste_vec_index, .. } => {
-            ste_vec_index.into_root_ciphertext().map_err(Error::from)?
+        Encrypted::SteVec { ciphertext, .. } => {
+            // For SteVec, use the root ciphertext for decryption
+            EncryptedRecord::from_mp_base85(&ciphertext)
+                .map_err(|err| Error::Base85(err.to_string()))?
         }
     };
 
     Ok(WithContext {
         record: encrypted_record,
-        context: encryption_context,
+        context: Cow::Owned(encryption_context),
     })
 }
 
-fn to_eql_encrypted(
-    encrypted: encryption::Encrypted,
-    identifier: &Identifier,
+/// Converts an `EqlCiphertext` (from `encrypt_eql`) to protect-ffi's `Encrypted` format.
+fn eql_ciphertext_to_encrypted(
+    eql: EqlCiphertext,
+    ident: &Identifier,
 ) -> Result<Encrypted, Error> {
-    match encrypted {
-        encryption::Encrypted::Record(ciphertext, terms) => {
-            struct Indexes {
-                match_index: Option<Vec<u16>>,
-                ore_index: Option<Vec<String>>,
-                unique_index: Option<String>,
-            }
+    // Check if this is an SteVec (has ste_vec in sem)
+    if let Some(ste_vec_bodies) = eql.body.sem.ste_vec {
+        // Get root ciphertext
+        let root_ciphertext = eql
+            .body
+            .ciphertext
+            .ok_or_else(|| {
+                Error::InvariantViolation("Missing root ciphertext in SteVec".to_string())
+            })?
+            .to_mp_base85()
+            .map_err(|err| Error::Base85(err.to_string()))?;
 
-            let mut indexes = Indexes {
-                match_index: None,
-                ore_index: None,
-                unique_index: None,
-            };
+        // Convert EqlCiphertextBody entries to SteVecEntry
+        let entries: Vec<SteVecEntry> = ste_vec_bodies
+            .into_iter()
+            .map(|body| -> Result<SteVecEntry, Error> {
+                let ciphertext = body
+                    .ciphertext
+                    .ok_or_else(|| {
+                        Error::InvariantViolation("Missing ciphertext in SteVec entry".to_string())
+                    })?
+                    .to_mp_base85()
+                    .map_err(|err| Error::Base85(err.to_string()))?;
 
-            for index_term in terms {
-                match index_term {
-                    IndexTerm::Binary(bytes) => {
-                        indexes.unique_index = Some(format_index_term_binary(&bytes))
-                    }
-                    IndexTerm::BitMap(inner) => indexes.match_index = Some(inner),
-                    IndexTerm::OreArray(vec_of_bytes) => {
-                        indexes.ore_index = Some(format_index_term_ore_array(&vec_of_bytes));
-                    }
-                    IndexTerm::OreFull(bytes) => {
-                        indexes.ore_index = Some(format_index_term_ore(&bytes));
-                    }
-                    IndexTerm::OreLeft(bytes) => {
-                        indexes.ore_index = Some(format_index_term_ore(&bytes));
-                    }
-                    IndexTerm::Null => {}
-                    term => return Err(Error::Unimplemented(format!("index term `{term:?}`"))),
-                };
-            }
-
-            let ciphertext = ciphertext
-                .to_mp_base85()
-                // The error type from `to_mp_base85` isn't public, so we don't derive an error for this one.
-                // Instead, we use `map_err`.
-                .map_err(|err| Error::Base85(err.to_string()))?;
-
-            Ok(Encrypted::Ciphertext {
-                ciphertext,
-                identifier: identifier.to_owned(),
-                match_index: indexes.match_index,
-                ore_index: indexes.ore_index,
-                unique_index: indexes.unique_index,
-                version: 2,
+                Ok(SteVecEntry {
+                    ciphertext,
+                    selector: body.sem.selector,
+                    blake3: body.sem.blake3,
+                    ore_fixed: body.sem.ore_cllw_u64_8,
+                    ore_variable: body.sem.ore_cllw_var_8,
+                    is_array_item: body.is_array_item,
+                })
             })
-        }
-        encryption::Encrypted::SteVec(ste_vec_index) => Ok(Encrypted::SteVec {
-            identifier: identifier.to_owned(),
-            ste_vec_index,
+            .collect::<Result<Vec<_>, _>>()?;
+
+        return Ok(Encrypted::SteVec {
+            ciphertext: root_ciphertext,
+            ste_vec_entries: entries,
+            identifier: ident.clone(),
             version: 2,
-        }),
+        });
     }
-}
 
-fn format_index_term_binary(bytes: &Vec<u8>) -> String {
-    hex::encode(bytes)
-}
+    // Standard ciphertext case
+    let ciphertext = eql
+        .body
+        .ciphertext
+        .ok_or_else(|| {
+            Error::InvariantViolation("Missing ciphertext in EQL result".to_string())
+        })?
+        .to_mp_base85()
+        .map_err(|err| Error::Base85(err.to_string()))?;
 
-fn format_index_term_ore_bytea(bytes: &Vec<u8>) -> String {
-    hex::encode(bytes)
-}
-
-///
-/// Formats a Vec<Vec<u8>> into a Vec<String>
-///
-fn format_index_term_ore_array(vec_of_bytes: &[Vec<u8>]) -> Vec<String> {
-    vec_of_bytes
-        .iter()
-        .map(format_index_term_ore_bytea)
-        .collect()
-}
-
-///
-/// Formats a Vec<Vec<u8>> into a single elenent Vec<String>
-///
-fn format_index_term_ore(bytes: &Vec<u8>) -> Vec<String> {
-    vec![format_index_term_ore_bytea(bytes)]
+    Ok(Encrypted::Ciphertext {
+        ciphertext,
+        ore_index: eql.body.sem.ore_block_u64_8_256,
+        match_index: eql.body.sem.bloom_filter,
+        unique_index: eql.body.sem.hmac_256,
+        identifier: ident.clone(),
+        version: 2,
+    })
 }
 
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -620,6 +662,86 @@ mod tests {
             let invalid_encrypted =
                 json!({"k":"invalid","c":"3q2+7w==","i":{"t":"users","c":"email"},"v":2});
             assert!(!is_encrypted(Json(invalid_encrypted)));
+        }
+    }
+
+    mod lock_context_grouping {
+        use std::collections::BTreeMap;
+
+        // Helper to simulate the grouping logic
+        fn group_by_lock_context(
+            payloads: Vec<(String, Option<Vec<String>>)>,
+        ) -> BTreeMap<Vec<String>, Vec<(usize, String)>> {
+            let mut groups: BTreeMap<Vec<String>, Vec<(usize, String)>> = BTreeMap::new();
+            for (idx, (data, lock_context)) in payloads.into_iter().enumerate() {
+                let key = lock_context.unwrap_or_default();
+                groups.entry(key).or_default().push((idx, data));
+            }
+            groups
+        }
+
+        #[test]
+        fn same_lock_context_groups_together() {
+            let payloads = vec![
+                ("a".to_string(), Some(vec!["user:1".to_string()])),
+                ("b".to_string(), Some(vec!["user:1".to_string()])),
+                ("c".to_string(), Some(vec!["user:1".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[&vec!["user:1".to_string()]].len(), 3);
+        }
+
+        #[test]
+        fn different_lock_contexts_separate_groups() {
+            let payloads = vec![
+                ("a".to_string(), Some(vec!["user:1".to_string()])),
+                ("b".to_string(), Some(vec!["user:2".to_string()])),
+                ("c".to_string(), Some(vec!["user:1".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[&vec!["user:1".to_string()]].len(), 2);
+            assert_eq!(groups[&vec!["user:2".to_string()]].len(), 1);
+        }
+
+        #[test]
+        fn none_lock_context_groups_together() {
+            let payloads = vec![
+                ("a".to_string(), None),
+                ("b".to_string(), None),
+                ("c".to_string(), Some(vec!["user:1".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[&vec![]].len(), 2); // None becomes empty vec
+            assert_eq!(groups[&vec!["user:1".to_string()]].len(), 1);
+        }
+
+        #[test]
+        fn preserves_original_indices() {
+            let payloads = vec![
+                ("a".to_string(), Some(vec!["user:2".to_string()])),
+                ("b".to_string(), Some(vec!["user:1".to_string()])),
+                ("c".to_string(), Some(vec!["user:2".to_string()])),
+            ];
+
+            let groups = group_by_lock_context(payloads);
+
+            // user:1 group should have index 1
+            let user1_group = &groups[&vec!["user:1".to_string()]];
+            assert_eq!(user1_group[0], (1, "b".to_string()));
+
+            // user:2 group should have indices 0 and 2
+            let user2_group = &groups[&vec!["user:2".to_string()]];
+            assert_eq!(user2_group[0], (0, "a".to_string()));
+            assert_eq!(user2_group[1], (2, "c".to_string()));
         }
     }
 }

@@ -64,7 +64,8 @@ jobs:
             const linux = platforms.Linux.map(platform => {
               return { os: "blacksmith-4vcpu-ubuntu-2404", platform, script: "build" };
             });
-            return [...macOS, ...windows, ...linux];
+            // TODO: Re-enable Windows builds after fixing OpenSSL issue
+            return [...macOS, ...linux];
 
   binaries:
     name: Binaries
