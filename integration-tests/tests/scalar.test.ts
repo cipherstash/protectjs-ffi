@@ -170,3 +170,65 @@ describe('isEncrypted validation', () => {
     expect(isEncrypted(missingIdentifier as any)).toBe(false)
   })
 })
+
+describe('encrypted output SEM fields', () => {
+  test('should include hm field when unique index configured', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: 'test@example.com',
+      table: 'users',
+      column: 'email', // has unique: {} index
+    })
+
+    // hm = HMAC for exact match queries
+    expect(ciphertext.hm).toBeDefined()
+    expect(typeof ciphertext.hm).toBe('string')
+    expect(ciphertext.hm!.length).toBeGreaterThan(0)
+  })
+
+  test('should include ob field when ore index configured', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: 100,
+      table: 'users',
+      column: 'score', // has ore: {} index
+    })
+
+    // ob = ORE blocks for range queries
+    expect(ciphertext.ob).toBeDefined()
+    expect(Array.isArray(ciphertext.ob)).toBe(true)
+    expect(ciphertext.ob!.length).toBeGreaterThan(0)
+  })
+
+  test('should include bf field when match index configured', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: 'test@example.com',
+      table: 'users',
+      column: 'email', // has match: {} index
+    })
+
+    // bf = bloom filter for fuzzy/substring match queries
+    expect(ciphertext.bf).toBeDefined()
+    expect(Array.isArray(ciphertext.bf)).toBe(true)
+    expect(ciphertext.bf!.length).toBeGreaterThan(0)
+  })
+
+  test('should include multiple SEM fields when multiple indexes configured', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: 'test@example.com',
+      table: 'users',
+      column: 'email', // has ore, match, and unique indexes
+    })
+
+    // email column has all three index types
+    expect(ciphertext.hm).toBeDefined() // unique
+    expect(ciphertext.ob).toBeDefined() // ore
+    expect(ciphertext.bf).toBeDefined() // match
+  })
+})
