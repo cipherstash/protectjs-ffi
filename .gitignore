@@ -10,3 +10,6 @@ mise.local.toml
 cipherstash.secret.toml
 cipherstash-*.sql
 .env
+
+# Test coverage
+integration-tests/coverage/
