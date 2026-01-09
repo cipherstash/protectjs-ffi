@@ -137,3 +137,36 @@ describe('coercion', async () => {
     ).rejects.toThrowError()
   })
 })
+
+describe('isEncrypted validation', () => {
+  test('should reject old format with k discriminant tag', () => {
+    // Old format used "k": "ct" discriminant for ciphertext variant
+    // New format omits the k field - serde validates structure without it
+    const oldFormatCiphertext = {
+      k: 'ct',
+      c: 'somebase85data',
+      i: { t: 'users', c: 'email' },
+      v: 1,
+    }
+
+    expect(isEncrypted(oldFormatCiphertext as any)).toBe(false)
+  })
+
+  test('should return false when v field is missing', () => {
+    const missingVersion = {
+      i: { t: 'users', c: 'email' },
+      c: 'somedata',
+    }
+
+    expect(isEncrypted(missingVersion as any)).toBe(false)
+  })
+
+  test('should return false when i field is missing', () => {
+    const missingIdentifier = {
+      v: 1,
+      c: 'somedata',
+    }
+
+    expect(isEncrypted(missingIdentifier as any)).toBe(false)
+  })
+})
