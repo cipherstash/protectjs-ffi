@@ -319,7 +319,7 @@ describe('deeply nested JSON encryption', () => {
     // Verify sv structure exists for nested JSON
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
-    expect(ciphertext.sv!.length).toBeGreaterThan(0)
+    expect(ciphertext.sv?.length).toBeGreaterThan(0)
 
     const decrypted = await decrypt(client, { ciphertext })
     expect(decrypted).toEqual(deepNested)
@@ -377,7 +377,7 @@ describe('deeply nested JSON encryption', () => {
     // Verify sv structure for mixed nested content
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
-    expect(ciphertext.sv!.length).toBeGreaterThan(0)
+    expect(ciphertext.sv?.length).toBeGreaterThan(0)
 
     const decrypted = await decrypt(client, { ciphertext })
     expect(decrypted).toEqual(mixedDeep)

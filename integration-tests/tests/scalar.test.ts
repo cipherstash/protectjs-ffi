@@ -149,6 +149,7 @@ describe('isEncrypted validation', () => {
       v: 1,
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: Testing invalid data intentionally
     expect(isEncrypted(oldFormatCiphertext as any)).toBe(false)
   })
 
@@ -158,6 +159,7 @@ describe('isEncrypted validation', () => {
       c: 'somedata',
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: Testing invalid data intentionally
     expect(isEncrypted(missingVersion as any)).toBe(false)
   })
 
@@ -167,6 +169,7 @@ describe('isEncrypted validation', () => {
       c: 'somedata',
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: Testing invalid data intentionally
     expect(isEncrypted(missingIdentifier as any)).toBe(false)
   })
 })
@@ -184,7 +187,7 @@ describe('encrypted output SEM fields', () => {
     // hm = HMAC for exact match queries
     expect(ciphertext.hm).toBeDefined()
     expect(typeof ciphertext.hm).toBe('string')
-    expect(ciphertext.hm!.length).toBeGreaterThan(0)
+    expect(ciphertext.hm?.length).toBeGreaterThan(0)
   })
 
   test('should include ob field when ore index configured', async () => {
@@ -199,7 +202,7 @@ describe('encrypted output SEM fields', () => {
     // ob = ORE blocks for range queries
     expect(ciphertext.ob).toBeDefined()
     expect(Array.isArray(ciphertext.ob)).toBe(true)
-    expect(ciphertext.ob!.length).toBeGreaterThan(0)
+    expect(ciphertext.ob?.length).toBeGreaterThan(0)
   })
 
   test('should include bf field when match index configured', async () => {
@@ -214,7 +217,7 @@ describe('encrypted output SEM fields', () => {
     // bf = bloom filter for fuzzy/substring match queries
     expect(ciphertext.bf).toBeDefined()
     expect(Array.isArray(ciphertext.bf)).toBe(true)
-    expect(ciphertext.bf!.length).toBeGreaterThan(0)
+    expect(ciphertext.bf?.length).toBeGreaterThan(0)
   })
 
   test('should include multiple SEM fields when multiple indexes configured', async () => {
