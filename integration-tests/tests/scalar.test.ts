@@ -4,13 +4,14 @@ import { describe, expect, test } from 'vitest'
 import {
   decrypt,
   encrypt,
+  type Encrypted,
   type Identifier,
   newClient,
   isEncrypted,
 } from '@cipherstash/protect-ffi'
 
-// Import a shared encryptConfig from common.js
-import { encryptConfig } from './common.js'
+// Import shared configs from common.js
+import { encryptConfig, jsonSteVec } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>
 
@@ -139,20 +140,6 @@ describe('coercion', async () => {
 })
 
 describe('isEncrypted validation', () => {
-  test('should reject old format with k discriminant tag', () => {
-    // Old format used "k": "ct" discriminant for ciphertext variant
-    // New format omits the k field - serde validates structure without it
-    const oldFormatCiphertext = {
-      k: 'ct',
-      c: 'somebase85data',
-      i: { t: 'users', c: 'email' },
-      v: 1,
-    }
-
-    // biome-ignore lint/suspicious/noExplicitAny: Testing invalid data intentionally
-    expect(isEncrypted(oldFormatCiphertext as any)).toBe(false)
-  })
-
   test('should return false when v field is missing', () => {
     const missingVersion = {
       i: { t: 'users', c: 'email' },
@@ -171,6 +158,81 @@ describe('isEncrypted validation', () => {
 
     // biome-ignore lint/suspicious/noExplicitAny: Testing invalid data intentionally
     expect(isEncrypted(missingIdentifier as any)).toBe(false)
+  })
+})
+
+describe('old format backwards compatibility', () => {
+  test('should decrypt old format data with k: ct discriminant field', async () => {
+    const client = await newClient({ encryptConfig })
+    const plaintext = 'test@example.com'
+
+    // Encrypt to get valid ciphertext
+    const ciphertext = await encrypt(client, {
+      plaintext,
+      table: 'users',
+      column: 'email',
+    })
+
+    // Simulate old format by adding "k" field (old discriminant for ciphertext variant)
+    const oldFormat = { ...ciphertext, k: 'ct' }
+
+    // Should still be recognized as encrypted (serde ignores unknown fields)
+    expect(isEncrypted(oldFormat)).toBe(true)
+
+    // Should decrypt correctly
+    const decrypted = await decrypt(client, { ciphertext: oldFormat as Encrypted })
+    expect(decrypted).toBe(plaintext)
+  })
+
+  test('should decrypt old SteVec format with k: sv discriminant', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+    const plaintext = { name: 'test' }
+
+    const ciphertext = await encrypt(client, {
+      plaintext,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Simulate old SteVec format
+    const oldFormat = { ...ciphertext, k: 'sv' }
+
+    expect(isEncrypted(oldFormat)).toBe(true)
+    const decrypted = await decrypt(client, { ciphertext: oldFormat as Encrypted })
+    expect(decrypted).toEqual(plaintext)
+  })
+})
+
+describe('new format validation', () => {
+  test('encrypted output should not contain k field', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: 'test@example.com',
+      table: 'users',
+      column: 'email',
+    })
+
+    // New format must NOT have the "k" discriminant
+    expect(ciphertext).not.toHaveProperty('k')
+
+    // Verify required fields are present
+    expect(ciphertext).toHaveProperty('c')
+    expect(ciphertext).toHaveProperty('i')
+    expect(ciphertext).toHaveProperty('v')
+  })
+
+  test('encrypted JSON output should not contain k field', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: { foo: 'bar' },
+      table: 'users',
+      column: 'profile',
+    })
+
+    expect(ciphertext).not.toHaveProperty('k')
+    expect(ciphertext).toHaveProperty('sv') // SteVec field
   })
 })
 
