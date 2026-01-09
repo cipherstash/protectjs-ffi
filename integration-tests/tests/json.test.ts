@@ -295,3 +295,91 @@ describe('SteVec index field generation', () => {
     })
   })
 })
+
+describe('deeply nested JSON encryption', () => {
+  test('should handle 4 levels of object nesting', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const deepNested = {
+      level1: {
+        level2: {
+          level3: {
+            level4: 'deep value',
+          },
+        },
+      },
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: deepNested,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Verify sv structure exists for nested JSON
+    expect(ciphertext.sv).toBeDefined()
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+    expect(ciphertext.sv!.length).toBeGreaterThan(0)
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toEqual(deepNested)
+  })
+
+  test('should handle arrays nested within objects within arrays', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const complexNested = {
+      items: [
+        { tags: ['tag1', 'tag2'] },
+        { tags: ['tag3', 'tag4', 'tag5'] },
+      ],
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: complexNested,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Verify sv structure for nested arrays
+    expect(ciphertext.sv).toBeDefined()
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toEqual(complexNested)
+  })
+
+  test('should handle mixed deep nesting with various types', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const mixedDeep = {
+      user: {
+        profile: {
+          settings: {
+            notifications: true,
+            theme: 'dark',
+            limits: [10, 20, 30],
+          },
+        },
+        scores: [100, 200, 300],
+      },
+      metadata: {
+        version: 1,
+      },
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: mixedDeep,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Verify sv structure for mixed nested content
+    expect(ciphertext.sv).toBeDefined()
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+    expect(ciphertext.sv!.length).toBeGreaterThan(0)
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toEqual(mixedDeep)
+  })
+})
