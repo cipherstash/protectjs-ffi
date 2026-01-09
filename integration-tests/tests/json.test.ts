@@ -211,10 +211,14 @@ describe('SteVec index field generation', () => {
       })
 
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ ocf?: string; ocv?: string; c: string }> }
+      const encrypted = ciphertext as {
+        sv: Array<{ ocf?: string; ocv?: string; c: string }>
+      }
 
       // Numeric entries should have ORE fixed field
-      const entriesWithOreFixed = encrypted.sv.filter((e) => e.ocf !== undefined)
+      const entriesWithOreFixed = encrypted.sv.filter(
+        (e) => e.ocf !== undefined,
+      )
       expect(entriesWithOreFixed.length).toBeGreaterThan(0)
 
       // ORE fields should be hex encoded
@@ -234,10 +238,14 @@ describe('SteVec index field generation', () => {
       })
 
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ ocf?: string; ocv?: string; c: string }> }
+      const encrypted = ciphertext as {
+        sv: Array<{ ocf?: string; ocv?: string; c: string }>
+      }
 
       // String entries should have ORE variable field
-      const entriesWithOreVariable = encrypted.sv.filter((e) => e.ocv !== undefined)
+      const entriesWithOreVariable = encrypted.sv.filter(
+        (e) => e.ocv !== undefined,
+      )
       expect(entriesWithOreVariable.length).toBeGreaterThan(0)
 
       // ORE fields should be hex encoded
@@ -329,10 +337,7 @@ describe('deeply nested JSON encryption', () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
     const complexNested = {
-      items: [
-        { tags: ['tag1', 'tag2'] },
-        { tags: ['tag3', 'tag4', 'tag5'] },
-      ],
+      items: [{ tags: ['tag1', 'tag2'] }, { tags: ['tag3', 'tag4', 'tag5'] }],
     }
 
     const ciphertext = await encrypt(client, {

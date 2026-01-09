@@ -180,7 +180,9 @@ describe('old format backwards compatibility', () => {
     expect(isEncrypted(oldFormat)).toBe(true)
 
     // Should decrypt correctly
-    const decrypted = await decrypt(client, { ciphertext: oldFormat as Encrypted })
+    const decrypted = await decrypt(client, {
+      ciphertext: oldFormat as Encrypted,
+    })
     expect(decrypted).toBe(plaintext)
   })
 
@@ -198,7 +200,9 @@ describe('old format backwards compatibility', () => {
     const oldFormat = { ...ciphertext, k: 'sv' }
 
     expect(isEncrypted(oldFormat)).toBe(true)
-    const decrypted = await decrypt(client, { ciphertext: oldFormat as Encrypted })
+    const decrypted = await decrypt(client, {
+      ciphertext: oldFormat as Encrypted,
+    })
     expect(decrypted).toEqual(plaintext)
   })
 })
