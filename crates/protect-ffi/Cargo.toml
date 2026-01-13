@@ -23,6 +23,10 @@ thiserror = "2.0.8"
 tokio = { version = "1", features = ["full"] }
 vitaminc-protected = { version = "0.1.0-pre4" }
 
+# Use vendored OpenSSL for cross-platform builds (especially Windows)
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 chrono = "0.4.42"
 quickcheck = "1.0.3"
