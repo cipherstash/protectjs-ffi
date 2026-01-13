@@ -103,3 +103,288 @@ describe.each([
     })
   },
 )
+
+describe('SteVec output structure', () => {
+  test('encrypted output has expected fields', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const ciphertext = await encrypt(client, {
+      plaintext: { foo: 'bar' },
+      table: 'users',
+      column: 'profile',
+    })
+
+    // SteVec variant must have these fields
+    expect(ciphertext.sv).toBeDefined()
+    expect(ciphertext).toHaveProperty('c') // Root ciphertext
+    expect(ciphertext).toHaveProperty('sv')
+    expect(ciphertext).toHaveProperty('i')
+    expect(ciphertext).toHaveProperty('v')
+
+    // Validate entry structure uses new field names
+    const encrypted = ciphertext as { sv: unknown[] }
+    expect(Array.isArray(encrypted.sv)).toBe(true)
+    expect(encrypted.sv.length).toBeGreaterThan(0)
+
+    const entry = encrypted.sv[0] as Record<string, unknown>
+    expect(entry).toHaveProperty('c') // Entry ciphertext (new format)
+
+    // Old field names should NOT exist
+    expect(entry).not.toHaveProperty('tokenized_selector')
+    expect(entry).not.toHaveProperty('term')
+    expect(entry).not.toHaveProperty('record')
+    expect(entry).not.toHaveProperty('parent_is_array')
+  })
+})
+
+describe('SteVec index field generation', () => {
+  describe('selector field (s)', () => {
+    test('should include selector field for entries', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'test' },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as { sv: Array<{ s?: string; c: string }> }
+
+      // At least one entry should have a selector
+      const entriesWithSelector = encrypted.sv.filter((e) => e.s !== undefined)
+      expect(entriesWithSelector.length).toBeGreaterThan(0)
+
+      // Selector should be hex encoded
+      for (const entry of entriesWithSelector) {
+        expect(entry.s).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+  })
+
+  describe('array flag (a)', () => {
+    test('should set array flag for array elements', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      const ciphertext = await encrypt(client, {
+        plaintext: { items: ['apple', 'banana', 'cherry'] },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
+
+      // Array items should have a: true
+      const arrayEntries = encrypted.sv.filter((e) => e.a === true)
+      expect(arrayEntries.length).toBeGreaterThan(0)
+    })
+
+    test('should not set array flag for non-array elements', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'test', count: 42 },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
+
+      // Non-array items should not have a: true
+      for (const entry of encrypted.sv) {
+        expect(entry.a).not.toBe(true)
+      }
+    })
+  })
+
+  describe('ORE index fields (ocf/ocv)', () => {
+    test('should include ORE fixed field (ocf) for numeric values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec automatically generates ORE fields for numeric values
+      const ciphertext = await encrypt(client, {
+        plaintext: { count: 42, price: 99.99 },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as {
+        sv: Array<{ ocf?: string; ocv?: string; c: string }>
+      }
+
+      // Numeric entries should have ORE fixed field
+      const entriesWithOreFixed = encrypted.sv.filter(
+        (e) => e.ocf !== undefined,
+      )
+      expect(entriesWithOreFixed.length).toBeGreaterThan(0)
+
+      // ORE fields should be hex encoded
+      for (const entry of entriesWithOreFixed) {
+        expect(entry.ocf).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+
+    test('should include ORE variable field (ocv) for string values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec automatically generates ORE variable fields for string values
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'alice', city: 'london' },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as {
+        sv: Array<{ ocf?: string; ocv?: string; c: string }>
+      }
+
+      // String entries should have ORE variable field
+      const entriesWithOreVariable = encrypted.sv.filter(
+        (e) => e.ocv !== undefined,
+      )
+      expect(entriesWithOreVariable.length).toBeGreaterThan(0)
+
+      // ORE fields should be hex encoded
+      for (const entry of entriesWithOreVariable) {
+        expect(entry.ocv).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+  })
+
+  describe('unique index field (b3)', () => {
+    test('should include blake3 hash for string values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec automatically generates blake3 hash for string values
+      const ciphertext = await encrypt(client, {
+        plaintext: { name: 'test', email: 'test@example.com' },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
+
+      // String entries should have blake3 hash
+      const entriesWithB3 = encrypted.sv.filter((e) => e.b3 !== undefined)
+      expect(entriesWithB3.length).toBeGreaterThan(0)
+
+      // b3 should be hex encoded
+      for (const entry of entriesWithB3) {
+        expect(entry.b3).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+
+    test('should include blake3 hash for numeric values', async () => {
+      const client = await newClient({ encryptConfig: jsonSteVec })
+
+      // SteVec also generates blake3 hash for numeric values for exact match lookups
+      const ciphertext = await encrypt(client, {
+        plaintext: { count: 42, price: 99.99 },
+        table: 'users',
+        column: 'profile',
+      })
+
+      expect(ciphertext.sv).toBeDefined()
+      const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
+
+      // Numeric entries should also have blake3 hash for exact matching
+      const entriesWithB3 = encrypted.sv.filter((e) => e.b3 !== undefined)
+      expect(entriesWithB3.length).toBeGreaterThan(0)
+
+      // b3 should be hex encoded
+      for (const entry of entriesWithB3) {
+        expect(entry.b3).toMatch(/^[0-9a-f]+$/i)
+      }
+    })
+  })
+})
+
+describe('deeply nested JSON encryption', () => {
+  test('should handle 4 levels of object nesting', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const deepNested = {
+      level1: {
+        level2: {
+          level3: {
+            level4: 'deep value',
+          },
+        },
+      },
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: deepNested,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Verify sv structure exists for nested JSON
+    expect(ciphertext.sv).toBeDefined()
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+    expect(ciphertext.sv?.length).toBeGreaterThan(0)
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toEqual(deepNested)
+  })
+
+  test('should handle arrays nested within objects within arrays', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const complexNested = {
+      items: [{ tags: ['tag1', 'tag2'] }, { tags: ['tag3', 'tag4', 'tag5'] }],
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: complexNested,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Verify sv structure for nested arrays
+    expect(ciphertext.sv).toBeDefined()
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toEqual(complexNested)
+  })
+
+  test('should handle mixed deep nesting with various types', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    const mixedDeep = {
+      user: {
+        profile: {
+          settings: {
+            notifications: true,
+            theme: 'dark',
+            limits: [10, 20, 30],
+          },
+        },
+        scores: [100, 200, 300],
+      },
+      metadata: {
+        version: 1,
+      },
+    }
+
+    const ciphertext = await encrypt(client, {
+      plaintext: mixedDeep,
+      table: 'users',
+      column: 'profile',
+    })
+
+    // Verify sv structure for mixed nested content
+    expect(ciphertext.sv).toBeDefined()
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+    expect(ciphertext.sv?.length).toBeGreaterThan(0)
+
+    const decrypted = await decrypt(client, { ciphertext })
+    expect(decrypted).toEqual(mixedDeep)
+  })
+})

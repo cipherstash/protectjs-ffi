@@ -59,35 +59,69 @@ export type Context = {
   identityClaim: string[]
 }
 
-export type Encrypted =
-  | {
-      k: 'ct'
-      c: string
-      ob: string[] | null
-      bf: number[] | null
-      hm: string | null
-      i: {
-        c: string
-        t: string
-      }
-      v: number
-    }
-  | {
-      k: 'sv'
-      sv: SteVecEncryptedEntry[]
-      i: {
-        c: string
-        t: string
-      }
-      v: number
-    }
-
-export type SteVecEncryptedEntry = {
-  tokenized_selector: string
-  term: string
-  record: string
-  parent_is_array: boolean
+/**
+ * Represents encrypted data in the EQL format.
+ *
+ * This TypeScript type mirrors the Rust `EqlCiphertext` structure from `cipherstash-client`.
+ * The Rust type hierarchy is:
+ * - `EqlCiphertext` (identifier + version + body)
+ *   - `EqlCiphertextBody` (ciphertext + SEM fields + array flag)
+ *     - `EqlSEM` (all searchable encrypted metadata fields)
+ *
+ * In the serialized JSON format, `#[serde(flatten)]` is used in Rust to produce a flat
+ * structure where all fields appear at the top level rather than nested.
+ *
+ * Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
+ */
+export type Encrypted = {
+  /** The table and column identifier */
+  i: { t: string; c: string }
+  /** The encryption version */
+  v: number
+  /** The encrypted ciphertext (mp_base85 encoded, optional for query-mode payloads) */
+  c?: string
+  /** Whether this encrypted value is part of an array */
+  a?: boolean
+  /** ORE block index for 64-bit integers */
+  ob?: string[]
+  /** Bloom filter for approximate match queries */
+  bf?: number[]
+  /** HMAC-SHA256 hash for exact matches */
+  hm?: string
+  /** Selector value for field selection (SteVec) */
+  s?: string
+  /** Blake3 hash for exact matches (SteVec) */
+  b3?: string
+  /** ORE CLLW fixed-width index for 64-bit values (SteVec) */
+  ocf?: string
+  /** ORE CLLW variable-width index for strings (SteVec) */
+  ocv?: string
+  /** Structured encryption vector entries (recursive) */
+  sv?: EqlCiphertextBody[]
 }
+
+/**
+ * Body of an EQL ciphertext, used recursively in SteVec entries.
+ */
+export type EqlCiphertextBody = {
+  /** The encrypted ciphertext (mp_base85 encoded) */
+  c?: string
+  /** Whether this entry is part of an array */
+  a?: boolean
+  /** Selector value for field selection */
+  s?: string
+  /** Blake3 hash for exact matches */
+  b3?: string
+  /** ORE CLLW fixed-width index */
+  ocf?: string
+  /** ORE CLLW variable-width index */
+  ocv?: string
+  /** Nested SteVec entries (for deeply nested JSON) */
+  sv?: EqlCiphertextBody[]
+}
+
+/** @deprecated Use EqlCiphertextBody instead */
+export type SteVecEntry = EqlCiphertextBody
 
 export type EncryptConfig = {
   v: number

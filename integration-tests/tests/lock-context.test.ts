@@ -48,7 +48,7 @@ describe('lock context', () => {
           identityClaim: ['sub'],
         },
       })
-    }).rejects.toThrowError(/Failed to send request/)
+    }).rejects.toThrowError(/Request forbidden/)
   }, 10000)
 
   test('decrypt throws an error when identityClaim is used without a service token', async () => {
