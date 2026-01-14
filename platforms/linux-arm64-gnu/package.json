@@ -1,7 +1,7 @@
 {
   "name": "@cipherstash/protect-ffi-linux-arm64-gnu",
   "description": "Prebuilt binary package for `@cipherstash/protect-ffi` on `linux-arm64-gnu`.",
-  "version": "0.18.1",
+  "version": "0.19.0",
   "os": [
     "linux"
   ],
