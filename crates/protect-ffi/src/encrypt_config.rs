@@ -109,6 +109,8 @@ pub struct MatchIndexOpts {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct SteVecIndexOpts {
     prefix: String,
+    #[serde(default)]
+    term_filters: Vec<TokenFilter>,
 }
 
 fn default_tokenizer() -> Tokenizer {
@@ -189,8 +191,8 @@ impl Column {
             }))
         }
 
-        if let Some(SteVecIndexOpts { prefix }) = self.indexes.ste_vec_index {
-            config = config.add_index(Index::new(IndexType::SteVec { prefix }))
+        if let Some(SteVecIndexOpts { prefix, term_filters }) = self.indexes.ste_vec_index {
+            config = config.add_index(Index::new(IndexType::SteVec { prefix, term_filters }))
         }
 
         config
@@ -469,7 +471,8 @@ mod tests {
         assert_eq!(
             column.indexes[0].index_type,
             IndexType::SteVec {
-                prefix: "event-data".into()
+                prefix: "event-data".into(),
+                term_filters: vec![],
             },
         );
     }

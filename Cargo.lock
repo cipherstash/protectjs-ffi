@@ -675,9 +675,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-config"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d277d6f9749f5bf7ae43d317c4860c73893ce4ae2ffbba5b2d5d02d078ebf4cc"
+checksum = "9bd94f7826557fa825161118a5b06d1ed60a66185e4f4d5766b9e5ae39669177"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
