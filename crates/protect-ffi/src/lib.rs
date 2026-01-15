@@ -498,6 +498,88 @@ async fn encrypt_query(
 }
 
 #[neon::export]
+async fn encrypt_query_bulk(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<EncryptQueryBulkOptions>,
+) -> Result<Json<Vec<EqlCiphertext>>, neon::types::extract::Error> {
+    // Group payloads by lock_context (same pattern as encrypt_bulk)
+    let mut groups: BTreeMap<Vec<String>, Vec<(usize, QueryPayload)>> = BTreeMap::new();
+
+    for (idx, payload) in opts.queries.into_iter().enumerate() {
+        let key = payload
+            .lock_context
+            .as_ref()
+            .map(|lc| lc.identity_claim.clone())
+            .unwrap_or_default();
+        groups.entry(key).or_default().push((idx, payload));
+    }
+
+    let total_count: usize = groups.values().map(|g| g.len()).sum();
+    let mut results: Vec<Option<EqlCiphertext>> = (0..total_count).map(|_| None).collect();
+
+    for (lock_context_claims, payloads) in groups {
+        let lock_context: Vec<zerokms::Context> = lock_context_claims
+            .into_iter()
+            .map(zerokms::Context::IdentityClaim)
+            .collect();
+
+        let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
+        let mut original_indices = Vec::with_capacity(payloads.len());
+
+        for (original_idx, payload) in payloads {
+            let ident = Identifier::new(payload.table.clone(), payload.column.clone());
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+
+            let index = find_index_for_type(column_config, &payload.index_type)?;
+            let query_op = parse_query_op(&payload.query_op)?;
+
+            // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
+            let plaintext = to_query_plaintext(&payload.plaintext, &query_op, column_config.cast_type)?;
+
+            let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
+            let prepared = PreparedPlaintext::new(
+                Cow::Borrowed(column_config),
+                eql_ident,
+                plaintext,
+                EqlOperation::Query(&index.index_type, query_op),
+            );
+
+            prepared_plaintexts.push(prepared);
+            original_indices.push(original_idx);
+        }
+
+        let eql_opts = EqlEncryptOpts {
+            keyset_id: None,
+            lock_context: Cow::Owned(lock_context),
+            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
+            unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
+            index_types: None,
+        };
+
+        let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+
+        for (eql_ciphertext, original_idx) in encrypted.into_iter().zip(original_indices) {
+            results[original_idx] = Some(eql_ciphertext);
+        }
+    }
+
+    let final_results: Vec<EqlCiphertext> = results
+        .into_iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            opt.ok_or_else(|| {
+                Error::InvariantViolation(format!("Missing query result for index {}", i))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Json(final_results))
+}
+
+#[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
