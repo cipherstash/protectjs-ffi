@@ -8,12 +8,12 @@ use cipherstash_client::{
         EnvSource, FileSource,
     },
     credentials::{ServiceCredentials, ServiceToken},
-    encryption::{EncryptionError, Plaintext, ScopedCipher, TypeParseError},
+    encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
         Identifier as EqlIdentifier, PreparedPlaintext,
     },
-    schema::ColumnConfig,
+    schema::{column::{Index, IndexType}, ColumnConfig},
     zerokms::{self, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     IdentifiedBy, UnverifiedContext,
 };
@@ -78,6 +78,8 @@ pub enum Error {
     UnknownColumn(Identifier),
     #[error(transparent)]
     RecordDecryptError(#[from] RecordDecryptError),
+    #[error("index type '{0}' not configured for this column")]
+    MissingIndex(String),
 }
 
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
@@ -172,6 +174,65 @@ impl From<LockContext> for Vec<zerokms::Context> {
             .into_iter()
             .map(zerokms::Context::IdentityClaim)
             .collect()
+    }
+}
+
+/// Find the matching index from column config by index type name
+fn find_index_for_type<'a>(
+    column_config: &'a ColumnConfig,
+    index_type_name: &str,
+) -> Result<&'a Index, Error> {
+    column_config
+        .indexes
+        .iter()
+        .find(|idx| match (&idx.index_type, index_type_name) {
+            (IndexType::SteVec { .. }, "ste_vec") => true,
+            (IndexType::Match { .. }, "match") => true,
+            (IndexType::Ore, "ore") => true,
+            (IndexType::Unique { .. }, "unique") => true,
+            _ => false,
+        })
+        .ok_or_else(|| Error::MissingIndex(index_type_name.to_string()))
+}
+
+/// Parse query operation string to QueryOp enum
+fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
+    match query_op {
+        "default" => Ok(QueryOp::Default),
+        "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
+        "ste_vec_term" => Ok(QueryOp::SteVecTerm),
+        _ => Err(Error::Unimplemented(format!("Unknown query_op: {}", query_op))),
+    }
+}
+
+/// Convert JsPlaintext to Plaintext, inferring type from query operation.
+///
+/// Query mode has different type semantics than storage mode:
+/// - SteVecSelector: Always string (JSON path like "$.user.email")
+/// - SteVecTerm: Always JSON (fragment to match with @>)
+/// - Default: Uses column's cast_type (original behavior for Match/Unique/Ore)
+fn to_query_plaintext(
+    js_plaintext: &JsPlaintext,
+    query_op: &QueryOp,
+    column_type: cipherstash_client::schema::column::ColumnType,
+) -> Result<Plaintext, TypeParseError> {
+    use cipherstash_client::schema::column::ColumnType;
+
+    match query_op {
+        QueryOp::SteVecSelector => {
+            // Selector queries expect a string path like "$.user.email"
+            // Force Utf8Str conversion regardless of column type
+            js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)
+        }
+        QueryOp::SteVecTerm => {
+            // Term queries expect a JSON fragment to match with @>
+            // Force JsonB conversion regardless of column type
+            js_plaintext.to_plaintext_with_type(ColumnType::JsonB)
+        }
+        QueryOp::Default => {
+            // Default queries use the column's storage type
+            js_plaintext.to_plaintext_with_type(column_type)
+        }
     }
 }
 
