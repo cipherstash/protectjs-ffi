@@ -435,6 +435,47 @@ async fn encrypt_bulk(
 }
 
 #[neon::export]
+async fn encrypt_query(
+    Boxed(client): Boxed<Client>,
+    Json(opts): Json<EncryptQueryOptions>,
+) -> Result<Json<EqlCiphertext>, neon::types::extract::Error> {
+    let ident = Identifier::new(opts.table.clone(), opts.column.clone());
+
+    let column_config = client
+        .encrypt_config
+        .get(&ident)
+        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+
+    // Find the requested index type from column config
+    let index = find_index_for_type(column_config, &opts.index_type)?;
+    let query_op = parse_query_op(&opts.query_op)?;
+
+    // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
+    let plaintext = to_query_plaintext(&opts.plaintext, &query_op, column_config.cast_type)?;
+
+    let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
+    let prepared = PreparedPlaintext::new(
+        Cow::Borrowed(column_config),
+        eql_ident,
+        plaintext,
+        EqlOperation::Query(&index.index_type, query_op),
+    );
+
+    let eql_opts = EqlEncryptOpts {
+        keyset_id: None,
+        lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
+        service_token: opts.service_token.map(Cow::Owned),
+        unverified_context: opts.unverified_context.map(Cow::Owned),
+        index_types: None,
+    };
+
+    let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
+    let eql_ciphertext = encrypted.remove(0);
+
+    Ok(Json(eql_ciphertext))
+}
+
+#[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
