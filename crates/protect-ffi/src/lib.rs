@@ -138,6 +138,27 @@ struct PlaintextPayload {
     lock_context: Option<LockContext>,
 }
 
+/// Options for encrypting a query term (search predicate)
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EncryptQueryOptions {
+    plaintext: JsPlaintext,
+    column: String,
+    table: String,
+    /// The index type to use: "ste_vec", "match", "ore", "unique"
+    index_type: String,
+    /// The query operation: "default", "ste_vec_selector", "ste_vec_term"
+    #[serde(default = "default_query_op")]
+    query_op: String,
+    lock_context: Option<LockContext>,
+    service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
+}
+
+fn default_query_op() -> String {
+    "default".to_string()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecryptOptions {
