@@ -719,4 +719,165 @@ mod tests {
             assert_eq!(user2_group[1], (2, "c".to_string()));
         }
     }
+
+    mod query_op_parsing {
+        use super::*;
+
+        #[test]
+        fn parse_query_op_default() {
+            let result = parse_query_op("default");
+            assert!(matches!(result, Ok(QueryOp::Default)));
+        }
+
+        #[test]
+        fn parse_query_op_ste_vec_selector() {
+            let result = parse_query_op("ste_vec_selector");
+            assert!(matches!(result, Ok(QueryOp::SteVecSelector)));
+        }
+
+        #[test]
+        fn parse_query_op_ste_vec_term() {
+            let result = parse_query_op("ste_vec_term");
+            assert!(matches!(result, Ok(QueryOp::SteVecTerm)));
+        }
+
+        #[test]
+        fn parse_query_op_unknown_returns_error() {
+            let result = parse_query_op("unknown");
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("Unknown query_op"));
+        }
+    }
+
+    mod find_index_for_type_tests {
+        use super::*;
+        use cipherstash_client::schema::column::{Index, IndexType, Tokenizer};
+
+        fn make_column_config_with_indexes(indexes: Vec<Index>) -> ColumnConfig {
+            ColumnConfig {
+                name: "test_column".to_string(),
+                cast_type: cipherstash_client::schema::column::ColumnType::Utf8Str,
+                indexes,
+                in_place: false,
+                mode: cipherstash_client::schema::column::ColumnMode::Encrypted,
+            }
+        }
+
+        #[test]
+        fn find_ste_vec_index() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::SteVec {
+                    prefix: "test".to_string(),
+                    term_filters: vec![],
+                }),
+            ]);
+            let result = find_index_for_type(&config, "ste_vec");
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap().index_type, IndexType::SteVec { .. }));
+        }
+
+        #[test]
+        fn find_ore_index() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::Ore),
+            ]);
+            let result = find_index_for_type(&config, "ore");
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap().index_type, IndexType::Ore));
+        }
+
+        #[test]
+        fn find_unique_index() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::Unique { token_filters: vec![] }),
+            ]);
+            let result = find_index_for_type(&config, "unique");
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap().index_type, IndexType::Unique { .. }));
+        }
+
+        #[test]
+        fn find_match_index() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::Match {
+                    tokenizer: Tokenizer::Standard,
+                    token_filters: vec![],
+                    k: 3,
+                    m: 2048,
+                    include_original: false,
+                }),
+            ]);
+            let result = find_index_for_type(&config, "match");
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap().index_type, IndexType::Match { .. }));
+        }
+
+        #[test]
+        fn missing_index_returns_error() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::Ore),
+            ]);
+            let result = find_index_for_type(&config, "ste_vec");
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("not configured"));
+        }
+
+        #[test]
+        fn unknown_index_type_returns_error() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::Ore),
+            ]);
+            let result = find_index_for_type(&config, "invalid_type");
+            assert!(result.is_err());
+        }
+    }
+
+    mod to_query_plaintext_tests {
+        use super::*;
+        use cipherstash_client::schema::column::ColumnType;
+
+        #[test]
+        fn ste_vec_selector_forces_utf8_regardless_of_column_type() {
+            // Column is JsonB, but selector query should produce Utf8Str
+            let js = JsPlaintext::String("$.user.email".to_string());
+            let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        }
+
+        #[test]
+        fn ste_vec_term_forces_jsonb_for_containment_queries() {
+            // Term query should produce JsonB
+            let js = JsPlaintext::JsonB(serde_json::json!({"name": "Alice"}));
+            let result = to_query_plaintext(&js, &QueryOp::SteVecTerm, ColumnType::JsonB);
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap(), Plaintext::JsonB(_)));
+        }
+
+        #[test]
+        fn default_uses_column_type_for_string_column() {
+            let js = JsPlaintext::String("test@example.com".to_string());
+            let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::Utf8Str);
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        }
+
+        #[test]
+        fn default_uses_column_type_for_numeric_column() {
+            let js = JsPlaintext::Number(42.0);
+            let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::BigInt);
+            assert!(result.is_ok());
+            // Number should convert to BigInt for Ore queries
+        }
+
+        #[test]
+        fn selector_with_json_column_accepts_string_plaintext() {
+            // This is the key test - string path for JSON column selector query
+            let js = JsPlaintext::String("$.profile.name".to_string());
+            let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
+            assert!(result.is_ok(), "Selector query should accept string for JSON column");
+        }
+    }
 }
