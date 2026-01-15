@@ -159,6 +159,28 @@ fn default_query_op() -> String {
     "default".to_string()
 }
 
+/// Options for bulk query encryption
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EncryptQueryBulkOptions {
+    queries: Vec<QueryPayload>,
+    service_token: Option<ServiceToken>,
+    unverified_context: Option<UnverifiedContext>,
+}
+
+/// Individual query payload for bulk operations
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryPayload {
+    plaintext: JsPlaintext,
+    column: String,
+    table: String,
+    index_type: String,
+    #[serde(default = "default_query_op")]
+    query_op: String,
+    lock_context: Option<LockContext>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecryptOptions {
