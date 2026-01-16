@@ -282,6 +282,28 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
     expect(results[0]).toHaveProperty('ob')
     expect(results[1]).toHaveProperty('ob')
   })
+
+  test('should preserve order with identical index types and different plaintexts', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const plaintexts = ['alice@example.com', 'bob@example.com', 'charlie@example.com']
+    const queries: QueryPayload[] = plaintexts.map((plaintext) => ({
+      plaintext,
+      ...emailColumn,
+      indexType: 'unique',
+    }))
+
+    const results = await encryptQueryBulk(client, { queries })
+
+    expect(results).toHaveLength(3)
+    // All should have HMAC (unique index)
+    expect(results[0]).toHaveProperty('hm')
+    expect(results[1]).toHaveProperty('hm')
+    expect(results[2]).toHaveProperty('hm')
+    // Results should be different (different plaintexts)
+    expect(results[0].hm).not.toEqual(results[1].hm)
+    expect(results[1].hm).not.toEqual(results[2].hm)
+  })
 })
 
 describe('encryptQuery error handling', () => {
@@ -305,6 +327,7 @@ describe('encryptQuery error handling', () => {
       encryptQuery(client, {
         plaintext: 'test',
         ...emailColumn,
+        // biome-ignore lint/suspicious/noExplicitAny: testing invalid input
         indexType: 'nonexistent' as any,
       }),
     ).rejects.toThrowError()
@@ -318,6 +341,7 @@ describe('encryptQuery error handling', () => {
         plaintext: 'test',
         ...profileColumn,
         indexType: 'ste_vec',
+        // biome-ignore lint/suspicious/noExplicitAny: testing invalid input
         queryOp: 'invalid_op' as any,
       }),
     ).rejects.toThrowError()
