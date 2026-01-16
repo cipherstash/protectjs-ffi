@@ -191,8 +191,15 @@ impl Column {
             }))
         }
 
-        if let Some(SteVecIndexOpts { prefix, term_filters }) = self.indexes.ste_vec_index {
-            config = config.add_index(Index::new(IndexType::SteVec { prefix, term_filters }))
+        if let Some(SteVecIndexOpts {
+            prefix,
+            term_filters,
+        }) = self.indexes.ste_vec_index
+        {
+            config = config.add_index(Index::new(IndexType::SteVec {
+                prefix,
+                term_filters,
+            }))
         }
 
         config

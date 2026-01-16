@@ -13,11 +13,13 @@ use cipherstash_client::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
         Identifier as EqlIdentifier, PreparedPlaintext,
     },
-    schema::{column::{Index, IndexType}, ColumnConfig},
+    schema::{
+        column::{Index, IndexType},
+        ColumnConfig,
+    },
     zerokms::{self, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
     IdentifiedBy, UnverifiedContext,
 };
-use std::{borrow::Cow, collections::BTreeMap};
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
 use js_plaintext::JsPlaintext;
@@ -27,8 +29,11 @@ use neon::{
 };
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 use tokio::runtime::Runtime;
 
 #[cfg(test)]
@@ -228,12 +233,14 @@ fn find_index_for_type<'a>(
     column_config
         .indexes
         .iter()
-        .find(|idx| match (&idx.index_type, index_type_name) {
-            (IndexType::SteVec { .. }, "ste_vec") => true,
-            (IndexType::Match { .. }, "match") => true,
-            (IndexType::Ore, "ore") => true,
-            (IndexType::Unique { .. }, "unique") => true,
-            _ => false,
+        .find(|idx| {
+            matches!(
+                (&idx.index_type, index_type_name),
+                (IndexType::SteVec { .. }, "ste_vec")
+                    | (IndexType::Match { .. }, "match")
+                    | (IndexType::Ore, "ore")
+                    | (IndexType::Unique { .. }, "unique")
+            )
         })
         .ok_or_else(|| Error::MissingIndex(index_type_name.to_string()))
 }
@@ -244,7 +251,10 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
         "default" => Ok(QueryOp::Default),
         "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
         "ste_vec_term" => Ok(QueryOp::SteVecTerm),
-        _ => Err(Error::Unimplemented(format!("Unknown query_op: {}", query_op))),
+        _ => Err(Error::Unimplemented(format!(
+            "Unknown query_op: {}",
+            query_op
+        ))),
     }
 }
 
@@ -537,7 +547,8 @@ async fn encrypt_query_bulk(
             let query_op = parse_query_op(&payload.query_op)?;
 
             // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
-            let plaintext = to_query_plaintext(&payload.plaintext, &query_op, column_config.cast_type)?;
+            let plaintext =
+                to_query_plaintext(&payload.plaintext, &query_op, column_config.cast_type)?;
 
             let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
             let prepared = PreparedPlaintext::new(
@@ -710,10 +721,9 @@ fn encrypted_record_from_mp_base85(
     encryption_context: Vec<zerokms::Context>,
 ) -> Result<WithContext<'static>, Error> {
     // EqlCiphertext.body.ciphertext is already deserialized from mp_base85 by serde
-    let encrypted_record = encrypted
-        .body
-        .ciphertext
-        .ok_or_else(|| Error::InvariantViolation("Missing ciphertext in EQL payload".to_string()))?;
+    let encrypted_record = encrypted.body.ciphertext.ok_or_else(|| {
+        Error::InvariantViolation("Missing ciphertext in EQL payload".to_string())
+    })?;
 
     Ok(WithContext {
         record: encrypted_record,
@@ -932,22 +942,21 @@ mod tests {
 
         #[test]
         fn find_ste_vec_index() {
-            let config = make_column_config_with_indexes(vec![
-                Index::new(IndexType::SteVec {
-                    prefix: "test".to_string(),
-                    term_filters: vec![],
-                }),
-            ]);
+            let config = make_column_config_with_indexes(vec![Index::new(IndexType::SteVec {
+                prefix: "test".to_string(),
+                term_filters: vec![],
+            })]);
             let result = find_index_for_type(&config, "ste_vec");
             assert!(result.is_ok());
-            assert!(matches!(result.unwrap().index_type, IndexType::SteVec { .. }));
+            assert!(matches!(
+                result.unwrap().index_type,
+                IndexType::SteVec { .. }
+            ));
         }
 
         #[test]
         fn find_ore_index() {
-            let config = make_column_config_with_indexes(vec![
-                Index::new(IndexType::Ore),
-            ]);
+            let config = make_column_config_with_indexes(vec![Index::new(IndexType::Ore)]);
             let result = find_index_for_type(&config, "ore");
             assert!(result.is_ok());
             assert!(matches!(result.unwrap().index_type, IndexType::Ore));
@@ -955,35 +964,37 @@ mod tests {
 
         #[test]
         fn find_unique_index() {
-            let config = make_column_config_with_indexes(vec![
-                Index::new(IndexType::Unique { token_filters: vec![] }),
-            ]);
+            let config = make_column_config_with_indexes(vec![Index::new(IndexType::Unique {
+                token_filters: vec![],
+            })]);
             let result = find_index_for_type(&config, "unique");
             assert!(result.is_ok());
-            assert!(matches!(result.unwrap().index_type, IndexType::Unique { .. }));
+            assert!(matches!(
+                result.unwrap().index_type,
+                IndexType::Unique { .. }
+            ));
         }
 
         #[test]
         fn find_match_index() {
-            let config = make_column_config_with_indexes(vec![
-                Index::new(IndexType::Match {
-                    tokenizer: Tokenizer::Standard,
-                    token_filters: vec![],
-                    k: 3,
-                    m: 2048,
-                    include_original: false,
-                }),
-            ]);
+            let config = make_column_config_with_indexes(vec![Index::new(IndexType::Match {
+                tokenizer: Tokenizer::Standard,
+                token_filters: vec![],
+                k: 3,
+                m: 2048,
+                include_original: false,
+            })]);
             let result = find_index_for_type(&config, "match");
             assert!(result.is_ok());
-            assert!(matches!(result.unwrap().index_type, IndexType::Match { .. }));
+            assert!(matches!(
+                result.unwrap().index_type,
+                IndexType::Match { .. }
+            ));
         }
 
         #[test]
         fn missing_index_returns_error() {
-            let config = make_column_config_with_indexes(vec![
-                Index::new(IndexType::Ore),
-            ]);
+            let config = make_column_config_with_indexes(vec![Index::new(IndexType::Ore)]);
             let result = find_index_for_type(&config, "ste_vec");
             assert!(result.is_err());
             let err = result.unwrap_err();
@@ -992,9 +1003,7 @@ mod tests {
 
         #[test]
         fn unknown_index_type_returns_error() {
-            let config = make_column_config_with_indexes(vec![
-                Index::new(IndexType::Ore),
-            ]);
+            let config = make_column_config_with_indexes(vec![Index::new(IndexType::Ore)]);
             let result = find_index_for_type(&config, "invalid_type");
             assert!(result.is_err());
         }
@@ -1043,7 +1052,10 @@ mod tests {
             // This is the key test - string path for JSON column selector query
             let js = JsPlaintext::String("$.profile.name".to_string());
             let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
-            assert!(result.is_ok(), "Selector query should accept string for JSON column");
+            assert!(
+                result.is_ok(),
+                "Selector query should accept string for JSON column"
+            );
         }
     }
 }
