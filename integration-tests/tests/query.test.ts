@@ -286,7 +286,11 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
   test('should preserve order with identical index types and different plaintexts', async () => {
     const client = await newClient({ encryptConfig })
 
-    const plaintexts = ['alice@example.com', 'bob@example.com', 'charlie@example.com']
+    const plaintexts = [
+      'alice@example.com',
+      'bob@example.com',
+      'charlie@example.com',
+    ]
     const queries: QueryPayload[] = plaintexts.map((plaintext) => ({
       plaintext,
       ...emailColumn,

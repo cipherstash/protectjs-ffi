@@ -36,8 +36,14 @@ declare module './load.cjs' {
     client: Client,
     opts: DecryptBulkOptions,
   ): Promise<DecryptResult[]>
-  function encryptQuery(client: Client, opts: EncryptQueryOptions): Promise<Encrypted>
-  function encryptQueryBulk(client: Client, opts: EncryptQueryBulkOptions): Promise<Encrypted[]>
+  function encryptQuery(
+    client: Client,
+    opts: EncryptQueryOptions,
+  ): Promise<Encrypted>
+  function encryptQueryBulk(
+    client: Client,
+    opts: EncryptQueryBulkOptions,
+  ): Promise<Encrypted[]>
 }
 
 export type DecryptResult = { data: string } | { error: string }
