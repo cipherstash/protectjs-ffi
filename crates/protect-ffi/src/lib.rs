@@ -1044,7 +1044,7 @@ mod tests {
             let js = JsPlaintext::Number(42.0);
             let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::BigInt);
             assert!(result.is_ok());
-            // Number should convert to BigInt for Ore queries
+            assert!(matches!(result.unwrap(), Plaintext::BigInt(_)));
         }
 
         #[test]
@@ -1052,10 +1052,8 @@ mod tests {
             // This is the key test - string path for JSON column selector query
             let js = JsPlaintext::String("$.profile.name".to_string());
             let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
-            assert!(
-                result.is_ok(),
-                "Selector query should accept string for JSON column"
-            );
+            assert!(result.is_ok());
+            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
         }
     }
 }
