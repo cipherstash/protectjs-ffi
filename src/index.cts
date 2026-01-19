@@ -4,6 +4,8 @@ export {
   newClient,
   encrypt,
   encryptBulk,
+  encryptQuery,
+  encryptQueryBulk,
   isEncrypted,
   decrypt,
   decryptBulk,
@@ -34,6 +36,14 @@ declare module './load.cjs' {
     client: Client,
     opts: DecryptBulkOptions,
   ): Promise<DecryptResult[]>
+  function encryptQuery(
+    client: Client,
+    opts: EncryptQueryOptions,
+  ): Promise<Encrypted>
+  function encryptQueryBulk(
+    client: Client,
+    opts: EncryptQueryBulkOptions,
+  ): Promise<Encrypted[]>
 }
 
 export type DecryptResult = { data: string } | { error: string }
@@ -227,6 +237,37 @@ export type DecryptOptions = {
 
 export type DecryptBulkOptions = {
   ciphertexts: BulkDecryptPayload[]
+  serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
+}
+
+// Query encryption types
+export type IndexTypeName = 'ste_vec' | 'match' | 'ore' | 'unique'
+
+export type QueryOpName = 'default' | 'ste_vec_selector' | 'ste_vec_term'
+
+export type EncryptQueryOptions = {
+  plaintext: JsPlaintext
+  column: string
+  table: string
+  indexType: IndexTypeName
+  queryOp?: QueryOpName
+  lockContext?: Context
+  serviceToken?: CtsToken
+  unverifiedContext?: Record<string, unknown>
+}
+
+export type QueryPayload = {
+  plaintext: JsPlaintext
+  column: string
+  table: string
+  indexType: IndexTypeName
+  queryOp?: QueryOpName
+  lockContext?: Context
+}
+
+export type EncryptQueryBulkOptions = {
+  queries: QueryPayload[]
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
