@@ -258,33 +258,50 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
     }
 }
 
-/// Convert JsPlaintext to Plaintext, inferring type from query operation.
+/// Inferred operation mode for query encryption.
+///
+/// This determines which EqlOperation to use:
+/// - QueryMode: Use EqlOperation::Query (standard query encryption)
+/// - StoreMode: Use EqlOperation::Store (for containment queries that need sv array)
+#[derive(Debug)]
+enum InferredQueryMode {
+    /// Use EqlOperation::Query with the given QueryOp
+    QueryMode(QueryOp),
+    /// Use EqlOperation::Store (for JSON containment queries on ste_vec)
+    StoreMode,
+}
+
+/// Convert JsPlaintext to Plaintext and infer the appropriate operation mode.
+///
+/// Returns both the converted Plaintext and the inferred operation mode.
 ///
 /// Query mode has different type semantics than storage mode:
-/// - SteVecSelector: Always string (JSON path like "$.user.email")
-/// - SteVecTerm: Always JSON (fragment to match with @>)
+/// - SteVecSelector: Always string (JSON path like "$.user.email") → QueryMode
+/// - SteVecTerm: Always JSON (fragment to match with @>) → StoreMode (produces sv array)
 /// - Default: For SteVec indexes, infers from plaintext type:
-///   - String → SteVecSelector (path queries)
-///   - JsonB (Object/Array) → SteVecTerm (containment queries)
-///   - Other indexes use column's cast_type
+///   - String → QueryMode with SteVecSelector (path queries)
+///   - JsonB (Object/Array) → StoreMode (containment queries need sv array)
+///   - Other indexes use column's cast_type and QueryMode with Default
 fn to_query_plaintext(
     js_plaintext: &JsPlaintext,
-    query_op: &QueryOp,
+    query_op: QueryOp,
     index_type: &IndexType,
     column_type: cipherstash_client::schema::column::ColumnType,
-) -> Result<Plaintext, TypeParseError> {
+) -> Result<(Plaintext, InferredQueryMode), TypeParseError> {
     use cipherstash_client::schema::column::ColumnType;
 
     match query_op {
         QueryOp::SteVecSelector => {
             // Selector queries expect a string path like "$.user.email"
             // Force Utf8Str conversion regardless of column type
-            js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)
+            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
+            Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))
         }
         QueryOp::SteVecTerm => {
             // Term queries expect a JSON fragment to match with @>
-            // Force JsonB conversion regardless of column type
-            js_plaintext.to_plaintext_with_type(ColumnType::JsonB)
+            // Use Store mode to produce sv array for containment matching
+            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
+            Ok((plaintext, InferredQueryMode::StoreMode))
         }
         QueryOp::Default => {
             // For SteVec indexes with Default queryOp, infer from plaintext type
@@ -292,11 +309,14 @@ fn to_query_plaintext(
                 match js_plaintext {
                     JsPlaintext::String(_) => {
                         // String → selector (path queries like "$.user.email")
-                        js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)
+                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
+                        Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))
                     }
                     JsPlaintext::JsonB(_) => {
-                        // Object/Array → term (containment queries like {"role": "admin"})
-                        js_plaintext.to_plaintext_with_type(ColumnType::JsonB)
+                        // Object/Array → Store mode for containment queries
+                        // This produces sv array needed for @> operator matching
+                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
+                        Ok((plaintext, InferredQueryMode::StoreMode))
                     }
                     _ => {
                         // Numbers and booleans don't make sense for SteVec queries
@@ -308,7 +328,8 @@ fn to_query_plaintext(
                 }
             } else {
                 // Non-SteVec indexes: use column's storage type (original behavior)
-                js_plaintext.to_plaintext_with_type(column_type)
+                let plaintext = js_plaintext.to_plaintext_with_type(column_type)?;
+                Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::Default)))
             }
         }
     }
@@ -507,15 +528,23 @@ async fn encrypt_query(
     let index = find_index_for_type(column_config, &opts.index_type)?;
     let query_op = parse_query_op(&opts.query_op)?;
 
-    // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
-    let plaintext = to_query_plaintext(&opts.plaintext, &query_op, &index.index_type, column_config.cast_type)?;
+    // Infer type and operation mode from plaintext
+    // - String on SteVec → QueryMode with SteVecSelector (path queries)
+    // - Object/Array on SteVec → StoreMode (containment queries need sv array)
+    let (plaintext, inferred_mode) = to_query_plaintext(&opts.plaintext, query_op, &index.index_type, column_config.cast_type)?;
+
+    // Select the appropriate EqlOperation based on inferred mode
+    let eql_operation = match inferred_mode {
+        InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
+        InferredQueryMode::StoreMode => EqlOperation::Store,
+    };
 
     let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
     let prepared = PreparedPlaintext::new(
         Cow::Borrowed(column_config),
         eql_ident,
         plaintext,
-        EqlOperation::Query(&index.index_type, query_op),
+        eql_operation,
     );
 
     let eql_opts = EqlEncryptOpts {
@@ -571,16 +600,24 @@ async fn encrypt_query_bulk(
             let index = find_index_for_type(column_config, &payload.index_type)?;
             let query_op = parse_query_op(&payload.query_op)?;
 
-            // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
-            let plaintext =
-                to_query_plaintext(&payload.plaintext, &query_op, &index.index_type, column_config.cast_type)?;
+            // Infer type and operation mode from plaintext
+            // - String on SteVec → QueryMode with SteVecSelector (path queries)
+            // - Object/Array on SteVec → StoreMode (containment queries need sv array)
+            let (plaintext, inferred_mode) =
+                to_query_plaintext(&payload.plaintext, query_op, &index.index_type, column_config.cast_type)?;
+
+            // Select the appropriate EqlOperation based on inferred mode
+            let eql_operation = match inferred_mode {
+                InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
+                InferredQueryMode::StoreMode => EqlOperation::Store,
+            };
 
             let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
             let prepared = PreparedPlaintext::new(
                 Cow::Borrowed(column_config),
                 eql_ident,
                 plaintext,
-                EqlOperation::Query(&index.index_type, query_op),
+                eql_operation,
             );
 
             prepared_plaintexts.push(prepared);
@@ -1050,17 +1087,17 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::Default,
+                QueryOp::Default,
                 &index_type,
                 ColumnType::JsonB,
             );
 
-            // String should be converted to Utf8Str (selector behavior)
-            assert!(matches!(result, Ok(Plaintext::Utf8Str(Some(_)))));
+            // String on SteVec should infer QueryMode with SteVecSelector
+            assert!(matches!(result, Ok((Plaintext::Utf8Str(Some(_)), InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))));
         }
 
         #[test]
-        fn test_ste_vec_default_with_object_infers_term() {
+        fn test_ste_vec_default_with_object_infers_store_mode() {
             let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"role": "admin"}));
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
@@ -1069,17 +1106,17 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::Default,
+                QueryOp::Default,
                 &index_type,
                 ColumnType::JsonB,
             );
 
-            // Object should be converted to JsonB (term behavior)
-            assert!(matches!(result, Ok(Plaintext::JsonB(Some(_)))));
+            // Object on SteVec should infer StoreMode (produces sv array for containment)
+            assert!(matches!(result, Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))));
         }
 
         #[test]
-        fn test_ste_vec_default_with_array_infers_term() {
+        fn test_ste_vec_default_with_array_infers_store_mode() {
             let js_plaintext = JsPlaintext::JsonB(serde_json::json!(["admin", "user"]));
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
@@ -1088,13 +1125,13 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::Default,
+                QueryOp::Default,
                 &index_type,
                 ColumnType::JsonB,
             );
 
-            // Array should be converted to JsonB (term behavior for array containment)
-            assert!(matches!(result, Ok(Plaintext::JsonB(Some(_)))));
+            // Array on SteVec should infer StoreMode (produces sv array for containment)
+            assert!(matches!(result, Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))));
         }
 
         #[test]
@@ -1107,7 +1144,7 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::Default,
+                QueryOp::Default,
                 &index_type,
                 ColumnType::JsonB,
             );
@@ -1127,7 +1164,7 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::Default,
+                QueryOp::Default,
                 &index_type,
                 ColumnType::JsonB,
             );
@@ -1146,16 +1183,17 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::SteVecSelector,
+                QueryOp::SteVecSelector,
                 &index_type,
                 ColumnType::JsonB,
             );
 
-            assert!(matches!(result, Ok(Plaintext::Utf8Str(Some(_)))));
+            // Explicit SteVecSelector should use QueryMode
+            assert!(matches!(result, Ok((Plaintext::Utf8Str(Some(_)), InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))));
         }
 
         #[test]
-        fn test_explicit_ste_vec_term_still_works() {
+        fn test_explicit_ste_vec_term_uses_store_mode() {
             let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"key": "value"}));
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
@@ -1164,12 +1202,13 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::SteVecTerm,
+                QueryOp::SteVecTerm,
                 &index_type,
                 ColumnType::JsonB,
             );
 
-            assert!(matches!(result, Ok(Plaintext::JsonB(Some(_)))));
+            // Explicit SteVecTerm uses StoreMode to produce sv array for containment
+            assert!(matches!(result, Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))));
         }
 
         #[test]
@@ -1185,13 +1224,13 @@ mod tests {
 
             let result = to_query_plaintext(
                 &js_plaintext,
-                &QueryOp::Default,
+                QueryOp::Default,
                 &index_type,
                 ColumnType::Utf8Str,
             );
 
-            // Non-SteVec with Default should use column type
-            assert!(matches!(result, Ok(Plaintext::Utf8Str(Some(_)))));
+            // Non-SteVec with Default should use column type and QueryMode with Default
+            assert!(matches!(result, Ok((Plaintext::Utf8Str(Some(_)), InferredQueryMode::QueryMode(QueryOp::Default)))));
         }
     }
 }
