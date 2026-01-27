@@ -263,10 +263,14 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
 /// Query mode has different type semantics than storage mode:
 /// - SteVecSelector: Always string (JSON path like "$.user.email")
 /// - SteVecTerm: Always JSON (fragment to match with @>)
-/// - Default: Uses column's cast_type (original behavior for Match/Unique/Ore)
+/// - Default: For SteVec indexes, infers from plaintext type:
+///   - String → SteVecSelector (path queries)
+///   - JsonB (Object/Array) → SteVecTerm (containment queries)
+///   - Other indexes use column's cast_type
 fn to_query_plaintext(
     js_plaintext: &JsPlaintext,
     query_op: &QueryOp,
+    index_type: &IndexType,
     column_type: cipherstash_client::schema::column::ColumnType,
 ) -> Result<Plaintext, TypeParseError> {
     use cipherstash_client::schema::column::ColumnType;
@@ -283,8 +287,29 @@ fn to_query_plaintext(
             js_plaintext.to_plaintext_with_type(ColumnType::JsonB)
         }
         QueryOp::Default => {
-            // Default queries use the column's storage type
-            js_plaintext.to_plaintext_with_type(column_type)
+            // For SteVec indexes with Default queryOp, infer from plaintext type
+            if matches!(index_type, IndexType::SteVec { .. }) {
+                match js_plaintext {
+                    JsPlaintext::String(_) => {
+                        // String → selector (path queries like "$.user.email")
+                        js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)
+                    }
+                    JsPlaintext::JsonB(_) => {
+                        // Object/Array → term (containment queries like {"role": "admin"})
+                        js_plaintext.to_plaintext_with_type(ColumnType::JsonB)
+                    }
+                    _ => {
+                        // Numbers and booleans don't make sense for SteVec queries
+                        Err(TypeParseError(format!(
+                            "Cannot use {} as SteVec query - use string for path queries or object/array for containment",
+                            js_plaintext::js_plaintext_type_name(js_plaintext)
+                        )))
+                    }
+                }
+            } else {
+                // Non-SteVec indexes: use column's storage type (original behavior)
+                js_plaintext.to_plaintext_with_type(column_type)
+            }
         }
     }
 }
@@ -483,7 +508,7 @@ async fn encrypt_query(
     let query_op = parse_query_op(&opts.query_op)?;
 
     // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
-    let plaintext = to_query_plaintext(&opts.plaintext, &query_op, column_config.cast_type)?;
+    let plaintext = to_query_plaintext(&opts.plaintext, &query_op, &index.index_type, column_config.cast_type)?;
 
     let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
     let prepared = PreparedPlaintext::new(
@@ -548,7 +573,7 @@ async fn encrypt_query_bulk(
 
             // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
             let plaintext =
-                to_query_plaintext(&payload.plaintext, &query_op, column_config.cast_type)?;
+                to_query_plaintext(&payload.plaintext, &query_op, &index.index_type, column_config.cast_type)?;
 
             let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
             let prepared = PreparedPlaintext::new(
@@ -1009,51 +1034,164 @@ mod tests {
         }
     }
 
-    mod to_query_plaintext_tests {
+    mod query_inference_tests {
         use super::*;
-        use cipherstash_client::schema::column::ColumnType;
+        use cipherstash_client::encryption::Plaintext;
+        use cipherstash_client::schema::column::{ColumnType, IndexType};
+        use cipherstash_client::schema::column::Tokenizer;
 
         #[test]
-        fn ste_vec_selector_forces_utf8_regardless_of_column_type() {
-            // Column is JsonB, but selector query should produce Utf8Str
-            let js = JsPlaintext::String("$.user.email".to_string());
-            let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        fn test_ste_vec_default_with_string_infers_selector() {
+            let js_plaintext = JsPlaintext::String("$.user.email".to_string());
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // String should be converted to Utf8Str (selector behavior)
+            assert!(matches!(result, Ok(Plaintext::Utf8Str(Some(_)))));
         }
 
         #[test]
-        fn ste_vec_term_forces_jsonb_for_containment_queries() {
-            // Term query should produce JsonB
-            let js = JsPlaintext::JsonB(serde_json::json!({"name": "Alice"}));
-            let result = to_query_plaintext(&js, &QueryOp::SteVecTerm, ColumnType::JsonB);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::JsonB(_)));
+        fn test_ste_vec_default_with_object_infers_term() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"role": "admin"}));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Object should be converted to JsonB (term behavior)
+            assert!(matches!(result, Ok(Plaintext::JsonB(Some(_)))));
         }
 
         #[test]
-        fn default_uses_column_type_for_string_column() {
-            let js = JsPlaintext::String("test@example.com".to_string());
-            let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::Utf8Str);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        fn test_ste_vec_default_with_array_infers_term() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!(["admin", "user"]));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Array should be converted to JsonB (term behavior for array containment)
+            assert!(matches!(result, Ok(Plaintext::JsonB(Some(_)))));
         }
 
         #[test]
-        fn default_uses_column_type_for_numeric_column() {
-            let js = JsPlaintext::Number(42.0);
-            let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::BigInt);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::BigInt(_)));
+        fn test_ste_vec_default_with_number_returns_error() {
+            let js_plaintext = JsPlaintext::Number(42.0);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Numbers should return error for SteVec queries
+            assert!(result.is_err());
+            assert!(result.unwrap_err().0.contains("Cannot use"));
         }
 
         #[test]
-        fn selector_with_json_column_accepts_string_plaintext() {
-            // This is the key test - string path for JSON column selector query
-            let js = JsPlaintext::String("$.profile.name".to_string());
-            let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        fn test_ste_vec_default_with_boolean_returns_error() {
+            let js_plaintext = JsPlaintext::Boolean(true);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Booleans should return error for SteVec queries
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_explicit_ste_vec_selector_still_works() {
+            let js_plaintext = JsPlaintext::String("$.name".to_string());
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::SteVecSelector,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            assert!(matches!(result, Ok(Plaintext::Utf8Str(Some(_)))));
+        }
+
+        #[test]
+        fn test_explicit_ste_vec_term_still_works() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"key": "value"}));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::SteVecTerm,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            assert!(matches!(result, Ok(Plaintext::JsonB(Some(_)))));
+        }
+
+        #[test]
+        fn test_non_ste_vec_default_uses_column_type() {
+            let js_plaintext = JsPlaintext::String("search term".to_string());
+            let index_type = IndexType::Match {
+                tokenizer: Tokenizer::Standard,
+                token_filters: vec![],
+                k: 6,
+                m: 2048,
+                include_original: true,
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                &QueryOp::Default,
+                &index_type,
+                ColumnType::Utf8Str,
+            );
+
+            // Non-SteVec with Default should use column type
+            assert!(matches!(result, Ok(Plaintext::Utf8Str(Some(_)))));
         }
     }
 }

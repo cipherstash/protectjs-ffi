@@ -100,7 +100,7 @@ impl JsPlaintext {
 }
 
 /// Helper function to get a readable type name for error messages
-fn js_plaintext_type_name(js_plaintext: &JsPlaintext) -> &'static str {
+pub(crate) fn js_plaintext_type_name(js_plaintext: &JsPlaintext) -> &'static str {
     match js_plaintext {
         JsPlaintext::String(_) => "String",
         JsPlaintext::Number(_) => "Number",
