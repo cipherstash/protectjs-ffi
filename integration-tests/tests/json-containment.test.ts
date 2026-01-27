@@ -2,11 +2,11 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
+  type EncryptPayload,
+  type QueryPayload,
   encryptBulk,
   encryptQuery,
   encryptQueryBulk,
-  type EncryptPayload,
-  type QueryPayload,
   newClient,
 } from '@cipherstash/protect-ffi'
 
@@ -546,14 +546,14 @@ describe('type inference for ste_vec queries', () => {
     const result = await encryptQueryBulk(client, {
       queries: [
         {
-          plaintext: { status: 'active' },  // Object → term
+          plaintext: { status: 'active' }, // Object → term
           table: 'users',
           column: 'profile',
           indexType: 'ste_vec',
           queryOp: 'default',
         },
         {
-          plaintext: '$.name',  // String → selector
+          plaintext: '$.name', // String → selector
           table: 'users',
           column: 'profile',
           indexType: 'ste_vec',
@@ -585,8 +585,8 @@ describe('type inference edge cases', () => {
         table: 'users',
         column: 'profile',
         indexType: 'ste_vec',
-        queryOp: 'ste_vec_term',  // Requires JSON, not string
-      })
+        queryOp: 'ste_vec_term', // Requires JSON, not string
+      }),
     ).rejects.toThrow(/Unsupported conversion/)
   })
 
@@ -616,7 +616,7 @@ describe('type inference edge cases', () => {
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_selector',  // Explicit
+      queryOp: 'ste_vec_selector', // Explicit
     })
 
     expect(result).toHaveProperty('s')
@@ -663,7 +663,7 @@ describe('type inference edge cases', () => {
         column: 'profile',
         indexType: 'ste_vec',
         queryOp: 'default',
-      })
+      }),
     ).rejects.toThrow(/Cannot use/)
   })
 
@@ -672,12 +672,13 @@ describe('type inference edge cases', () => {
 
     await expect(
       encryptQuery(client, {
+        // biome-ignore lint/suspicious/noExplicitAny: testing invalid type for error path
         plaintext: true as any,
         table: 'users',
         column: 'profile',
         indexType: 'ste_vec',
         queryOp: 'default',
-      })
+      }),
     ).rejects.toThrow(/Cannot use/)
   })
 })
@@ -695,7 +696,7 @@ describe('type inference equivalence', () => {
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
-      queryOp: 'default',  // Inferred as term
+      queryOp: 'default', // Inferred as term
     })
 
     const explicit = await encryptQuery(client, {
@@ -703,7 +704,7 @@ describe('type inference equivalence', () => {
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_term',  // Explicit term
+      queryOp: 'ste_vec_term', // Explicit term
     })
 
     // Both should have same structural properties (sv array for term)
@@ -733,7 +734,7 @@ describe('type inference equivalence', () => {
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
-      queryOp: 'default',  // Inferred as selector
+      queryOp: 'default', // Inferred as selector
     })
 
     const explicit = await encryptQuery(client, {
@@ -741,7 +742,7 @@ describe('type inference equivalence', () => {
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_selector',  // Explicit selector
+      queryOp: 'ste_vec_selector', // Explicit selector
     })
 
     // Both should have same structural properties (s for selector)
@@ -801,33 +802,24 @@ describe('type inference with nested structures', () => {
     expect(result).toHaveProperty('sv')
   })
 
-  test('null plaintext behavior (characterization test)', async () => {
+  test('null plaintext is treated as JsonB term for ste_vec', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
-    // null may become JsonB(Value::Null) in Rust (inferred as term),
-    // OR it may be rejected earlier in the pipeline.
-    // This test captures current behavior for documentation.
-    try {
-      const result = await encryptQuery(client, {
-        plaintext: null as any,
-        table: 'users',
-        column: 'profile',
-        indexType: 'ste_vec',
-        queryOp: 'default',
-      })
+    // null deserializes as JsPlaintext::JsonB(Value::Null)
+    // and is treated as a term (containment query)
+    const result = await encryptQuery(client, {
+      // biome-ignore lint/suspicious/noExplicitAny: testing null value handling
+      plaintext: null as any,
+      table: 'users',
+      column: 'profile',
+      indexType: 'ste_vec',
+      queryOp: 'default',
+    })
 
-      // If we reach here, null was accepted
-      console.log('null plaintext ACCEPTED:', JSON.stringify(result, null, 2))
-      expect(result).toHaveProperty('i')
-      expect(result).toHaveProperty('v')
-      // Document: null was accepted and treated as JsonB term
-    } catch (error) {
-      // If we reach here, null was rejected
-      console.log('null plaintext REJECTED:', error)
-      // Document: null was rejected - this is also valid behavior
-      expect(error).toBeDefined()
-      // If this path is taken, consider whether null should be added
-      // to the error case tests above with Number/Boolean
-    }
+    // null as JsonB goes through StoreMode, producing sv array
+    expect(result).toHaveProperty('i')
+    expect(result).toHaveProperty('v')
+    expect(result).toHaveProperty('c')
+    expect(result).toHaveProperty('sv')
   })
 })
