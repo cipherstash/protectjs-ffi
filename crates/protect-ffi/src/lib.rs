@@ -252,11 +252,21 @@ impl From<LockContext> for Vec<zerokms::Context> {
 
 /// Truncate a string for error messages
 fn truncate_for_error(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
+    if max_len == 0 {
+        return "...".to_string();
     }
+    let mut out = String::new();
+    let mut iter = s.chars();
+    for _ in 0..max_len {
+        match iter.next() {
+            Some(ch) => out.push(ch),
+            None => return s.to_string(),
+        }
+    }
+    if iter.next().is_none() {
+        return s.to_string();
+    }
+    format!("{}...", out)
 }
 
 /// Validate a JSON path string
@@ -963,6 +973,21 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod truncate_for_error {
+        use super::*;
+
+        #[test]
+        fn handles_non_ascii_without_panicking() {
+            let input = "ééé";
+            assert_eq!(truncate_for_error(input, 1), "é...");
+        }
+
+        #[test]
+        fn returns_ellipsis_when_max_len_zero() {
+            assert_eq!(truncate_for_error("abc", 0), "...");
+        }
+    }
 
     mod is_encrypted {
         use super::*;
