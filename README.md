@@ -38,10 +38,25 @@ $ npm i
 $ npm run build
 $ node
 > const addon = require(".");
-> const client = await addon.newClient(JSON.stringify({v: 1, tables: {users: {email: {indexes: {ore: {}, match: {}, unique: {}}}}}}));
-> const ciphertext = await addon.encrypt(client, "plaintext", "email", "users");
-> const plaintext = await addon.decrypt(client, JSON.parse(ciphertext).c);
+> const client = await addon.newClient({ encryptConfig: {v: 1, tables: {users: {email: {indexes: {ore: {}, match: {}, unique: {}}}}}} });
+> const ciphertext = await addon.encrypt(client, { plaintext: "plaintext", column: "email", table: "users" });
+> const plaintext = await addon.decrypt(client, { ciphertext });
 > console.log({ciphertext, plaintext});
+```
+
+## Errors
+
+Async API calls throw `ProtectError` with a stable `code` for programmatic handling.
+
+```typescript
+try {
+  await addon.encryptQuery(client, opts)
+} catch (err) {
+  if (err?.code === 'INVALID_JSON_PATH') {
+    // handle JSON path mistakes
+  }
+  throw err
+}
 ```
 
 ## Available Scripts

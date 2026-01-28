@@ -59,6 +59,158 @@ impl Finalize for Client {}
 /// Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
 pub type Encrypted = EqlCiphertext;
 
+/// What type of value was received in a query
+#[derive(Debug, Clone)]
+pub enum ReceivedKind {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    JsonObject,
+    JsonArray,
+    JsonScalar(String),
+}
+
+impl std::fmt::Display for ReceivedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::String(s) => write!(f, "String \"{}\"", truncate_for_error(s, 30)),
+            Self::Number(n) => write!(f, "Number {}", n),
+            Self::Boolean(b) => write!(f, "Boolean {}", b),
+            Self::JsonObject => write!(f, "JSON object"),
+            Self::JsonArray => write!(f, "JSON array"),
+            Self::JsonScalar(s) => write!(f, "JSON scalar {}", s),
+        }
+    }
+}
+
+impl ReceivedKind {
+    /// Introspect JSON values so object/array are distinguished.
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Object(_) => Self::JsonObject,
+            serde_json::Value::Array(_) => Self::JsonArray,
+            serde_json::Value::String(s) => Self::JsonScalar(format!("\"{}\"", s)),
+            serde_json::Value::Number(n) => Self::JsonScalar(n.to_string()),
+            serde_json::Value::Bool(b) => Self::JsonScalar(b.to_string()),
+            serde_json::Value::Null => Self::JsonScalar("null".to_string()),
+        }
+    }
+}
+
+/// What type of value was expected
+#[derive(Debug, Clone, Copy)]
+pub enum ExpectedKind {
+    JsonObjectOrArray,
+    StringPathOrJsonObjectOrArray,
+}
+
+impl std::fmt::Display for ExpectedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JsonObjectOrArray => write!(f, "JSON object or array"),
+            Self::StringPathOrJsonObjectOrArray => {
+                write!(f, "String (JSON path) or JSON object/array")
+            }
+        }
+    }
+}
+
+/// Query operation context for errors
+#[derive(Debug, Clone, Copy)]
+pub enum QueryOpKind {
+    SteVecTerm,
+    SteVecDefault,
+}
+
+impl std::fmt::Display for QueryOpKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SteVecTerm => write!(f, "ste_vec_term"),
+            Self::SteVecDefault => write!(f, "ste_vec (default)"),
+        }
+    }
+}
+
+/// Wrapper for bounded display of potentially large strings
+#[derive(Debug, Clone)]
+pub struct Truncated<'a> {
+    value: std::borrow::Cow<'a, str>,
+    max_len: usize,
+}
+
+impl<'a> Truncated<'a> {
+    pub fn new(value: impl Into<std::borrow::Cow<'a, str>>, max_len: usize) -> Self {
+        Self { value: value.into(), max_len }
+    }
+
+    pub fn path(value: impl Into<std::borrow::Cow<'a, str>>) -> Self {
+        Self::new(value, 50)
+    }
+}
+
+impl std::fmt::Display for Truncated<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.value.chars().count() <= self.max_len {
+            write!(f, "{}", self.value)
+        } else {
+            let truncated: String = self.value.chars().take(self.max_len).collect();
+            write!(f, "{}...", truncated)
+        }
+    }
+}
+
+/// Hints for InvalidQueryInput errors
+#[derive(Debug, Clone, Copy)]
+pub enum QueryInputHint {
+    UseSelectorForPath,
+    WrapInObject,
+    WrapNumberInObject,
+    WrapBooleanInObject,
+    UsePathOrObject,
+}
+
+impl std::fmt::Display for QueryInputHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UseSelectorForPath => write!(f, "For path queries like '$.field', use queryOp: 'ste_vec_selector'. For containment queries, wrap the value in an object: {{\"field\": \"value\"}}."),
+            Self::WrapInObject => write!(f, "Wrap the value in a JSON object: {{\"field\": value}}."),
+            Self::WrapNumberInObject => write!(f, "Wrap the number in a JSON object to query by value: {{\"field\": <number>}}."),
+            Self::WrapBooleanInObject => write!(f, "Wrap the boolean in a JSON object to query by value: {{\"field\": <boolean>}}."),
+            Self::UsePathOrObject => write!(f, "Use a JSON path string like '$.field' for path queries, or a JSON object like {{\"field\": value}} for containment queries."),
+        }
+    }
+}
+
+/// Reasons for JSON path errors
+#[derive(Debug, Clone, Copy)]
+pub enum JsonPathReason {
+    Empty,
+    MissingDollar,
+}
+
+impl std::fmt::Display for JsonPathReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "path cannot be empty"),
+            Self::MissingDollar => write!(f, "path must start with '$'"),
+        }
+    }
+}
+
+/// Hints for JSON path errors
+#[derive(Debug, Clone)]
+pub enum JsonPathHint {
+    TryPrefix(String),
+}
+
+impl std::fmt::Display for JsonPathHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TryPrefix(path) => write!(f, "Try: '$.{}' or '$[\"{}\"]'.", path, path),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
@@ -73,18 +225,39 @@ pub enum Error {
     Eql(#[from] EqlError),
     #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs/issues.")]
     InvariantViolation(String),
-    #[error("{0}")]
-    Base85(String),
-    #[error("unimplemented: {0} not supported yet by protect-ffi")]
-    Unimplemented(String),
+    #[error("Unknown query operation: '{0}'")]
+    UnknownQueryOp(String),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
     UnknownColumn(Identifier),
     #[error(transparent)]
     RecordDecryptError(#[from] RecordDecryptError),
-    #[error("index type '{0}' not configured for this column")]
-    MissingIndex(String),
+    #[error("Column '{column}' does not have a '{index_type}' index configured. {hint}")]
+    MissingIndex {
+        column: String,
+        index_type: String,
+        hint: String,
+    },
+    #[error("Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}")]
+    InvalidQueryInput {
+        query_op: QueryOpKind,
+        received: ReceivedKind,
+        expected: ExpectedKind,
+        hint: QueryInputHint,
+    },
+    #[error("Invalid JSON path '{path}': {reason}. {hint}")]
+    InvalidJsonPath {
+        path: Truncated<'static>,
+        reason: JsonPathReason,
+        hint: JsonPathHint,
+    },
+    #[error("Configuration error for column '{table}.{column}': ste_vec index requires cast_as: 'json', but found cast_as: '{found_cast_as}'. Either change cast_as to 'json' or remove the ste_vec index.")]
+    SteVecRequiresJsonCastAs {
+        table: String,
+        column: String,
+        found_cast_as: String,
+    },
 }
 
 type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
@@ -225,9 +398,79 @@ impl From<LockContext> for Vec<zerokms::Context> {
     }
 }
 
+/// Truncate a string for error messages
+fn truncate_for_error(s: &str, max_len: usize) -> String {
+    if max_len == 0 {
+        return "...".to_string();
+    }
+    let mut out = String::new();
+    let mut iter = s.chars();
+    for _ in 0..max_len {
+        match iter.next() {
+            Some(ch) => out.push(ch),
+            None => return s.to_string(),
+        }
+    }
+    if iter.next().is_none() {
+        return s.to_string();
+    }
+    format!("{}...", out)
+}
+
+/// Validate a JSON path string
+fn validate_json_path(path: &str) -> Result<(), Error> {
+    if path.is_empty() {
+        return Err(Error::InvalidJsonPath {
+            path: Truncated::path(path.to_string()),
+            reason: JsonPathReason::Empty,
+            hint: JsonPathHint::TryPrefix(path.to_string()),
+        });
+    }
+    if !path.starts_with('$') {
+        return Err(Error::InvalidJsonPath {
+            path: Truncated::path(path.to_string()),
+            reason: JsonPathReason::MissingDollar,
+            hint: JsonPathHint::TryPrefix(path.to_string()),
+        });
+    }
+    Ok(())
+}
+
+/// Get a description of what an index type is used for
+fn index_type_description(index_type: &str) -> &'static str {
+    match index_type {
+        "ste_vec" => "JSON path and containment queries",
+        "ore" => "range comparisons (<, >, <=, >=)",
+        "match" => "full-text search queries",
+        "unique" => "exact match queries",
+        _ => "unknown query type",
+    }
+}
+
+/// Format available indexes on a column for error messages
+fn format_available_indexes(column_config: &ColumnConfig) -> String {
+    let available: Vec<&str> = column_config
+        .indexes
+        .iter()
+        .map(|idx| match &idx.index_type {
+            IndexType::SteVec { .. } => "ste_vec",
+            IndexType::Match { .. } => "match",
+            IndexType::Ore => "ore",
+            IndexType::Unique { .. } => "unique",
+        })
+        .collect();
+
+    if available.is_empty() {
+        "No indexes are configured for this column.".to_string()
+    } else {
+        format!("Available indexes: {}.", available.join(", "))
+    }
+}
+
 /// Find the matching index from column config by index type name
 fn find_index_for_type<'a>(
     column_config: &'a ColumnConfig,
+    column_name: &str,
     index_type_name: &str,
 ) -> Result<&'a Index, Error> {
     column_config
@@ -242,7 +485,18 @@ fn find_index_for_type<'a>(
                     | (IndexType::Unique { .. }, "unique")
             )
         })
-        .ok_or_else(|| Error::MissingIndex(index_type_name.to_string()))
+        .ok_or_else(|| {
+            let available = format_available_indexes(column_config);
+            let description = index_type_description(index_type_name);
+            Error::MissingIndex {
+                column: column_name.to_string(),
+                index_type: index_type_name.to_string(),
+                hint: format!(
+                    "{} Add an '{}' index to enable {}.",
+                    available, index_type_name, description
+                ),
+            }
+        })
 }
 
 /// Parse query operation string to QueryOp enum
@@ -251,40 +505,130 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
         "default" => Ok(QueryOp::Default),
         "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
         "ste_vec_term" => Ok(QueryOp::SteVecTerm),
-        _ => Err(Error::Unimplemented(format!(
-            "Unknown query_op: {}",
-            query_op
-        ))),
+        _ => Err(Error::UnknownQueryOp(query_op.to_string())),
     }
 }
 
-/// Convert JsPlaintext to Plaintext, inferring type from query operation.
+/// Inferred operation mode for query encryption.
+///
+/// This determines which EqlOperation to use:
+/// - QueryMode: Use EqlOperation::Query (standard query encryption)
+/// - StoreMode: Use EqlOperation::Store (for containment queries that need sv array)
+#[derive(Debug, Clone, Copy)]
+enum InferredQueryMode {
+    /// Use EqlOperation::Query with the given QueryOp
+    QueryMode(QueryOp),
+    /// Use EqlOperation::Store (for JSON containment queries on ste_vec)
+    StoreMode,
+}
+
+/// Convert JsPlaintext to Plaintext and infer the appropriate operation mode.
+///
+/// Returns both the converted Plaintext and the inferred operation mode.
 ///
 /// Query mode has different type semantics than storage mode:
-/// - SteVecSelector: Always string (JSON path like "$.user.email")
-/// - SteVecTerm: Always JSON (fragment to match with @>)
-/// - Default: Uses column's cast_type (original behavior for Match/Unique/Ore)
+/// - SteVecSelector: Always string (JSON path like "$.user.email") → QueryMode
+/// - SteVecTerm: Always JSON (fragment to match with @>) → StoreMode (produces sv array)
+/// - Default: For SteVec indexes, infers from plaintext type:
+///   - String → QueryMode with SteVecSelector (path queries)
+///   - JsonB (Object/Array) → StoreMode (containment queries need sv array)
+///   - Other indexes use column's cast_type and QueryMode with Default
 fn to_query_plaintext(
     js_plaintext: &JsPlaintext,
-    query_op: &QueryOp,
+    query_op: QueryOp,
+    index_type: &IndexType,
     column_type: cipherstash_client::schema::column::ColumnType,
-) -> Result<Plaintext, TypeParseError> {
+) -> Result<(Plaintext, InferredQueryMode), Error> {
     use cipherstash_client::schema::column::ColumnType;
 
     match query_op {
         QueryOp::SteVecSelector => {
             // Selector queries expect a string path like "$.user.email"
+            // Validate the path if we have a string
+            if let JsPlaintext::String(path) = js_plaintext {
+                validate_json_path(path)?;
+            }
             // Force Utf8Str conversion regardless of column type
-            js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)
+            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
+            Ok((
+                plaintext,
+                InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
+            ))
         }
         QueryOp::SteVecTerm => {
             // Term queries expect a JSON fragment to match with @>
-            // Force JsonB conversion regardless of column type
-            js_plaintext.to_plaintext_with_type(ColumnType::JsonB)
+            // Provide helpful errors for wrong types
+            match js_plaintext {
+                JsPlaintext::String(s) => {
+                    return Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::String(s.clone()),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::UseSelectorForPath,
+                    });
+                }
+                JsPlaintext::Number(n) => {
+                    return Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::Number(*n),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::WrapNumberInObject,
+                    });
+                }
+                JsPlaintext::Boolean(b) => {
+                    return Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::Boolean(*b),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::WrapBooleanInObject,
+                    });
+                }
+                JsPlaintext::JsonB(_) => {
+                    // This is the expected type - proceed
+                }
+            }
+            // Use Store mode to produce sv array for containment matching
+            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
+            Ok((plaintext, InferredQueryMode::StoreMode))
         }
         QueryOp::Default => {
-            // Default queries use the column's storage type
-            js_plaintext.to_plaintext_with_type(column_type)
+            // For SteVec indexes with Default queryOp, infer from plaintext type
+            if matches!(index_type, IndexType::SteVec { .. }) {
+                match js_plaintext {
+                    JsPlaintext::String(path) => {
+                        // String → selector (path queries like "$.user.email")
+                        validate_json_path(path)?;
+                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
+                        Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))
+                    }
+                    JsPlaintext::JsonB(_) => {
+                        // Object/Array → Store mode for containment queries
+                        // This produces sv array needed for @> operator matching
+                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
+                        Ok((plaintext, InferredQueryMode::StoreMode))
+                    }
+                    JsPlaintext::Number(n) => {
+                        Err(Error::InvalidQueryInput {
+                            query_op: QueryOpKind::SteVecDefault,
+                            received: ReceivedKind::Number(*n),
+                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                            hint: QueryInputHint::UsePathOrObject,
+                        })
+                    }
+                    JsPlaintext::Boolean(b) => {
+                        Err(Error::InvalidQueryInput {
+                            query_op: QueryOpKind::SteVecDefault,
+                            received: ReceivedKind::Boolean(*b),
+                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                            hint: QueryInputHint::UsePathOrObject,
+                        })
+                    }
+                }
+            } else {
+                // Non-SteVec indexes: use column's storage type (original behavior)
+                let plaintext = js_plaintext.to_plaintext_with_type(column_type)?;
+                Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::Default)))
+            }
         }
     }
 }
@@ -334,7 +678,7 @@ pub async fn new_client(
     let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(opts.encrypt_config.into_config_map()),
+        encrypt_config: Arc::new(opts.encrypt_config.into_config_map()?),
     };
 
     Ok(Boxed(client))
@@ -479,18 +823,31 @@ async fn encrypt_query(
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
     // Find the requested index type from column config
-    let index = find_index_for_type(column_config, &opts.index_type)?;
+    let index = find_index_for_type(column_config, &opts.column, &opts.index_type)?;
     let query_op = parse_query_op(&opts.query_op)?;
 
-    // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
-    let plaintext = to_query_plaintext(&opts.plaintext, &query_op, column_config.cast_type)?;
+    // Infer type and operation mode from plaintext
+    // - String on SteVec → QueryMode with SteVecSelector (path queries)
+    // - Object/Array on SteVec → StoreMode (containment queries need sv array)
+    let (plaintext, inferred_mode) = to_query_plaintext(
+        &opts.plaintext,
+        query_op,
+        &index.index_type,
+        column_config.cast_type,
+    )?;
+
+    // Select the appropriate EqlOperation based on inferred mode
+    let eql_operation = match inferred_mode {
+        InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
+        InferredQueryMode::StoreMode => EqlOperation::Store,
+    };
 
     let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
     let prepared = PreparedPlaintext::new(
         Cow::Borrowed(column_config),
         eql_ident,
         plaintext,
-        EqlOperation::Query(&index.index_type, query_op),
+        eql_operation,
     );
 
     let eql_opts = EqlEncryptOpts {
@@ -543,19 +900,31 @@ async fn encrypt_query_bulk(
                 .get(&ident)
                 .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
 
-            let index = find_index_for_type(column_config, &payload.index_type)?;
+            let index = find_index_for_type(column_config, &payload.column, &payload.index_type)?;
             let query_op = parse_query_op(&payload.query_op)?;
 
-            // Use query-aware type inference (SteVecSelector → string, SteVecTerm → JSON, Default → column type)
-            let plaintext =
-                to_query_plaintext(&payload.plaintext, &query_op, column_config.cast_type)?;
+            // Infer type and operation mode from plaintext
+            // - String on SteVec → QueryMode with SteVecSelector (path queries)
+            // - Object/Array on SteVec → StoreMode (containment queries need sv array)
+            let (plaintext, inferred_mode) = to_query_plaintext(
+                &payload.plaintext,
+                query_op,
+                &index.index_type,
+                column_config.cast_type,
+            )?;
+
+            // Select the appropriate EqlOperation based on inferred mode
+            let eql_operation = match inferred_mode {
+                InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
+                InferredQueryMode::StoreMode => EqlOperation::Store,
+            };
 
             let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
             let prepared = PreparedPlaintext::new(
                 Cow::Borrowed(column_config),
                 eql_ident,
                 plaintext,
-                EqlOperation::Query(&index.index_type, query_op),
+                eql_operation,
             );
 
             prepared_plaintexts.push(prepared);
@@ -750,6 +1119,21 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 mod tests {
     use super::*;
 
+    mod truncate_for_error {
+        use super::*;
+
+        #[test]
+        fn handles_non_ascii_without_panicking() {
+            let input = "ééé";
+            assert_eq!(truncate_for_error(input, 1), "é...");
+        }
+
+        #[test]
+        fn returns_ellipsis_when_max_len_zero() {
+            assert_eq!(truncate_for_error("abc", 0), "...");
+        }
+    }
+
     mod is_encrypted {
         use super::*;
         use serde_json::json;
@@ -922,7 +1306,7 @@ mod tests {
             let result = parse_query_op("unknown");
             assert!(result.is_err());
             let err = result.unwrap_err();
-            assert!(err.to_string().contains("Unknown query_op"));
+            assert!(err.to_string().contains("Unknown query operation"));
         }
     }
 
@@ -946,7 +1330,7 @@ mod tests {
                 prefix: "test".to_string(),
                 term_filters: vec![],
             })]);
-            let result = find_index_for_type(&config, "ste_vec");
+            let result = find_index_for_type(&config, "test_column", "ste_vec");
             assert!(result.is_ok());
             assert!(matches!(
                 result.unwrap().index_type,
@@ -957,7 +1341,7 @@ mod tests {
         #[test]
         fn find_ore_index() {
             let config = make_column_config_with_indexes(vec![Index::new(IndexType::Ore)]);
-            let result = find_index_for_type(&config, "ore");
+            let result = find_index_for_type(&config, "test_column", "ore");
             assert!(result.is_ok());
             assert!(matches!(result.unwrap().index_type, IndexType::Ore));
         }
@@ -967,7 +1351,7 @@ mod tests {
             let config = make_column_config_with_indexes(vec![Index::new(IndexType::Unique {
                 token_filters: vec![],
             })]);
-            let result = find_index_for_type(&config, "unique");
+            let result = find_index_for_type(&config, "test_column", "unique");
             assert!(result.is_ok());
             assert!(matches!(
                 result.unwrap().index_type,
@@ -984,7 +1368,7 @@ mod tests {
                 m: 2048,
                 include_original: false,
             })]);
-            let result = find_index_for_type(&config, "match");
+            let result = find_index_for_type(&config, "test_column", "match");
             assert!(result.is_ok());
             assert!(matches!(
                 result.unwrap().index_type,
@@ -995,65 +1379,321 @@ mod tests {
         #[test]
         fn missing_index_returns_error() {
             let config = make_column_config_with_indexes(vec![Index::new(IndexType::Ore)]);
-            let result = find_index_for_type(&config, "ste_vec");
+            let result = find_index_for_type(&config, "test_column", "ste_vec");
             assert!(result.is_err());
             let err = result.unwrap_err();
-            assert!(err.to_string().contains("not configured"));
+            assert!(err.to_string().contains("does not have"));
+            assert!(err.to_string().contains("test_column"));
         }
 
         #[test]
         fn unknown_index_type_returns_error() {
             let config = make_column_config_with_indexes(vec![Index::new(IndexType::Ore)]);
-            let result = find_index_for_type(&config, "invalid_type");
+            let result = find_index_for_type(&config, "test_column", "invalid_type");
             assert!(result.is_err());
+        }
+
+        #[test]
+        fn missing_index_error_includes_column_and_suggestions() {
+            let config = make_column_config_with_indexes(vec![
+                Index::new(IndexType::Ore),
+                Index::new(IndexType::Match {
+                    tokenizer: Tokenizer::Standard,
+                    token_filters: vec![],
+                    k: 6,
+                    m: 2048,
+                    include_original: false,
+                }),
+            ]);
+            let result = find_index_for_type(&config, "email", "ste_vec");
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            // Should include column name
+            assert!(
+                err_msg.contains("email"),
+                "Error should include column name: {}",
+                err_msg
+            );
+            // Should include index type
+            assert!(
+                err_msg.contains("ste_vec"),
+                "Error should include requested index type: {}",
+                err_msg
+            );
+            // Should show available indexes
+            assert!(
+                err_msg.contains("ore"),
+                "Error should show available ore index: {}",
+                err_msg
+            );
+            assert!(
+                err_msg.contains("match"),
+                "Error should show available match index: {}",
+                err_msg
+            );
         }
     }
 
-    mod to_query_plaintext_tests {
+    mod query_inference_tests {
         use super::*;
-        use cipherstash_client::schema::column::ColumnType;
+        use cipherstash_client::encryption::Plaintext;
+        use cipherstash_client::schema::column::Tokenizer;
+        use cipherstash_client::schema::column::{ColumnType, IndexType};
 
         #[test]
-        fn ste_vec_selector_forces_utf8_regardless_of_column_type() {
-            // Column is JsonB, but selector query should produce Utf8Str
-            let js = JsPlaintext::String("$.user.email".to_string());
-            let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        fn test_ste_vec_default_with_string_infers_selector() {
+            let js_plaintext = JsPlaintext::String("$.user.email".to_string());
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // String on SteVec should infer QueryMode with SteVecSelector
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Utf8Str(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
+                ))
+            ));
         }
 
         #[test]
-        fn ste_vec_term_forces_jsonb_for_containment_queries() {
-            // Term query should produce JsonB
-            let js = JsPlaintext::JsonB(serde_json::json!({"name": "Alice"}));
-            let result = to_query_plaintext(&js, &QueryOp::SteVecTerm, ColumnType::JsonB);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::JsonB(_)));
+        fn test_ste_vec_default_with_object_infers_store_mode() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"role": "admin"}));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Object on SteVec should infer StoreMode (produces sv array for containment)
+            assert!(matches!(
+                result,
+                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+            ));
         }
 
         #[test]
-        fn default_uses_column_type_for_string_column() {
-            let js = JsPlaintext::String("test@example.com".to_string());
-            let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::Utf8Str);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        fn test_ste_vec_default_with_array_infers_store_mode() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!(["admin", "user"]));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Array on SteVec should infer StoreMode (produces sv array for containment)
+            assert!(matches!(
+                result,
+                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+            ));
         }
 
         #[test]
-        fn default_uses_column_type_for_numeric_column() {
-            let js = JsPlaintext::Number(42.0);
-            let result = to_query_plaintext(&js, &QueryOp::Default, ColumnType::BigInt);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::BigInt(_)));
+        fn test_ste_vec_default_with_number_returns_error() {
+            let js_plaintext = JsPlaintext::Number(42.0);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Numbers should return error for SteVec queries
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Invalid query input"),
+                "Error message should mention invalid input: {}",
+                err_msg
+            );
         }
 
         #[test]
-        fn selector_with_json_column_accepts_string_plaintext() {
-            // This is the key test - string path for JSON column selector query
-            let js = JsPlaintext::String("$.profile.name".to_string());
-            let result = to_query_plaintext(&js, &QueryOp::SteVecSelector, ColumnType::JsonB);
-            assert!(result.is_ok());
-            assert!(matches!(result.unwrap(), Plaintext::Utf8Str(_)));
+        fn test_ste_vec_default_with_boolean_returns_error() {
+            let js_plaintext = JsPlaintext::Boolean(true);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Booleans should return error for SteVec queries
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_explicit_ste_vec_selector_uses_query_mode() {
+            let js_plaintext = JsPlaintext::String("$.name".to_string());
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecSelector,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Explicit SteVecSelector should use QueryMode
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Utf8Str(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
+                ))
+            ));
+        }
+
+        #[test]
+        fn test_explicit_ste_vec_term_uses_store_mode() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"key": "value"}));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecTerm,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            // Explicit SteVecTerm uses StoreMode to produce sv array for containment
+            assert!(matches!(
+                result,
+                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+            ));
+        }
+
+        #[test]
+        fn test_non_ste_vec_default_uses_column_type() {
+            let js_plaintext = JsPlaintext::String("search term".to_string());
+            let index_type = IndexType::Match {
+                tokenizer: Tokenizer::Standard,
+                token_filters: vec![],
+                k: 6,
+                m: 2048,
+                include_original: true,
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::Utf8Str,
+            );
+
+            // Non-SteVec with Default should use column type and QueryMode with Default
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Utf8Str(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::Default)
+                ))
+            ));
+        }
+
+        #[test]
+        fn test_ste_vec_term_with_string_error_is_helpful() {
+            let js_plaintext = JsPlaintext::String("admin".to_string());
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecTerm,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            // Should mention it's for ste_vec_term
+            assert!(
+                err_msg.contains("ste_vec_term"),
+                "Error should mention ste_vec_term: {}",
+                err_msg
+            );
+            // Should say what was received
+            assert!(
+                err_msg.contains("String"),
+                "Error should mention received String: {}",
+                err_msg
+            );
+            // Should suggest using ste_vec_selector for paths
+            assert!(
+                err_msg.contains("ste_vec_selector") || err_msg.contains("path"),
+                "Error should suggest ste_vec_selector for paths: {}",
+                err_msg
+            );
+        }
+
+        #[test]
+        fn test_invalid_json_path_error() {
+            let js_plaintext = JsPlaintext::String("user.email".to_string()); // Missing $ prefix
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecSelector,
+                &index_type,
+                ColumnType::JsonB,
+            );
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            // Should mention the invalid path
+            assert!(
+                err_msg.contains("user.email"),
+                "Error should show the invalid path: {}",
+                err_msg
+            );
+            // Should suggest the correct format
+            assert!(
+                err_msg.contains("$.user.email") || err_msg.contains("$"),
+                "Error should suggest correct format with $: {}",
+                err_msg
+            );
         }
     }
 }

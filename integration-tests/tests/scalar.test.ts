@@ -36,48 +36,45 @@ const cases: { identifier: UserColumn; plaintext: string | number }[] = [
   { identifier: numberColumn, plaintext: 123.456 },
 ]
 
-describe.each(cases)(
-  'encrypt and decrypt',
-  async ({ identifier, plaintext }) => {
-    describe(`using column ${identifier.column} with ${typeof plaintext} value`, () => {
-      test('can round-trip encrypt and decrypt a string', async () => {
-        const client = await newClient({ encryptConfig })
-        const ciphertext = await encrypt(client, {
-          plaintext,
-          ...identifier,
-        })
-
-        expect(isEncrypted(ciphertext)).toBe(true)
-
-        const decrypted = await decrypt(client, { ciphertext })
-        expect(decrypted).toBe(plaintext)
+describe.each(cases)('encrypt and decrypt', ({ identifier, plaintext }) => {
+  describe(`using column ${identifier.column} with ${typeof plaintext} value`, () => {
+    test('can round-trip encrypt and decrypt a string', async () => {
+      const client = await newClient({ encryptConfig })
+      const ciphertext = await encrypt(client, {
+        plaintext,
+        ...identifier,
       })
 
-      test('can explicitly pass in undefined for optional fields', async () => {
-        const client = await newClient({ encryptConfig })
+      expect(isEncrypted(ciphertext)).toBe(true)
 
-        const ciphertext = await encrypt(client, {
-          plaintext,
-          serviceToken: undefined,
-          lockContext: undefined,
-          unverifiedContext: undefined,
-          ...identifier,
-        })
-
-        const decrypted = await decrypt(client, {
-          ciphertext,
-          lockContext: undefined,
-          serviceToken: undefined,
-          unverifiedContext: undefined,
-        })
-
-        expect(decrypted).toBe(plaintext)
-      })
+      const decrypted = await decrypt(client, { ciphertext })
+      expect(decrypted).toBe(plaintext)
     })
-  },
-)
 
-describe('coercion', async () => {
+    test('can explicitly pass in undefined for optional fields', async () => {
+      const client = await newClient({ encryptConfig })
+
+      const ciphertext = await encrypt(client, {
+        plaintext,
+        serviceToken: undefined,
+        lockContext: undefined,
+        unverifiedContext: undefined,
+        ...identifier,
+      })
+
+      const decrypted = await decrypt(client, {
+        ciphertext,
+        lockContext: undefined,
+        serviceToken: undefined,
+        unverifiedContext: undefined,
+      })
+
+      expect(decrypted).toBe(plaintext)
+    })
+  })
+})
+
+describe('coercion', () => {
   test('encrypting a float as an integer will truncate the value', async () => {
     const client = await newClient({ encryptConfig })
 

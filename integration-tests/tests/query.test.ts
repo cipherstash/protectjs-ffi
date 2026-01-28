@@ -2,10 +2,11 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
+  type Identifier,
+  ProtectError,
+  type QueryPayload,
   encryptQuery,
   encryptQueryBulk,
-  type Identifier,
-  type QueryPayload,
   newClient,
 } from '@cipherstash/protect-ffi'
 
@@ -76,10 +77,33 @@ describe('encryptQuery for ste_vec indexes', () => {
       indexType: 'ste_vec',
     })
 
-    // default operation should not include 'c' for ste_vec
-    expect(result).not.toHaveProperty('c')
+    console.log('OBJECT + DEFAULT queryOp output:')
+    console.log(JSON.stringify(result, null, 2))
+
+    // JSON object with default queryOp should produce sv array for containment queries
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
+    expect(result).toHaveProperty('c') // Root ciphertext from storage mode
+    expect(result).toHaveProperty('sv') // Flattened entries for containment matching
+    expect(Array.isArray(result.sv)).toBe(true)
+  })
+
+  test('should encrypt string path with explicit ste_vec_selector', async () => {
+    const client = await newClient({ encryptConfig })
+
+    const result = await encryptQuery(client, {
+      plaintext: '$.tag',
+      ...profileColumn,
+      indexType: 'ste_vec',
+      queryOp: 'ste_vec_selector', // Must be explicit!
+    })
+
+    console.log('STRING + STE_VEC_SELECTOR output:')
+    console.log(JSON.stringify(result, null, 2))
+
+    expect(result).toHaveProperty('i')
+    expect(result).toHaveProperty('v')
+    expect(result).toHaveProperty('s') // selector field
   })
 })
 
@@ -322,6 +346,25 @@ describe('encryptQuery error handling', () => {
         indexType: 'ore',
       }),
     ).rejects.toThrowError()
+  })
+
+  test('should include error code for missing column', async () => {
+    const client = await newClient({ encryptConfig })
+
+    try {
+      await encryptQuery(client, {
+        plaintext: 'test',
+        table: 'users',
+        column: 'nonexistent',
+        indexType: 'ore',
+      })
+      throw new Error('expected encryptQuery to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtectError)
+      if (err instanceof ProtectError) {
+        expect(err.code).toBe('UNKNOWN_COLUMN')
+      }
+    }
   })
 
   test('should error for missing index type', async () => {

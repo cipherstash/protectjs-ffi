@@ -29,7 +29,7 @@ describe.each([
   { encryptConfig: jsonSteVec, description: 'ste_vec' },
 ])(
   'Can round-trip encrypt & decrypt JSON',
-  async ({ encryptConfig, description }) => {
+  ({ encryptConfig, description }) => {
     describe(`using ${description} config`, () => {
       test('object', async ({ annotate }) => {
         const client = await newClient({ encryptConfig })
