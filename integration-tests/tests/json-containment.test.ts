@@ -587,7 +587,7 @@ describe('type inference edge cases', () => {
         indexType: 'ste_vec',
         queryOp: 'ste_vec_term', // Requires JSON, not string
       }),
-    ).rejects.toThrow(/Unsupported conversion/)
+    ).rejects.toThrow(/Invalid query input for 'ste_vec_term'/)
   })
 
   test('explicit ste_vec_term with JSON object works', async () => {
@@ -664,7 +664,7 @@ describe('type inference edge cases', () => {
         indexType: 'ste_vec',
         queryOp: 'default',
       }),
-    ).rejects.toThrow(/Cannot use/)
+    ).rejects.toThrow(/Invalid query input for 'ste_vec \(default\)'/)
   })
 
   test('boolean with default queryOp fails for ste_vec', async () => {
@@ -679,7 +679,7 @@ describe('type inference edge cases', () => {
         indexType: 'ste_vec',
         queryOp: 'default',
       }),
-    ).rejects.toThrow(/Cannot use/)
+    ).rejects.toThrow(/Invalid query input for 'ste_vec \(default\)'/)
   })
 })
 
