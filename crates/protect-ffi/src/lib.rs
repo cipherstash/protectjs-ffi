@@ -75,8 +75,8 @@ pub enum Error {
     InvariantViolation(String),
     #[error("{0}")]
     Base85(String),
-    #[error("unimplemented: {0} not supported yet by protect-ffi")]
-    Unimplemented(String),
+    #[error("Unknown query operation: {0}")]
+    Unknown(String),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
@@ -89,7 +89,9 @@ pub enum Error {
         index_type: String,
         hint: String,
     },
-    #[error("Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}")]
+    #[error(
+        "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
+    )]
     InvalidQueryInput {
         query_op: String,
         received: String,
@@ -345,10 +347,7 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
         "default" => Ok(QueryOp::Default),
         "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
         "ste_vec_term" => Ok(QueryOp::SteVecTerm),
-        _ => Err(Error::Unimplemented(format!(
-            "Unknown query_op: {}",
-            query_op
-        ))),
+        _ => Err(Error::Unknown(query_op.to_string())),
     }
 }
 
@@ -393,7 +392,10 @@ fn to_query_plaintext(
             }
             // Force Utf8Str conversion regardless of column type
             let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
-            Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))
+            Ok((
+                plaintext,
+                InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
+            ))
         }
         QueryOp::SteVecTerm => {
             // Term queries expect a JSON fragment to match with @>
@@ -672,7 +674,12 @@ async fn encrypt_query(
     // Infer type and operation mode from plaintext
     // - String on SteVec → QueryMode with SteVecSelector (path queries)
     // - Object/Array on SteVec → StoreMode (containment queries need sv array)
-    let (plaintext, inferred_mode) = to_query_plaintext(&opts.plaintext, query_op, &index.index_type, column_config.cast_type)?;
+    let (plaintext, inferred_mode) = to_query_plaintext(
+        &opts.plaintext,
+        query_op,
+        &index.index_type,
+        column_config.cast_type,
+    )?;
 
     // Select the appropriate EqlOperation based on inferred mode
     let eql_operation = match inferred_mode {
@@ -744,8 +751,12 @@ async fn encrypt_query_bulk(
             // Infer type and operation mode from plaintext
             // - String on SteVec → QueryMode with SteVecSelector (path queries)
             // - Object/Array on SteVec → StoreMode (containment queries need sv array)
-            let (plaintext, inferred_mode) =
-                to_query_plaintext(&payload.plaintext, query_op, &index.index_type, column_config.cast_type)?;
+            let (plaintext, inferred_mode) = to_query_plaintext(
+                &payload.plaintext,
+                query_op,
+                &index.index_type,
+                column_config.cast_type,
+            )?;
 
             // Select the appropriate EqlOperation based on inferred mode
             let eql_operation = match inferred_mode {
@@ -1228,20 +1239,36 @@ mod tests {
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();
             // Should include column name
-            assert!(err_msg.contains("email"), "Error should include column name: {}", err_msg);
+            assert!(
+                err_msg.contains("email"),
+                "Error should include column name: {}",
+                err_msg
+            );
             // Should include index type
-            assert!(err_msg.contains("ste_vec"), "Error should include requested index type: {}", err_msg);
+            assert!(
+                err_msg.contains("ste_vec"),
+                "Error should include requested index type: {}",
+                err_msg
+            );
             // Should show available indexes
-            assert!(err_msg.contains("ore"), "Error should show available ore index: {}", err_msg);
-            assert!(err_msg.contains("match"), "Error should show available match index: {}", err_msg);
+            assert!(
+                err_msg.contains("ore"),
+                "Error should show available ore index: {}",
+                err_msg
+            );
+            assert!(
+                err_msg.contains("match"),
+                "Error should show available match index: {}",
+                err_msg
+            );
         }
     }
 
     mod query_inference_tests {
         use super::*;
         use cipherstash_client::encryption::Plaintext;
-        use cipherstash_client::schema::column::{ColumnType, IndexType};
         use cipherstash_client::schema::column::Tokenizer;
+        use cipherstash_client::schema::column::{ColumnType, IndexType};
 
         #[test]
         fn test_ste_vec_default_with_string_infers_selector() {
@@ -1259,7 +1286,13 @@ mod tests {
             );
 
             // String on SteVec should infer QueryMode with SteVecSelector
-            assert!(matches!(result, Ok((Plaintext::Utf8Str(Some(_)), InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))));
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Utf8Str(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
+                ))
+            ));
         }
 
         #[test]
@@ -1278,7 +1311,10 @@ mod tests {
             );
 
             // Object on SteVec should infer StoreMode (produces sv array for containment)
-            assert!(matches!(result, Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))));
+            assert!(matches!(
+                result,
+                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+            ));
         }
 
         #[test]
@@ -1297,7 +1333,10 @@ mod tests {
             );
 
             // Array on SteVec should infer StoreMode (produces sv array for containment)
-            assert!(matches!(result, Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))));
+            assert!(matches!(
+                result,
+                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+            ));
         }
 
         #[test]
@@ -1318,7 +1357,11 @@ mod tests {
             // Numbers should return error for SteVec queries
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();
-            assert!(err_msg.contains("Invalid query input"), "Error message should mention invalid input: {}", err_msg);
+            assert!(
+                err_msg.contains("Invalid query input"),
+                "Error message should mention invalid input: {}",
+                err_msg
+            );
         }
 
         #[test]
@@ -1356,7 +1399,13 @@ mod tests {
             );
 
             // Explicit SteVecSelector should use QueryMode
-            assert!(matches!(result, Ok((Plaintext::Utf8Str(Some(_)), InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))));
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Utf8Str(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
+                ))
+            ));
         }
 
         #[test]
@@ -1375,7 +1424,10 @@ mod tests {
             );
 
             // Explicit SteVecTerm uses StoreMode to produce sv array for containment
-            assert!(matches!(result, Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))));
+            assert!(matches!(
+                result,
+                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+            ));
         }
 
         #[test]
@@ -1397,7 +1449,13 @@ mod tests {
             );
 
             // Non-SteVec with Default should use column type and QueryMode with Default
-            assert!(matches!(result, Ok((Plaintext::Utf8Str(Some(_)), InferredQueryMode::QueryMode(QueryOp::Default)))));
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Utf8Str(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::Default)
+                ))
+            ));
         }
 
         #[test]
@@ -1418,12 +1476,23 @@ mod tests {
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();
             // Should mention it's for ste_vec_term
-            assert!(err_msg.contains("ste_vec_term"), "Error should mention ste_vec_term: {}", err_msg);
+            assert!(
+                err_msg.contains("ste_vec_term"),
+                "Error should mention ste_vec_term: {}",
+                err_msg
+            );
             // Should say what was received
-            assert!(err_msg.contains("String"), "Error should mention received String: {}", err_msg);
+            assert!(
+                err_msg.contains("String"),
+                "Error should mention received String: {}",
+                err_msg
+            );
             // Should suggest using ste_vec_selector for paths
-            assert!(err_msg.contains("ste_vec_selector") || err_msg.contains("path"),
-                "Error should suggest ste_vec_selector for paths: {}", err_msg);
+            assert!(
+                err_msg.contains("ste_vec_selector") || err_msg.contains("path"),
+                "Error should suggest ste_vec_selector for paths: {}",
+                err_msg
+            );
         }
 
         #[test]
@@ -1444,10 +1513,17 @@ mod tests {
             assert!(result.is_err());
             let err_msg = result.unwrap_err().to_string();
             // Should mention the invalid path
-            assert!(err_msg.contains("user.email"), "Error should show the invalid path: {}", err_msg);
+            assert!(
+                err_msg.contains("user.email"),
+                "Error should show the invalid path: {}",
+                err_msg
+            );
             // Should suggest the correct format
-            assert!(err_msg.contains("$.user.email") || err_msg.contains("$"),
-                "Error should suggest correct format with $: {}", err_msg);
+            assert!(
+                err_msg.contains("$.user.email") || err_msg.contains("$"),
+                "Error should suggest correct format with $: {}",
+                err_msg
+            );
         }
     }
 }
