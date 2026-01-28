@@ -59,6 +59,158 @@ impl Finalize for Client {}
 /// Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
 pub type Encrypted = EqlCiphertext;
 
+/// What type of value was received in a query
+#[derive(Debug, Clone)]
+pub enum ReceivedKind {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    JsonObject,
+    JsonArray,
+    JsonScalar(String),
+}
+
+impl std::fmt::Display for ReceivedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::String(s) => write!(f, "String \"{}\"", truncate_for_error(s, 30)),
+            Self::Number(n) => write!(f, "Number {}", n),
+            Self::Boolean(b) => write!(f, "Boolean {}", b),
+            Self::JsonObject => write!(f, "JSON object"),
+            Self::JsonArray => write!(f, "JSON array"),
+            Self::JsonScalar(s) => write!(f, "JSON scalar {}", s),
+        }
+    }
+}
+
+impl ReceivedKind {
+    /// Introspect JSON values so object/array are distinguished.
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Object(_) => Self::JsonObject,
+            serde_json::Value::Array(_) => Self::JsonArray,
+            serde_json::Value::String(s) => Self::JsonScalar(format!("\"{}\"", s)),
+            serde_json::Value::Number(n) => Self::JsonScalar(n.to_string()),
+            serde_json::Value::Bool(b) => Self::JsonScalar(b.to_string()),
+            serde_json::Value::Null => Self::JsonScalar("null".to_string()),
+        }
+    }
+}
+
+/// What type of value was expected
+#[derive(Debug, Clone, Copy)]
+pub enum ExpectedKind {
+    JsonObjectOrArray,
+    StringPathOrJsonObjectOrArray,
+}
+
+impl std::fmt::Display for ExpectedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JsonObjectOrArray => write!(f, "JSON object or array"),
+            Self::StringPathOrJsonObjectOrArray => {
+                write!(f, "String (JSON path) or JSON object/array")
+            }
+        }
+    }
+}
+
+/// Query operation context for errors
+#[derive(Debug, Clone, Copy)]
+pub enum QueryOpKind {
+    SteVecTerm,
+    SteVecDefault,
+}
+
+impl std::fmt::Display for QueryOpKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SteVecTerm => write!(f, "ste_vec_term"),
+            Self::SteVecDefault => write!(f, "ste_vec (default)"),
+        }
+    }
+}
+
+/// Wrapper for bounded display of potentially large strings
+#[derive(Debug, Clone)]
+pub struct Truncated<'a> {
+    value: std::borrow::Cow<'a, str>,
+    max_len: usize,
+}
+
+impl<'a> Truncated<'a> {
+    pub fn new(value: impl Into<std::borrow::Cow<'a, str>>, max_len: usize) -> Self {
+        Self { value: value.into(), max_len }
+    }
+
+    pub fn path(value: impl Into<std::borrow::Cow<'a, str>>) -> Self {
+        Self::new(value, 50)
+    }
+}
+
+impl std::fmt::Display for Truncated<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.value.chars().count() <= self.max_len {
+            write!(f, "{}", self.value)
+        } else {
+            let truncated: String = self.value.chars().take(self.max_len).collect();
+            write!(f, "{}...", truncated)
+        }
+    }
+}
+
+/// Hints for InvalidQueryInput errors
+#[derive(Debug, Clone, Copy)]
+pub enum QueryInputHint {
+    UseSelectorForPath,
+    WrapInObject,
+    WrapNumberInObject,
+    WrapBooleanInObject,
+    UsePathOrObject,
+}
+
+impl std::fmt::Display for QueryInputHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UseSelectorForPath => write!(f, "For path queries like '$.field', use queryOp: 'ste_vec_selector'. For containment queries, wrap the value in an object: {{\"field\": \"value\"}}."),
+            Self::WrapInObject => write!(f, "Wrap the value in a JSON object: {{\"field\": value}}."),
+            Self::WrapNumberInObject => write!(f, "Wrap the number in a JSON object to query by value: {{\"field\": <number>}}."),
+            Self::WrapBooleanInObject => write!(f, "Wrap the boolean in a JSON object to query by value: {{\"field\": <boolean>}}."),
+            Self::UsePathOrObject => write!(f, "Use a JSON path string like '$.field' for path queries, or a JSON object like {{\"field\": value}} for containment queries."),
+        }
+    }
+}
+
+/// Reasons for JSON path errors
+#[derive(Debug, Clone, Copy)]
+pub enum JsonPathReason {
+    Empty,
+    MissingDollar,
+}
+
+impl std::fmt::Display for JsonPathReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "path cannot be empty"),
+            Self::MissingDollar => write!(f, "path must start with '$'"),
+        }
+    }
+}
+
+/// Hints for JSON path errors
+#[derive(Debug, Clone)]
+pub enum JsonPathHint {
+    TryPrefix(String),
+}
+
+impl std::fmt::Display for JsonPathHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TryPrefix(path) => write!(f, "Try: '$.{}' or '$[\"{}\"]'.", path, path),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
@@ -73,10 +225,8 @@ pub enum Error {
     Eql(#[from] EqlError),
     #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs/issues.")]
     InvariantViolation(String),
-    #[error("{0}")]
-    Base85(String),
-    #[error("Unknown query operation: {0}")]
-    Unknown(String),
+    #[error("Unknown query operation: '{0}'")]
+    UnknownQueryOp(String),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
@@ -89,26 +239,24 @@ pub enum Error {
         index_type: String,
         hint: String,
     },
-    #[error(
-        "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
-    )]
+    #[error("Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}")]
     InvalidQueryInput {
-        query_op: String,
-        received: String,
-        expected: String,
-        hint: String,
+        query_op: QueryOpKind,
+        received: ReceivedKind,
+        expected: ExpectedKind,
+        hint: QueryInputHint,
     },
     #[error("Invalid JSON path '{path}': {reason}. {hint}")]
     InvalidJsonPath {
-        path: String,
-        reason: String,
-        hint: String,
+        path: Truncated<'static>,
+        reason: JsonPathReason,
+        hint: JsonPathHint,
     },
-    #[error("Configuration error for column '{table}.{column}': {message}")]
-    ConfigValidation {
+    #[error("Configuration error for column '{table}.{column}': ste_vec index requires cast_as: 'json', but found cast_as: '{found_cast_as}'. Either change cast_as to 'json' or remove the ste_vec index.")]
+    SteVecRequiresJsonCastAs {
         table: String,
         column: String,
-        message: String,
+        found_cast_as: String,
     },
 }
 
@@ -273,16 +421,16 @@ fn truncate_for_error(s: &str, max_len: usize) -> String {
 fn validate_json_path(path: &str) -> Result<(), Error> {
     if path.is_empty() {
         return Err(Error::InvalidJsonPath {
-            path: path.to_string(),
-            reason: "path cannot be empty".to_string(),
-            hint: "Provide a valid JSON path like '$.field' or '$[\"field\"]'.".to_string(),
+            path: Truncated::path(path.to_string()),
+            reason: JsonPathReason::Empty,
+            hint: JsonPathHint::TryPrefix(path.to_string()),
         });
     }
     if !path.starts_with('$') {
         return Err(Error::InvalidJsonPath {
-            path: truncate_for_error(path, 50),
-            reason: "path must start with '$'".to_string(),
-            hint: format!("Try: '$.{}' or '$[\"{}\"]'.", path, path),
+            path: Truncated::path(path.to_string()),
+            reason: JsonPathReason::MissingDollar,
+            hint: JsonPathHint::TryPrefix(path.to_string()),
         });
     }
     Ok(())
@@ -357,7 +505,7 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
         "default" => Ok(QueryOp::Default),
         "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
         "ste_vec_term" => Ok(QueryOp::SteVecTerm),
-        _ => Err(Error::Unknown(query_op.to_string())),
+        _ => Err(Error::UnknownQueryOp(query_op.to_string())),
     }
 }
 
@@ -413,27 +561,26 @@ fn to_query_plaintext(
             match js_plaintext {
                 JsPlaintext::String(s) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: "ste_vec_term".to_string(),
-                        received: format!("String \"{}\"", truncate_for_error(s, 30)),
-                        expected: "JSON object or array".to_string(),
-                        hint: "For path queries like '$.field', use queryOp: 'ste_vec_selector'. \
-                               For containment queries, wrap the value in an object: {\"field\": \"value\"}.".to_string(),
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::String(s.clone()),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::UseSelectorForPath,
                     });
                 }
                 JsPlaintext::Number(n) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: "ste_vec_term".to_string(),
-                        received: format!("Number {}", n),
-                        expected: "JSON object or array".to_string(),
-                        hint: "Wrap the number in a JSON object to query by value: {\"field\": <number>}.".to_string(),
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::Number(*n),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::WrapNumberInObject,
                     });
                 }
                 JsPlaintext::Boolean(b) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: "ste_vec_term".to_string(),
-                        received: format!("Boolean {}", b),
-                        expected: "JSON object or array".to_string(),
-                        hint: "Wrap the boolean in a JSON object to query by value: {\"field\": <boolean>}.".to_string(),
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::Boolean(*b),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::WrapBooleanInObject,
                     });
                 }
                 JsPlaintext::JsonB(_) => {
@@ -462,20 +609,18 @@ fn to_query_plaintext(
                     }
                     JsPlaintext::Number(n) => {
                         Err(Error::InvalidQueryInput {
-                            query_op: "ste_vec (default)".to_string(),
-                            received: format!("Number {}", n),
-                            expected: "String (JSON path) or JSON object/array".to_string(),
-                            hint: "Use a JSON path string like '$.field' for path queries, \
-                                   or a JSON object like {\"field\": value} for containment queries.".to_string(),
+                            query_op: QueryOpKind::SteVecDefault,
+                            received: ReceivedKind::Number(*n),
+                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                            hint: QueryInputHint::UsePathOrObject,
                         })
                     }
                     JsPlaintext::Boolean(b) => {
                         Err(Error::InvalidQueryInput {
-                            query_op: "ste_vec (default)".to_string(),
-                            received: format!("Boolean {}", b),
-                            expected: "String (JSON path) or JSON object/array".to_string(),
-                            hint: "Use a JSON path string like '$.field' for path queries, \
-                                   or a JSON object like {\"field\": value} for containment queries.".to_string(),
+                            query_op: QueryOpKind::SteVecDefault,
+                            received: ReceivedKind::Boolean(*b),
+                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                            hint: QueryInputHint::UsePathOrObject,
                         })
                     }
                 }

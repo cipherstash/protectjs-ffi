@@ -175,14 +175,10 @@ impl Column {
     ) -> Result<ColumnConfig, super::Error> {
         // Validate ste_vec requires cast_as: json
         if self.indexes.ste_vec_index.is_some() && self.cast_as != CastAs::Json {
-            return Err(super::Error::ConfigValidation {
+            return Err(super::Error::SteVecRequiresJsonCastAs {
                 table: table_name.to_string(),
                 column: column_name.to_string(),
-                message: format!(
-                    "ste_vec index requires cast_as: 'json', but found cast_as: '{}'. \
-                    Either change cast_as to 'json' or remove the ste_vec index.",
-                    cast_as_name(&self.cast_as)
-                ),
+                found_cast_as: cast_as_name(&self.cast_as).to_string(),
             });
         }
 
