@@ -14,6 +14,8 @@ Common issues, error messages, and solutions for JSONB operations in protectjs-f
 
 ## Common Error Messages
 
+Note: async API errors include a stable `code` on the thrown `ProtectError`, so you can avoid string matching.
+
 ### "Unsupported conversion from X to Y"
 
 **Example:**
@@ -431,4 +433,3 @@ test('round-trip encryption works', async () => {
 
 - [Integration Guide](./jsonb-integration.md) - Architecture and data flow
 - [API Reference](./jsonb-api-reference.md) - Detailed API documentation
-- [Error Messages Improvement](./error-messages-improvement.md) - Engineering notes

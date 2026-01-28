@@ -1,16 +1,6 @@
 // This module is the CJS entry point for the library.
 
-export {
-  newClient,
-  encrypt,
-  encryptBulk,
-  encryptQuery,
-  encryptQueryBulk,
-  isEncrypted,
-  decrypt,
-  decryptBulk,
-  decryptBulkFallible,
-} from './load.cjs'
+import * as native from './load.cjs'
 
 declare const sym: unique symbol
 
@@ -46,7 +36,155 @@ declare module './load.cjs' {
   ): Promise<Encrypted[]>
 }
 
-export type DecryptResult = { data: string } | { error: string }
+export type ProtectErrorCode =
+  | 'INVARIANT_VIOLATION'
+  | 'UNKNOWN_QUERY_OP'
+  | 'UNKNOWN_COLUMN'
+  | 'MISSING_INDEX'
+  | 'INVALID_QUERY_INPUT'
+  | 'INVALID_JSON_PATH'
+  | 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  | 'UNKNOWN'
+
+export class ProtectError extends Error {
+  code: ProtectErrorCode
+  details?: unknown
+  cause?: unknown
+
+  constructor(opts: {
+    code: ProtectErrorCode
+    message: string
+    details?: unknown
+    cause?: unknown
+  }) {
+    super(opts.message)
+    this.name = 'ProtectError'
+    this.code = opts.code
+    this.details = opts.details
+    this.cause = opts.cause
+  }
+}
+
+export type DecryptResult =
+  | { data: JsPlaintext }
+  | { error: string; code?: ProtectErrorCode }
+
+function inferErrorCode(message: string): ProtectErrorCode {
+  if (message.startsWith('protect-ffi invariant violation:')) {
+    return 'INVARIANT_VIOLATION'
+  }
+  if (message.startsWith('Unknown query operation:')) {
+    return 'UNKNOWN_QUERY_OP'
+  }
+  if (message.startsWith('Invalid query input for')) {
+    return 'INVALID_QUERY_INPUT'
+  }
+  if (message.startsWith('Invalid JSON path')) {
+    return 'INVALID_JSON_PATH'
+  }
+  if (message.includes(' not found in Encrypt config')) {
+    return 'UNKNOWN_COLUMN'
+  }
+  if (message.includes(" index configured")) {
+    return 'MISSING_INDEX'
+  }
+  if (message.includes("ste_vec index requires cast_as: 'json'")) {
+    return 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  }
+  return 'UNKNOWN'
+}
+
+function normalizeError(err: unknown): unknown {
+  if (err instanceof ProtectError) {
+    return err
+  }
+
+  if (err && typeof err === 'object' && 'message' in err) {
+    const message = String((err as { message?: unknown }).message ?? 'Unknown error')
+    const code = inferErrorCode(message)
+    if (code !== 'UNKNOWN') {
+      return new ProtectError({ code, message, cause: err })
+    }
+  }
+
+  return err
+}
+
+async function wrapAsync<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    throw normalizeError(err)
+  }
+}
+
+function wrapSync<T>(fn: () => T): T {
+  try {
+    return fn()
+  } catch (err) {
+    throw normalizeError(err)
+  }
+}
+
+export function newClient(opts: NewClientOptions): Promise<Client> {
+  return wrapAsync(() => native.newClient(opts))
+}
+
+export function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted> {
+  return wrapAsync(() => native.encrypt(client, opts))
+}
+
+export function decrypt(
+  client: Client,
+  opts: DecryptOptions,
+): Promise<JsPlaintext> {
+  return wrapAsync(() => native.decrypt(client, opts))
+}
+
+export function isEncrypted(encrypted: Encrypted): boolean {
+  return wrapSync(() => native.isEncrypted(encrypted))
+}
+
+export function encryptBulk(
+  client: Client,
+  opts: EncryptBulkOptions,
+): Promise<Encrypted[]> {
+  return wrapAsync(() => native.encryptBulk(client, opts))
+}
+
+export function decryptBulk(
+  client: Client,
+  opts: DecryptBulkOptions,
+): Promise<JsPlaintext[]> {
+  return wrapAsync(() => native.decryptBulk(client, opts))
+}
+
+export async function decryptBulkFallible(
+  client: Client,
+  opts: DecryptBulkOptions,
+): Promise<DecryptResult[]> {
+  const results = await wrapAsync(() => native.decryptBulkFallible(client, opts))
+  return results.map((item: DecryptResult) => {
+    if ('error' in item && typeof item.error === 'string') {
+      return { ...item, code: inferErrorCode(item.error) }
+    }
+    return item
+  })
+}
+
+export function encryptQuery(
+  client: Client,
+  opts: EncryptQueryOptions,
+): Promise<Encrypted> {
+  return wrapAsync(() => native.encryptQuery(client, opts))
+}
+
+export function encryptQueryBulk(
+  client: Client,
+  opts: EncryptQueryBulkOptions,
+): Promise<Encrypted[]> {
+  return wrapAsync(() => native.encryptQueryBulk(client, opts))
+}
 
 export type EncryptPayload = {
   plaintext: JsPlaintext
@@ -184,6 +322,7 @@ export type MatchIndexOpts = {
 
 export type SteVecIndexOpts = {
   prefix: string
+  term_filters?: TokenFilter[]
 }
 
 export type Tokenizer =
@@ -210,6 +349,7 @@ export type KeysetIdentifier = { Uuid: string } | { Name: string }
 export type JsPlaintext =
   | string
   | number
+  | boolean
   | Record<string, unknown>
   | JsPlaintext[]
 

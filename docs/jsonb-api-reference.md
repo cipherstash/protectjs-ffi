@@ -259,8 +259,8 @@ The FFI receives JavaScript values and categorizes them:
 | JavaScript Value | JsPlaintext Variant | Notes |
 |-----------------|---------------------|-------|
 | `"string"` | `String` | Strings |
-| `42`, `3.14` | `Number` | All numbers |
-| `true`, `false` | `Boolean` | Booleans |
+| `42`, `3.14` | `Number` | All numbers (integers and floats) |
+| `true`, `false` | `Boolean` | Booleans (supported for storage and decryption) |
 | `{ key: val }` | `JsonB` | Objects |
 | `[1, 2, 3]` | `JsonB` | Arrays |
 | `null` | `JsonB` | JSON null |
@@ -320,7 +320,7 @@ type Column = {
   indexes?: {
     ore?: {}
     unique?: { token_filters?: TokenFilter[] }
-    match?: { tokenizer?: Tokenizer; k?: number; m?: number }
+    match?: { tokenizer?: Tokenizer; k?: number; m?: number; include_original?: boolean }
     ste_vec?: { prefix: string; term_filters?: TokenFilter[] }
   }
 }
@@ -445,6 +445,14 @@ function encryptQueryBulk(
 ): Promise<Encrypted[]>
 ```
 
+### isEncrypted
+
+```typescript
+function isEncrypted(encrypted: Encrypted): boolean
+```
+
+Synchronously checks if a value is a valid encrypted ciphertext structure. Useful for conditionally processing data that may or may not be encrypted.
+
 ### decrypt / decryptBulk
 
 ```typescript
@@ -460,7 +468,42 @@ function decryptBulkFallible(
   opts: { ciphertexts: BulkDecryptPayload[] }
 ): Promise<DecryptResult[]>
 
-type DecryptResult = { data: JsPlaintext } | { error: string }
+type DecryptResult =
+  | { data: JsPlaintext }
+  | { error: string; code?: ProtectErrorCode }
+```
+
+### Errors
+
+Errors thrown by the async APIs surface as `ProtectError` instances with a stable `code`.
+
+```typescript
+type ProtectErrorCode =
+  | 'INVARIANT_VIOLATION'
+  | 'UNKNOWN_QUERY_OP'
+  | 'UNKNOWN_COLUMN'
+  | 'MISSING_INDEX'
+  | 'INVALID_QUERY_INPUT'
+  | 'INVALID_JSON_PATH'
+  | 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  | 'UNKNOWN'
+
+class ProtectError extends Error {
+  code: ProtectErrorCode
+}
+```
+
+Example:
+
+```typescript
+try {
+  await encryptQuery(client, opts)
+} catch (err) {
+  if (err instanceof ProtectError && err.code === 'INVALID_JSON_PATH') {
+    // handle JSON path mistakes
+  }
+  throw err
+}
 ```
 
 ---

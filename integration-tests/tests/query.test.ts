@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 
 import {
   type Identifier,
+  ProtectError,
   type QueryPayload,
   encryptQuery,
   encryptQueryBulk,
@@ -345,6 +346,25 @@ describe('encryptQuery error handling', () => {
         indexType: 'ore',
       }),
     ).rejects.toThrowError()
+  })
+
+  test('should include error code for missing column', async () => {
+    const client = await newClient({ encryptConfig })
+
+    try {
+      await encryptQuery(client, {
+        plaintext: 'test',
+        table: 'users',
+        column: 'nonexistent',
+        indexType: 'ore',
+      })
+      throw new Error('expected encryptQuery to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtectError)
+      if (err instanceof ProtectError) {
+        expect(err.code).toBe('UNKNOWN_COLUMN')
+      }
+    }
   })
 
   test('should error for missing index type', async () => {
