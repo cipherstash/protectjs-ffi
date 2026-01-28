@@ -281,7 +281,7 @@ If using the full Protect.js library (not just protectjs-ffi directly), you get 
 
 **Note:** Path+value queries use containment semantics (not selector+value comparison). The path is used to build a nested object structure for the containment query.
 
-See: `protectjs/packages/protect/src/ffi/operations/batch-encrypt-query.ts`
+See the Protect.js source for implementation details.
 
 ---
 
