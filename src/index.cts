@@ -85,7 +85,7 @@ function inferErrorCode(message: string): ProtectErrorCode {
   if (message.includes(' not found in Encrypt config')) {
     return 'UNKNOWN_COLUMN'
   }
-  if (message.includes(" index configured")) {
+  if (message.includes(' index configured')) {
     return 'MISSING_INDEX'
   }
   if (message.includes("ste_vec index requires cast_as: 'json'")) {
@@ -100,7 +100,9 @@ function normalizeError(err: unknown): unknown {
   }
 
   if (err && typeof err === 'object' && 'message' in err) {
-    const message = String((err as { message?: unknown }).message ?? 'Unknown error')
+    const message = String(
+      (err as { message?: unknown }).message ?? 'Unknown error',
+    )
     const code = inferErrorCode(message)
     if (code !== 'UNKNOWN') {
       return new ProtectError({ code, message, cause: err })
@@ -130,7 +132,10 @@ export function newClient(opts: NewClientOptions): Promise<Client> {
   return wrapAsync(() => native.newClient(opts))
 }
 
-export function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted> {
+export function encrypt(
+  client: Client,
+  opts: EncryptOptions,
+): Promise<Encrypted> {
   return wrapAsync(() => native.encrypt(client, opts))
 }
 
@@ -163,7 +168,9 @@ export async function decryptBulkFallible(
   client: Client,
   opts: DecryptBulkOptions,
 ): Promise<DecryptResult[]> {
-  const results = await wrapAsync(() => native.decryptBulkFallible(client, opts))
+  const results = await wrapAsync(() =>
+    native.decryptBulkFallible(client, opts),
+  )
   return results.map((item: DecryptResult) => {
     if ('error' in item && typeof item.error === 'string') {
       return { ...item, code: inferErrorCode(item.error) }
