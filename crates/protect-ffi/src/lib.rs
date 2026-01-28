@@ -1161,7 +1161,7 @@ mod tests {
             let result = parse_query_op("unknown");
             assert!(result.is_err());
             let err = result.unwrap_err();
-            assert!(err.to_string().contains("Unknown query_op"));
+            assert!(err.to_string().contains("Unknown query operation"));
         }
     }
 
