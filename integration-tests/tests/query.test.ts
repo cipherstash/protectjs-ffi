@@ -2,10 +2,10 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
-  encryptQuery,
-  encryptQueryBulk,
   type Identifier,
   type QueryPayload,
+  encryptQuery,
+  encryptQueryBulk,
   newClient,
 } from '@cipherstash/protect-ffi'
 
@@ -82,7 +82,7 @@ describe('encryptQuery for ste_vec indexes', () => {
     // JSON object with default queryOp should produce sv array for containment queries
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
-    expect(result).toHaveProperty('c')  // Root ciphertext from storage mode
+    expect(result).toHaveProperty('c') // Root ciphertext from storage mode
     expect(result).toHaveProperty('sv') // Flattened entries for containment matching
     expect(Array.isArray(result.sv)).toBe(true)
   })
@@ -94,7 +94,7 @@ describe('encryptQuery for ste_vec indexes', () => {
       plaintext: '$.tag',
       ...profileColumn,
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_selector',  // Must be explicit!
+      queryOp: 'ste_vec_selector', // Must be explicit!
     })
 
     console.log('STRING + STE_VEC_SELECTOR output:')
@@ -102,7 +102,7 @@ describe('encryptQuery for ste_vec indexes', () => {
 
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
-    expect(result).toHaveProperty('s')  // selector field
+    expect(result).toHaveProperty('s') // selector field
   })
 })
 
