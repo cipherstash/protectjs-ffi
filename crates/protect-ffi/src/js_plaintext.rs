@@ -89,12 +89,25 @@ impl JsPlaintext {
             // JsonB conversions - only allow to JsonB
             (JsPlaintext::JsonB(j), ColumnType::JsonB) => Ok(Plaintext::JsonB(Some(j.clone()))),
 
-            // All other conversions are not allowed
-            (js_type, col_type) => Err(TypeParseError(format!(
-                "Unsupported conversion from {:?} to {:?}",
-                js_plaintext_type_name(js_type),
-                col_type
-            ))),
+            // All other conversions are not allowed - provide helpful error message
+            (js_type, col_type) => {
+                let valid_targets = match js_type {
+                    JsPlaintext::String(_) => "Utf8Str (string columns)",
+                    JsPlaintext::Number(_) => {
+                        "Float, BigInt, Int, SmallInt, BigUInt, Decimal (numeric columns)"
+                    }
+                    JsPlaintext::Boolean(_) => "Boolean (boolean columns)",
+                    JsPlaintext::JsonB(_) => "JsonB (json columns)",
+                };
+                Err(TypeParseError(format!(
+                    "Cannot convert {} to {:?}. {} values can only be used with: {}. \
+                    Check your column's cast_as setting in the encrypt config.",
+                    js_plaintext_type_name(js_type),
+                    col_type,
+                    js_plaintext_type_name(js_type),
+                    valid_targets
+                )))
+            }
         }
     }
 }
@@ -225,7 +238,7 @@ mod tests {
             let js_string = JsPlaintext::String("123".to_string());
             let result = js_string.to_plaintext_with_type(ColumnType::Int);
             assert!(result.is_err());
-            assert!(result.unwrap_err().0.contains("Unsupported conversion"));
+            assert!(result.unwrap_err().0.contains("Cannot convert"));
         }
 
         #[test]
@@ -299,7 +312,7 @@ mod tests {
             let js_bool = JsPlaintext::Boolean(true);
             let result = js_bool.to_plaintext_with_type(ColumnType::Utf8Str);
             assert!(result.is_err());
-            assert!(result.unwrap_err().0.contains("Unsupported conversion"));
+            assert!(result.unwrap_err().0.contains("Cannot convert"));
         }
 
         #[test]
@@ -316,7 +329,7 @@ mod tests {
             let js_jsonb = JsPlaintext::JsonB(json_value);
             let result = js_jsonb.to_plaintext_with_type(ColumnType::Utf8Str);
             assert!(result.is_err());
-            assert!(result.unwrap_err().0.contains("Unsupported conversion"));
+            assert!(result.unwrap_err().0.contains("Cannot convert"));
         }
 
         #[test]
@@ -324,7 +337,43 @@ mod tests {
             let js_number = JsPlaintext::Number(1.0);
             let result = js_number.to_plaintext_with_type(ColumnType::Boolean);
             assert!(result.is_err());
-            assert!(result.unwrap_err().0.contains("Unsupported conversion"));
+            assert!(result.unwrap_err().0.contains("Cannot convert"));
+        }
+
+        #[test]
+        fn test_type_coercion_error_shows_valid_alternatives() {
+            // Test that error messages show what types are valid for each JS type
+            let js_string = JsPlaintext::String("hello".to_string());
+            let result = js_string.to_plaintext_with_type(ColumnType::Int);
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().0;
+            // Should mention valid targets for String
+            assert!(err_msg.contains("Utf8Str"), "Error should mention valid target Utf8Str: {}", err_msg);
+            // Should mention cast_as setting
+            assert!(err_msg.contains("cast_as"), "Error should mention cast_as setting: {}", err_msg);
+
+            // Test Number type shows its valid targets
+            let js_number = JsPlaintext::Number(42.0);
+            let result = js_number.to_plaintext_with_type(ColumnType::Boolean);
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().0;
+            // Should mention valid targets for Number
+            assert!(err_msg.contains("Float") || err_msg.contains("BigInt"),
+                "Error should mention valid numeric targets: {}", err_msg);
+
+            // Test Boolean shows its valid target
+            let js_bool = JsPlaintext::Boolean(true);
+            let result = js_bool.to_plaintext_with_type(ColumnType::Int);
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().0;
+            assert!(err_msg.contains("Boolean"), "Error should mention valid target Boolean: {}", err_msg);
+
+            // Test JsonB shows its valid target
+            let js_json = JsPlaintext::JsonB(serde_json::json!({"a": 1}));
+            let result = js_json.to_plaintext_with_type(ColumnType::Int);
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().0;
+            assert!(err_msg.contains("JsonB"), "Error should mention valid target JsonB: {}", err_msg);
         }
     }
 }
