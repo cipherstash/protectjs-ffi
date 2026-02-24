@@ -293,7 +293,8 @@ export type CastAs =
   | 'boolean'
   | 'date'
   | 'number'
-  | 'string'
+  | 'string' // deprecated, use text instead but keep for backwards compatibility
+  | 'text'
   | 'json'
 
 // Extract the tables from a specific config

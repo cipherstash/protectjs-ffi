@@ -74,6 +74,7 @@ pub enum CastAs {
     Number,
     #[default]
     String,
+    Text,
     Json,
 }
 
@@ -139,6 +140,7 @@ impl From<CastAs> for ColumnType {
             CastAs::Date => ColumnType::Date,
             CastAs::Number => ColumnType::Float,
             CastAs::String => ColumnType::Utf8Str,
+            CastAs::Text => ColumnType::Utf8Str,
             CastAs::Json => ColumnType::JsonB,
         }
     }
@@ -227,6 +229,7 @@ fn cast_as_name(cast_as: &CastAs) -> &'static str {
         CastAs::Date => "date",
         CastAs::Number => "number",
         CastAs::String => "string",
+        CastAs::Text => "text",
         CastAs::Json => "json",
     }
 }
