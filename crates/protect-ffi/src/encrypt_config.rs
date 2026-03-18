@@ -1,6 +1,6 @@
 use super::Error;
 use cipherstash_client::schema::{
-    column::{Index, IndexType, TokenFilter, Tokenizer},
+    column::{ArrayIndexMode, Index, IndexType, TokenFilter, Tokenizer},
     ColumnConfig, ColumnType,
 };
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,8 @@ pub struct SteVecIndexOpts {
     prefix: String,
     #[serde(default)]
     term_filters: Vec<TokenFilter>,
+    #[serde(default)]
+    array_index_mode: ArrayIndexMode,
 }
 
 fn default_tokenizer() -> Tokenizer {
@@ -209,11 +211,13 @@ impl Column {
         if let Some(SteVecIndexOpts {
             prefix,
             term_filters,
+            array_index_mode,
         }) = self.indexes.ste_vec_index
         {
             config = config.add_index(Index::new(IndexType::SteVec {
                 prefix,
                 term_filters,
+                array_index_mode,
             }))
         }
 
@@ -511,6 +515,7 @@ mod tests {
             IndexType::SteVec {
                 prefix: "event-data".into(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             },
         );
     }

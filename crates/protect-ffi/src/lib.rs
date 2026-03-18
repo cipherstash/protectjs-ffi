@@ -2,12 +2,7 @@ mod encrypt_config;
 mod js_plaintext;
 
 use cipherstash_client::{
-    config::{
-        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
-        EnvSource, FileSource,
-    },
-    credentials::{ServiceCredentials, ServiceToken},
+    credentials::ServiceToken,
     encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
@@ -17,8 +12,11 @@ use cipherstash_client::{
         column::{Index, IndexType},
         ColumnConfig,
     },
-    zerokms::{self, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
-    IdentifiedBy, UnverifiedContext,
+    zerokms::{
+        self, FallbackKeyProvider, RecordDecryptError, SecretKey, WithContext, ZeroKMSBuilder,
+        ZeroKMSBuilderError, ZeroKMSWithClientKey,
+    },
+    AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -44,8 +42,8 @@ extern crate quickcheck_macros;
 
 #[derive(Clone)]
 struct Client {
-    cipher: Arc<ScopedZeroKMSNoRefresh>,
-    zerokms: Arc<ZeroKMSWithClientKey<ServiceCredentials>>,
+    cipher: Arc<ScopedZeroKMS>,
+    zerokms: Arc<ZeroKMSWithClientKey<AutoStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
@@ -213,8 +211,12 @@ impl std::fmt::Display for JsonPathHint {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Configuration error: {0}")]
+    Config(String),
     #[error(transparent)]
-    Config(#[from] ConfigError),
+    ZeroKMSBuilder(#[from] ZeroKMSBuilderError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     #[error(transparent)]
     ZeroKMS(#[from] zerokms::Error),
     #[error(transparent)]
@@ -260,7 +262,7 @@ pub enum Error {
     },
 }
 
-type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
+type ScopedZeroKMS = ScopedCipher<AutoStrategy>;
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -270,6 +272,21 @@ struct ClientOpts {
     client_id: Option<String>,
     client_key: Option<String>,
     keyset: Option<IdentifiedBy>,
+}
+
+impl ClientOpts {
+    /// Build an `Option<SecretKey>` from the `client_id` + `client_key` pair.
+    ///
+    /// Returns `None` if either field is missing (triggers `FallbackKeyProvider` to try the
+    /// profile store). Returns `Err` if the values are present but invalid.
+    fn secret_key(&self) -> Result<Option<SecretKey>, Error> {
+        match (self.client_id.as_ref(), self.client_key.as_ref()) {
+            (Some(id), Some(key)) => SecretKey::from_hex(id, key)
+                .map(Some)
+                .map_err(|e| Error::Config(e.to_string())),
+            _ => Ok(None),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -638,42 +655,28 @@ pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
-    let console_config = ConsoleConfig::builder().with_env().build()?;
-    let cts_config = CtsConfig::builder().with_env().build()?;
 
-    let zerokms_config_builder = {
-        let mut zerokms_config_builder = ZeroKMSConfig::builder()
-            .add_source(EnvSource::default())
-            // Both files are optional and ignored if the file doesn't exist
-            .add_source(FileSource::<CipherStashSecretConfigFile>::default().optional())
-            .add_source(FileSource::<CipherStashConfigFile>::default().optional())
-            .console_config(&console_config)
-            .cts_config(&cts_config);
+    // Build auth strategy: explicit values take precedence over env vars and profile store
+    let mut strategy_builder = AutoStrategy::builder();
+    if let Some(key) = client_opts.access_key.as_ref() {
+        strategy_builder = strategy_builder.with_access_key(key);
+    }
+    if let Some(crn) = client_opts.workspace_crn.as_ref() {
+        strategy_builder = strategy_builder.with_region(crn.region.clone());
+    }
+    let strategy = strategy_builder.detect()?;
 
-        if let Some(workspace_crn) = client_opts.workspace_crn {
-            zerokms_config_builder = zerokms_config_builder.workspace_crn(workspace_crn);
-        }
+    // Build ZeroKMS client: explicit client key falls back to profile store
+    let zerokms = ZeroKMSBuilder::new(strategy)
+        .with_key_provider(FallbackKeyProvider::new(
+            client_opts.secret_key()?,
+            stack_profile::ProfileStore::default(),
+        ))
+        .build()
+        .await?;
 
-        if let Some(access_key) = client_opts.access_key {
-            zerokms_config_builder = zerokms_config_builder.access_key(access_key);
-        }
-
-        if let Some(client_id) = client_opts.client_id {
-            zerokms_config_builder = zerokms_config_builder.try_with_client_id(&client_id)?;
-        }
-
-        if let Some(client_key) = client_opts.client_key {
-            zerokms_config_builder = zerokms_config_builder.try_with_client_key(&client_key)?;
-        }
-
-        zerokms_config_builder
-    };
-
-    let zerokms_config = zerokms_config_builder.build_with_client_key()?;
-
-    let zerokms = Arc::new(zerokms_config.create_client());
-
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), client_opts.keyset).await?;
+    let zerokms = Arc::new(zerokms);
+    let cipher = ScopedZeroKMS::init(zerokms.clone(), client_opts.keyset).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
@@ -1329,6 +1332,7 @@ mod tests {
             let config = make_column_config_with_indexes(vec![Index::new(IndexType::SteVec {
                 prefix: "test".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             })]);
             let result = find_index_for_type(&config, "test_column", "ste_vec");
             assert!(result.is_ok());
@@ -1446,6 +1450,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1471,6 +1476,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1493,6 +1499,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1515,6 +1522,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1540,6 +1548,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1559,6 +1568,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1584,6 +1594,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1634,6 +1645,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1671,6 +1683,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(

@@ -1,3 +1,8 @@
 [workspace]
 members = ["crates/protect-ffi"]
 resolver = "2"
+
+[patch."https://github.com/cipherstash/cipherstash-suite"]
+cipherstash-client = { path = "../cipherstash-suite/packages/cipherstash-client" }
+cts-common = { path = "../cipherstash-suite/packages/cts-common" }
+stack-profile = { path = "../cipherstash-suite/packages/stack-profile" }
