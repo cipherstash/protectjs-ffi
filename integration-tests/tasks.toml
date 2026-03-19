@@ -16,7 +16,7 @@ echo "done"
 ["eql:download"]
 description = "Download CipherStash encrypt SQL"
 dir = "{{ config_root }}/integration-tests"
-run = "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/download/eql-2.0.2/cipherstash-encrypt.sql"
+run = "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/download/eql-2.2.1/cipherstash-encrypt.sql"
 
 ["eql:install"]
 description = "Install CipherStash encrypt SQL into the database"
