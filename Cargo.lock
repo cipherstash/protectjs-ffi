@@ -536,6 +536,7 @@ dependencies = [
 [[package]]
 name = "cipherstash-client"
 version = "0.34.0"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -596,7 +597,8 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-config"
-version = "0.34.0"
+version = "0.34.0-alpha.1"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "bitflags",
  "serde",
@@ -605,7 +607,8 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-core"
-version = "0.34.0"
+version = "0.34.0-alpha.1"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "hmac",
  "lazy_static",
@@ -619,6 +622,7 @@ dependencies = [
 [[package]]
 name = "cllw-ore"
 version = "0.34.0"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "blake3",
  "hex",
@@ -789,7 +793,8 @@ dependencies = [
 
 [[package]]
 name = "cts-common"
-version = "0.34.0"
+version = "0.34.0-alpha.1"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "arrayvec",
  "base32",
@@ -2611,6 +2616,7 @@ dependencies = [
 [[package]]
 name = "recipher"
 version = "0.34.0"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "aes",
  "async-trait",
@@ -3275,6 +3281,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "stack-auth"
 version = "0.34.0"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "aquamarine",
  "cts-common",
@@ -3296,7 +3303,8 @@ dependencies = [
 
 [[package]]
 name = "stack-profile"
-version = "0.34.0"
+version = "0.34.0-alpha.1"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "dirs",
  "gethostname",
@@ -4849,6 +4857,7 @@ dependencies = [
 [[package]]
 name = "zerokms-protocol"
 version = "0.34.0"
+source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
 dependencies = [
  "base64",
  "cipherstash-config",
