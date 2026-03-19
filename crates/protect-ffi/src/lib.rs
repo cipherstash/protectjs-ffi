@@ -13,8 +13,8 @@ use cipherstash_client::{
         ColumnConfig,
     },
     zerokms::{
-        self, FallbackKeyProvider, RecordDecryptError, SecretKey, WithContext, ZeroKMSBuilder,
-        ZeroKMSBuilderError, ZeroKMSWithClientKey,
+        self, FallbackKeyProvider, KeyProvider, RecordDecryptError, SecretKey, WithContext,
+        ZeroKMSBuilder, ZeroKMSBuilderError, ZeroKMSWithClientKey,
     },
     AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
@@ -272,6 +272,22 @@ struct ClientOpts {
     client_id: Option<String>,
     client_key: Option<String>,
     keyset: Option<IdentifiedBy>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnsureKeysetOpts {
+    name: String,
+    workspace_crn: Option<Crn>,
+    access_key: Option<String>,
+    client_id: Option<String>,
+    client_key: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EnsureKeysetResult {
+    id: String,
+    name: String,
 }
 
 impl ClientOpts {
@@ -685,6 +701,58 @@ pub async fn new_client(
     };
 
     Ok(Boxed(client))
+}
+
+#[neon::export]
+pub async fn ensure_keyset(
+    Json(opts): Json<EnsureKeysetOpts>,
+) -> Result<Json<EnsureKeysetResult>, neon::types::extract::Error> {
+    let mut strategy_builder = AutoStrategy::builder();
+    if let Some(key) = opts.access_key.as_ref() {
+        strategy_builder = strategy_builder.with_access_key(key);
+    }
+    if let Some(crn) = opts.workspace_crn.as_ref() {
+        strategy_builder = strategy_builder.with_workspace_crn(crn.clone());
+    }
+    let strategy = strategy_builder.detect()?;
+
+    // Management-only client (no client key needed for list/create)
+    let zerokms = ZeroKMSBuilder::new(strategy).build()?;
+
+    let keysets = zerokms.list_keysets(false).await?;
+
+    let (keyset_id, name) = match keysets.iter().find(|ks| ks.name == opts.name) {
+        Some(ks) => (ks.id, ks.name.clone()),
+        None => {
+            let created = zerokms
+                .create_keyset(&opts.name, &format!("Auto-created keyset '{}'", opts.name))
+                .await?;
+            (created.id, created.name)
+        }
+    };
+
+    // Resolve the client ID so we can grant keyset access.
+    // Uses the same FallbackKeyProvider pattern as new_client: explicit opts → profile store.
+    let key_provider = FallbackKeyProvider::new(
+        match (opts.client_id.as_ref(), opts.client_key.as_ref()) {
+            (Some(id), Some(key)) => Some(
+                SecretKey::from_hex(id.clone(), key.clone())
+                    .map_err(|e| Error::Config(e.to_string()))?,
+            ),
+            _ => None,
+        },
+        stack_profile::ProfileStore::default(),
+    );
+
+    if let Ok(client_key) = key_provider.client_key().await {
+        // Grant the client access to the keyset (ignore errors if already granted)
+        let _ = zerokms.grant_keyset(client_key.key_id, keyset_id).await;
+    }
+
+    Ok(Json(EnsureKeysetResult {
+        id: keyset_id.to_string(),
+        name,
+    }))
 }
 
 #[neon::export]

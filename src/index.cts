@@ -34,6 +34,7 @@ declare module './load.cjs' {
     client: Client,
     opts: EncryptQueryBulkOptions,
   ): Promise<Encrypted[]>
+  function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
 export type ProtectErrorCode =
@@ -191,6 +192,10 @@ export function encryptQueryBulk(
   opts: EncryptQueryBulkOptions,
 ): Promise<Encrypted[]> {
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
+}
+
+export function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult> {
+  return wrapAsync(() => native.ensureKeyset(opts))
 }
 
 export type EncryptPayload = {
@@ -353,6 +358,19 @@ export type ClientOpts = {
 }
 
 export type KeysetIdentifier = { Uuid: string } | { Name: string }
+
+export type EnsureKeysetOpts = {
+  name: string
+  workspaceCrn?: string
+  accessKey?: string
+  clientId?: string
+  clientKey?: string
+}
+
+export type EnsureKeysetResult = {
+  id: string
+  name: string
+}
 
 export type JsPlaintext =
   | string

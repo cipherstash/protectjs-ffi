@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test } from 'vitest'
 
 import {
   decrypt,
@@ -7,6 +7,7 @@ import {
   type Identifier,
   newClient,
   isEncrypted,
+  ensureKeyset,
 } from '@cipherstash/protect-ffi'
 
 import { encryptConfig } from './common.js'
@@ -18,6 +19,13 @@ const stringColumn: UserColumn = {
 }
 
 describe('keyset tests', () => {
+  let testKeysetId: string
+
+  beforeAll(async () => {
+    const keyset = await ensureKeyset({ name: 'Test' })
+    testKeysetId = keyset.id
+  })
+
   test('can round-trip encrypt and decrypt a string using keyset name', async () => {
     const client = await newClient({
       encryptConfig,
@@ -44,7 +52,7 @@ describe('keyset tests', () => {
     const client = await newClient({
       encryptConfig,
       clientOpts: {
-        keyset: { Uuid: '4152449b-505a-4186-93b6-d3d87eba7a47' },
+        keyset: { Uuid: testKeysetId },
       },
     })
 
