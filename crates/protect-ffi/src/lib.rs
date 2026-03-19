@@ -281,7 +281,7 @@ impl ClientOpts {
     /// profile store). Returns `Err` if the values are present but invalid.
     fn secret_key(&self) -> Result<Option<SecretKey>, Error> {
         match (self.client_id.as_ref(), self.client_key.as_ref()) {
-            (Some(id), Some(key)) => SecretKey::from_hex(id, key)
+            (Some(id), Some(key)) => SecretKey::from_hex(id.clone(), key.clone())
                 .map(Some)
                 .map_err(|e| Error::Config(e.to_string())),
             _ => Ok(None),
@@ -662,7 +662,7 @@ pub async fn new_client(
         strategy_builder = strategy_builder.with_access_key(key);
     }
     if let Some(crn) = client_opts.workspace_crn.as_ref() {
-        strategy_builder = strategy_builder.with_region(crn.region.clone());
+        strategy_builder = strategy_builder.with_workspace_crn(crn.clone());
     }
     let strategy = strategy_builder.detect()?;
 
