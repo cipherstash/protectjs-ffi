@@ -264,33 +264,30 @@ pub enum Error {
 
 type ScopedZeroKMS = ScopedCipher<AutoStrategy>;
 
+/// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ClientOpts {
-    workspace_crn: Option<Crn>,
-    access_key: Option<String>,
-    client_id: Option<String>,
-    client_key: Option<String>,
-    keyset: Option<IdentifiedBy>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnsureKeysetOpts {
-    name: String,
+struct CredentialOpts {
     workspace_crn: Option<Crn>,
     access_key: Option<String>,
     client_id: Option<String>,
     client_key: Option<String>,
 }
 
-#[derive(Serialize)]
-struct EnsureKeysetResult {
-    id: String,
-    name: String,
-}
+impl CredentialOpts {
+    /// Build an [`AutoStrategy`] from optional workspace CRN and access key,
+    /// falling back to env vars and profile store for unset fields.
+    fn build_strategy(&self) -> Result<AutoStrategy, Error> {
+        let mut builder = AutoStrategy::builder();
+        if let Some(key) = self.access_key.as_ref() {
+            builder = builder.with_access_key(key);
+        }
+        if let Some(crn) = self.workspace_crn.as_ref() {
+            builder = builder.with_workspace_crn(crn.clone());
+        }
+        Ok(builder.detect()?)
+    }
 
-impl ClientOpts {
     /// Build an `Option<SecretKey>` from the `client_id` + `client_key` pair.
     ///
     /// Returns `None` if either field is missing (triggers `FallbackKeyProvider` to try the
@@ -303,6 +300,39 @@ impl ClientOpts {
             _ => Ok(None),
         }
     }
+
+    /// Build a [`FallbackKeyProvider`] that tries explicit client credentials first,
+    /// then falls back to the profile store.
+    fn build_key_provider(
+        &self,
+    ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
+        Ok(FallbackKeyProvider::new(
+            self.secret_key()?,
+            stack_profile::ProfileStore::default(),
+        ))
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ClientOpts {
+    #[serde(flatten)]
+    creds: CredentialOpts,
+    keyset: Option<IdentifiedBy>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnsureKeysetOpts {
+    name: String,
+    #[serde(flatten)]
+    creds: CredentialOpts,
+}
+
+#[derive(Serialize)]
+struct EnsureKeysetResult {
+    id: String,
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -672,22 +702,9 @@ pub async fn new_client(
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
 
-    // Build auth strategy: explicit values take precedence over env vars and profile store
-    let mut strategy_builder = AutoStrategy::builder();
-    if let Some(key) = client_opts.access_key.as_ref() {
-        strategy_builder = strategy_builder.with_access_key(key);
-    }
-    if let Some(crn) = client_opts.workspace_crn.as_ref() {
-        strategy_builder = strategy_builder.with_workspace_crn(crn.clone());
-    }
-    let strategy = strategy_builder.detect()?;
-
-    // Build ZeroKMS client: explicit client key falls back to profile store
+    let strategy = client_opts.creds.build_strategy()?;
     let zerokms = ZeroKMSBuilder::new(strategy)
-        .with_key_provider(FallbackKeyProvider::new(
-            client_opts.secret_key()?,
-            stack_profile::ProfileStore::default(),
-        ))
+        .with_key_provider(client_opts.creds.build_key_provider()?)
         .build()
         .await?;
 
@@ -707,14 +724,7 @@ pub async fn new_client(
 pub async fn ensure_keyset(
     Json(opts): Json<EnsureKeysetOpts>,
 ) -> Result<Json<EnsureKeysetResult>, neon::types::extract::Error> {
-    let mut strategy_builder = AutoStrategy::builder();
-    if let Some(key) = opts.access_key.as_ref() {
-        strategy_builder = strategy_builder.with_access_key(key);
-    }
-    if let Some(crn) = opts.workspace_crn.as_ref() {
-        strategy_builder = strategy_builder.with_workspace_crn(crn.clone());
-    }
-    let strategy = strategy_builder.detect()?;
+    let strategy = opts.creds.build_strategy()?;
 
     // Management-only client (no client key needed for list/create)
     let zerokms = ZeroKMSBuilder::new(strategy).build()?;
@@ -731,21 +741,8 @@ pub async fn ensure_keyset(
         }
     };
 
-    // Resolve the client ID so we can grant keyset access.
-    // Uses the same FallbackKeyProvider pattern as new_client: explicit opts → profile store.
-    let key_provider = FallbackKeyProvider::new(
-        match (opts.client_id.as_ref(), opts.client_key.as_ref()) {
-            (Some(id), Some(key)) => Some(
-                SecretKey::from_hex(id.clone(), key.clone())
-                    .map_err(|e| Error::Config(e.to_string()))?,
-            ),
-            _ => None,
-        },
-        stack_profile::ProfileStore::default(),
-    );
-
-    if let Ok(client_key) = key_provider.client_key().await {
-        // Grant the client access to the keyset (ignore errors if already granted)
+    // Grant the client access to the keyset (ignore errors if already granted).
+    if let Ok(client_key) = opts.creds.build_key_provider()?.client_key().await {
         let _ = zerokms.grant_keyset(client_key.key_id, keyset_id).await;
     }
 

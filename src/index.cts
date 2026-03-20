@@ -349,22 +349,21 @@ export type NewClientOptions = {
   clientOpts?: ClientOpts
 }
 
-export type ClientOpts = {
+export type CredentialOpts = {
   workspaceCrn?: string
   accessKey?: string
   clientId?: string
   clientKey?: string
+}
+
+export type ClientOpts = CredentialOpts & {
   keyset?: KeysetIdentifier
 }
 
 export type KeysetIdentifier = { Uuid: string } | { Name: string }
 
-export type EnsureKeysetOpts = {
+export type EnsureKeysetOpts = CredentialOpts & {
   name: string
-  workspaceCrn?: string
-  accessKey?: string
-  clientId?: string
-  clientKey?: string
 }
 
 export type EnsureKeysetResult = {
