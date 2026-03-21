@@ -1,6 +1,6 @@
 use super::Error;
 use cipherstash_client::schema::{
-    column::{Index, IndexType, TokenFilter, Tokenizer},
+    column::{ArrayIndexMode, Index, IndexType, TokenFilter, Tokenizer},
     ColumnConfig, ColumnType,
 };
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,8 @@ pub struct SteVecIndexOpts {
     prefix: String,
     #[serde(default)]
     term_filters: Vec<TokenFilter>,
+    #[serde(default)]
+    array_index_mode: ArrayIndexMode,
 }
 
 fn default_tokenizer() -> Tokenizer {
@@ -209,11 +211,13 @@ impl Column {
         if let Some(SteVecIndexOpts {
             prefix,
             term_filters,
+            array_index_mode,
         }) = self.indexes.ste_vec_index
         {
             config = config.add_index(Index::new(IndexType::SteVec {
                 prefix,
                 term_filters,
+                array_index_mode,
             }))
         }
 
@@ -511,6 +515,7 @@ mod tests {
             IndexType::SteVec {
                 prefix: "event-data".into(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             },
         );
     }
@@ -540,11 +545,27 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         // Should mention the table and column
-        assert!(err_msg.contains("users"), "Error should mention table name: {}", err_msg);
-        assert!(err_msg.contains("event_data"), "Error should mention column name: {}", err_msg);
+        assert!(
+            err_msg.contains("users"),
+            "Error should mention table name: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("event_data"),
+            "Error should mention column name: {}",
+            err_msg
+        );
         // Should mention ste_vec and json
-        assert!(err_msg.contains("ste_vec"), "Error should mention ste_vec index: {}", err_msg);
-        assert!(err_msg.contains("json"), "Error should mention json cast_as requirement: {}", err_msg);
+        assert!(
+            err_msg.contains("ste_vec"),
+            "Error should mention ste_vec index: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("json"),
+            "Error should mention json cast_as requirement: {}",
+            err_msg
+        );
     }
 
     #[test]

@@ -118,8 +118,8 @@ describe('encryptBulk output structure for nested JSON', () => {
     // Numeric values should have ORE fixed
     expect(withOreFixed.length).toBeGreaterThan(0)
 
-    // Array elements should have array flag
-    expect(withArrayFlag.length).toBeGreaterThan(0)
+    // With default ArrayIndexMode (NONE), array elements should not have array flag
+    expect(withArrayFlag.length).toBe(0)
   })
 
   test('encryptBulk handles deeply nested JSON', async () => {

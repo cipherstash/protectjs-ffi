@@ -16,7 +16,7 @@ echo "done"
 ["eql:download"]
 description = "Download CipherStash encrypt SQL"
 dir = "{{ config_root }}/integration-tests"
-run = "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/download/eql-2.0.2/cipherstash-encrypt.sql"
+run = "curl -sLo sql/cipherstash-encrypt.sql https://github.com/cipherstash/encrypt-query-language/releases/download/eql-2.2.1/cipherstash-encrypt.sql"
 
 ["eql:install"]
 description = "Install CipherStash encrypt SQL into the database"
@@ -36,6 +36,7 @@ run = [
 ["test:integration"]
 description = "Run the integration tests"
 dir = "{{ config_root }}/integration-tests"
+depends = ["start-db"]
 run = [
     "mise run build:debug",
     "npx vitest --exclude tests/lock-context.test.ts",
@@ -44,4 +45,5 @@ run = [
 ["test:integration:all"]
 description = "Run all integration tests (includes lock context tests)"
 dir = "{{ config_root }}/integration-tests"
+depends = ["start-db"]
 run = ["mise run build:debug", "npx vitest"]

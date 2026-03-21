@@ -34,6 +34,7 @@ declare module './load.cjs' {
     client: Client,
     opts: EncryptQueryBulkOptions,
   ): Promise<Encrypted[]>
+  function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
 export type ProtectErrorCode =
@@ -120,6 +121,27 @@ async function wrapAsync<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Fill in credential fields from env vars when not explicitly set. */
+function withEnvCredentials<T extends CredentialOpts>(opts: T): T
+function withEnvCredentials(opts: CredentialOpts | undefined): CredentialOpts
+function withEnvCredentials<T extends CredentialOpts>(
+  opts: T | undefined,
+): T | CredentialOpts {
+  // CS_CLIENT_ID and CS_CLIENT_KEY are a keypair — only use them when both are set
+  const envClientId = process.env.CS_CLIENT_ID
+  const envClientKey = process.env.CS_CLIENT_KEY
+  const hasEnvClientKey =
+    envClientId !== undefined && envClientKey !== undefined
+
+  const creds: CredentialOpts = {
+    clientId: opts?.clientId ?? (hasEnvClientKey ? envClientId : undefined),
+    clientKey: opts?.clientKey ?? (hasEnvClientKey ? envClientKey : undefined),
+    workspaceCrn: opts?.workspaceCrn ?? process.env.CS_WORKSPACE_CRN,
+    accessKey: opts?.accessKey ?? process.env.CS_ACCESS_KEY,
+  }
+  return opts ? { ...opts, ...creds } : creds
+}
+
 function wrapSync<T>(fn: () => T): T {
   try {
     return fn()
@@ -129,7 +151,12 @@ function wrapSync<T>(fn: () => T): T {
 }
 
 export function newClient(opts: NewClientOptions): Promise<Client> {
-  return wrapAsync(() => native.newClient(opts))
+  return wrapAsync(() =>
+    native.newClient({
+      ...opts,
+      clientOpts: withEnvCredentials(opts.clientOpts),
+    }),
+  )
 }
 
 export function encrypt(
@@ -191,6 +218,12 @@ export function encryptQueryBulk(
   opts: EncryptQueryBulkOptions,
 ): Promise<Encrypted[]> {
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
+}
+
+export function ensureKeyset(
+  opts: EnsureKeysetOpts,
+): Promise<EnsureKeysetResult> {
+  return wrapAsync(() => native.ensureKeyset(withEnvCredentials(opts)))
 }
 
 export type EncryptPayload = {
@@ -344,15 +377,27 @@ export type NewClientOptions = {
   clientOpts?: ClientOpts
 }
 
-export type ClientOpts = {
+export type CredentialOpts = {
   workspaceCrn?: string
   accessKey?: string
   clientId?: string
   clientKey?: string
+}
+
+export type ClientOpts = CredentialOpts & {
   keyset?: KeysetIdentifier
 }
 
 export type KeysetIdentifier = { Uuid: string } | { Name: string }
+
+export type EnsureKeysetOpts = CredentialOpts & {
+  name: string
+}
+
+export type EnsureKeysetResult = {
+  id: string
+  name: string
+}
 
 export type JsPlaintext =
   | string
