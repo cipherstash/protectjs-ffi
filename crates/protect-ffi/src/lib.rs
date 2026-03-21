@@ -306,8 +306,11 @@ impl CredentialOpts {
         }
     }
 
-    /// Build a [`FallbackKeyProvider`] that tries explicit client credentials first,
-    /// then falls back to the profile store.
+    /// Build a key provider that resolves the client key from explicit fields,
+    /// falling back to the profile store (`~/.cipherstash/secretkey.json`).
+    ///
+    /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
+    /// and passed through as explicit fields to support Bun.
     fn build_key_provider(
         &self,
     ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
