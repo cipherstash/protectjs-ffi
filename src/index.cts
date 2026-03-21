@@ -130,7 +130,8 @@ function withEnvCredentials<T extends CredentialOpts>(
   // CS_CLIENT_ID and CS_CLIENT_KEY are a keypair — only use them when both are set
   const envClientId = process.env.CS_CLIENT_ID
   const envClientKey = process.env.CS_CLIENT_KEY
-  const hasEnvClientKey = envClientId !== undefined && envClientKey !== undefined
+  const hasEnvClientKey =
+    envClientId !== undefined && envClientKey !== undefined
 
   const creds: CredentialOpts = {
     clientId: opts?.clientId ?? (hasEnvClientKey ? envClientId : undefined),
