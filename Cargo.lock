@@ -35,7 +35,7 @@ checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
 dependencies = [
  "cfg-if",
  "cipher 0.4.4",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "zeroize",
 ]
 
@@ -314,7 +314,7 @@ dependencies = [
  "cc",
  "cfg-if",
  "constant_time_eq",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "zeroize",
 ]
 
@@ -501,6 +501,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chacha20"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "rand_core 0.10.0",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -535,8 +546,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-client"
-version = "0.34.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.34.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e81684e600f1a1d6969d749e8208df0b9d755406d16a77471b03cd885ea22f6e"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -597,8 +609,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-config"
-version = "0.34.0-alpha.1"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.34.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "329af1d375eb9c864da969b8b22a3112c065c2c3dca20e91736b09f88525288d"
 dependencies = [
  "bitflags",
  "serde",
@@ -607,8 +620,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-core"
-version = "0.34.0-alpha.1"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.34.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f0720cc522f469637e96260692dc7e8a6aa2e4701ad3ab6cf5030b549395a28"
 dependencies = [
  "hmac",
  "lazy_static",
@@ -621,8 +635,9 @@ dependencies = [
 
 [[package]]
 name = "cllw-ore"
-version = "0.34.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c676b8e0a3130e6f8b4398d9aa5b287c3ce7074ac89f1ccf1570ebeb22281629"
 dependencies = [
  "blake3",
  "hex",
@@ -687,7 +702,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "531185e432bb31db1ecda541e9e7ab21468d4d844ad7505e0546a49b4945d49b"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "proptest",
  "serde_core",
 ]
@@ -728,6 +743,15 @@ name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
@@ -793,8 +817,9 @@ dependencies = [
 
 [[package]]
 name = "cts-common"
-version = "0.34.0-alpha.1"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.34.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "771e283326b6c3d539eebf2b58e294494a9128956b29b433e5a7d002299767f7"
 dependencies = [
  "arrayvec",
  "base32",
@@ -2241,7 +2266,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "opaque-debug",
  "universal-hash",
 ]
@@ -2401,7 +2426,7 @@ dependencies = [
  "stack-profile",
  "thiserror 2.0.18",
  "tokio",
- "vitaminc-protected 0.1.0-pre4.1",
+ "vitaminc",
 ]
 
 [[package]]
@@ -2556,6 +2581,7 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc266eb313df6c5c09c1c7b1fbe2510961e5bcd3add930c1e31f7ed9da0feff8"
 dependencies = [
+ "chacha20",
  "getrandom 0.4.2",
  "rand_core 0.10.0",
 ]
@@ -2615,8 +2641,9 @@ dependencies = [
 
 [[package]]
 name = "recipher"
-version = "0.34.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "061598013445a8bb847d0c95ee33b5e95c1d198d5242b6a8b9f3078aa7437e79"
 dependencies = [
  "aes",
  "async-trait",
@@ -3196,7 +3223,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest",
 ]
 
@@ -3280,8 +3307,9 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stack-auth"
-version = "0.34.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.34.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f54ab2a253914789cb8a6c963d96ab52fcde0b7a9d93ddce48f5b011655b5d94"
 dependencies = [
  "aquamarine",
  "cts-common",
@@ -3303,8 +3331,9 @@ dependencies = [
 
 [[package]]
 name = "stack-profile"
-version = "0.34.0-alpha.1"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.34.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1af2420e3f0e311dc11c75ff53542bd67287e571b13ca9e02c61ce0c7c6afb"
 dependencies = [
  "dirs",
  "gethostname",
@@ -3908,51 +3937,39 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vitaminc"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
+version = "0.1.0-pre4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afa8fafc0ad0f5167cf566ae9462244eb9519589a5f4f572dd29e25c17044729"
 dependencies = [
  "vitaminc-encrypt",
- "vitaminc-protected 0.1.0-pre4",
+ "vitaminc-protected",
  "vitaminc-random",
  "vitaminc-traits",
 ]
 
 [[package]]
 name = "vitaminc-aead"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
+version = "0.1.0-pre4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4b637c298276d38be6805b2e8d02e65b295c95a930ae64745c83927748f3f4"
 dependencies = [
  "bytes",
  "serde",
- "vitaminc-protected 0.1.0-pre4",
+ "vitaminc-protected",
  "vitaminc-random",
  "zeroize",
 ]
 
 [[package]]
 name = "vitaminc-encrypt"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
+version = "0.1.0-pre4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3043eaa8e51989d0b46d3bd9ec6e8011fa056f073be6f84f36eb744b56bf2072"
 dependencies = [
  "aws-lc-rs",
  "vitaminc-aead",
- "vitaminc-protected 0.1.0-pre4",
+ "vitaminc-protected",
  "vitaminc-random",
- "zeroize",
-]
-
-[[package]]
-name = "vitaminc-protected"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
-dependencies = [
- "bitvec",
- "digest",
- "opaque-debug",
- "serde",
- "serde_bytes",
- "subtle",
- "vitaminc-protected-derive 0.1.0-pre4",
  "zeroize",
 ]
 
@@ -3967,25 +3984,15 @@ dependencies = [
  "serde",
  "serde_bytes",
  "subtle",
- "vitaminc-protected-derive 0.1.0-pre4.1",
+ "vitaminc-protected-derive",
  "zeroize",
 ]
 
 [[package]]
 name = "vitaminc-protected-derive"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "vitaminc-protected-derive"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5caf9436c51e876c6cab6e3cd41f0834f7749f739f41a0d54634d86b53ac2c8"
+checksum = "e74520596b66eec546ef18d5376f6f18cdaf874caca9fa39e03eb12f9abb76fa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3994,21 +4001,22 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-random"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
+version = "0.1.0-pre4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53be0590f352c7cb8b19a1b9a7f2574a817ffe359f31890798db1a85093e97c1"
 dependencies = [
- "rand 0.9.2",
- "rand_chacha 0.9.0",
+ "rand 0.10.0",
  "thiserror 2.0.18",
- "vitaminc-protected 0.1.0-pre4",
+ "vitaminc-protected",
  "vitaminc-random-derives",
  "zeroize",
 ]
 
 [[package]]
 name = "vitaminc-random-derives"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
+version = "0.1.0-pre4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49d33ac4682235551d25c874525c20e03d4c863b39f556391f52f7a2083bfbdf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4017,15 +4025,16 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-traits"
-version = "0.1.0-pre4"
-source = "git+https://github.com/cipherstash/vitaminc?rev=4327afd#4327afd37b2991508ed0e2e160aebe84538d234c"
+version = "0.1.0-pre4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c76728e304ad79cb5b1aeacb28946cb79d804984713290eee27c6a6d2742da8e"
 dependencies = [
  "anyhow",
  "bytes",
  "rmp-serde",
  "serde",
  "thiserror 2.0.18",
- "vitaminc-protected 0.1.0-pre4",
+ "vitaminc-protected",
  "vitaminc-random",
  "zeroize",
 ]
@@ -4856,8 +4865,9 @@ dependencies = [
 
 [[package]]
 name = "zerokms-protocol"
-version = "0.34.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=main#931d7cc5fdd1d14995479c91f31f336d364811f9"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5590ba35fbdff69a30e88071aad36673bafdb36a1ed7693fde4295faca5bbd8a"
 dependencies = [
  "base64",
  "cipherstash-config",

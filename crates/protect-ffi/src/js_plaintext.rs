@@ -2,7 +2,7 @@ use cipherstash_client::encryption::{Plaintext, TryFromPlaintext, TypeParseError
 use cipherstash_client::schema::ColumnType;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use vitaminc_protected::OpaqueDebug;
+use vitaminc::protected::OpaqueDebug;
 
 #[derive(Deserialize, Serialize, OpaqueDebug, PartialEq)]
 #[serde(untagged)]
