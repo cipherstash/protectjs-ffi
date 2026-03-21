@@ -194,7 +194,9 @@ export function encryptQueryBulk(
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
 }
 
-export function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult> {
+export function ensureKeyset(
+  opts: EnsureKeysetOpts,
+): Promise<EnsureKeysetResult> {
   return wrapAsync(() => native.ensureKeyset(opts))
 }
 
