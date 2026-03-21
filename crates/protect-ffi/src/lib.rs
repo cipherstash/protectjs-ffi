@@ -138,7 +138,10 @@ pub struct Truncated<'a> {
 
 impl<'a> Truncated<'a> {
     pub fn new(value: impl Into<std::borrow::Cow<'a, str>>, max_len: usize) -> Self {
-        Self { value: value.into(), max_len }
+        Self {
+            value: value.into(),
+            max_len,
+        }
     }
 
     pub fn path(value: impl Into<std::borrow::Cow<'a, str>>) -> Self {
@@ -241,7 +244,9 @@ pub enum Error {
         index_type: String,
         hint: String,
     },
-    #[error("Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}")]
+    #[error(
+        "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
+    )]
     InvalidQueryInput {
         query_op: QueryOpKind,
         received: ReceivedKind,
@@ -662,7 +667,10 @@ fn to_query_plaintext(
                         // String → selector (path queries like "$.user.email")
                         validate_json_path(path)?;
                         let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
-                        Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))
+                        Ok((
+                            plaintext,
+                            InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
+                        ))
                     }
                     JsPlaintext::JsonB(_) => {
                         // Object/Array → Store mode for containment queries
@@ -670,22 +678,18 @@ fn to_query_plaintext(
                         let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
                         Ok((plaintext, InferredQueryMode::StoreMode))
                     }
-                    JsPlaintext::Number(n) => {
-                        Err(Error::InvalidQueryInput {
-                            query_op: QueryOpKind::SteVecDefault,
-                            received: ReceivedKind::Number(*n),
-                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
-                            hint: QueryInputHint::UsePathOrObject,
-                        })
-                    }
-                    JsPlaintext::Boolean(b) => {
-                        Err(Error::InvalidQueryInput {
-                            query_op: QueryOpKind::SteVecDefault,
-                            received: ReceivedKind::Boolean(*b),
-                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
-                            hint: QueryInputHint::UsePathOrObject,
-                        })
-                    }
+                    JsPlaintext::Number(n) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::Number(*n),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::UsePathOrObject,
+                    }),
+                    JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::Boolean(*b),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::UsePathOrObject,
+                    }),
                 }
             } else {
                 // Non-SteVec indexes: use column's storage type (original behavior)

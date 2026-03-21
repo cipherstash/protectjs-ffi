@@ -545,11 +545,27 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         // Should mention the table and column
-        assert!(err_msg.contains("users"), "Error should mention table name: {}", err_msg);
-        assert!(err_msg.contains("event_data"), "Error should mention column name: {}", err_msg);
+        assert!(
+            err_msg.contains("users"),
+            "Error should mention table name: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("event_data"),
+            "Error should mention column name: {}",
+            err_msg
+        );
         // Should mention ste_vec and json
-        assert!(err_msg.contains("ste_vec"), "Error should mention ste_vec index: {}", err_msg);
-        assert!(err_msg.contains("json"), "Error should mention json cast_as requirement: {}", err_msg);
+        assert!(
+            err_msg.contains("ste_vec"),
+            "Error should mention ste_vec index: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("json"),
+            "Error should mention json cast_as requirement: {}",
+            err_msg
+        );
     }
 
     #[test]
