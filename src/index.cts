@@ -366,9 +366,15 @@ export type MatchIndexOpts = {
   include_original?: boolean
 }
 
+export type ArrayIndexMode =
+  | 'all'
+  | 'none'
+  | { item?: boolean; wildcard?: boolean; position?: boolean }
+
 export type SteVecIndexOpts = {
   prefix: string
   term_filters?: TokenFilter[]
+  array_index_mode?: ArrayIndexMode
 }
 
 export type Tokenizer =
