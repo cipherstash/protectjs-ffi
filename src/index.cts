@@ -220,6 +220,11 @@ export function encryptQueryBulk(
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
 }
 
+/**
+ * Test-only helper: ensures a keyset with the given name exists, creating it if necessary,
+ * and grants the current client access. Not safe for concurrent use — intended for
+ * sequential test setup only.
+ */
 export function ensureKeyset(
   opts: EnsureKeysetOpts,
 ): Promise<EnsureKeysetResult> {

@@ -727,6 +727,15 @@ pub async fn new_client(
     Ok(Boxed(client))
 }
 
+/// Test-only helper: ensures a keyset with the given name exists, creating it if necessary,
+/// and grants the current client access.
+///
+/// This function is designed for **test setup**, not production use. It performs a simple
+/// list-then-create which is not safe against concurrent calls (TOCTOU), but that's acceptable
+/// because test setup runs sequentially before any test execution.
+///
+/// The grant step is best-effort: "already granted" errors are expected and ignored,
+/// but other grant failures are logged as warnings since they may indicate misconfiguration.
 #[neon::export]
 pub async fn ensure_keyset(
     Json(opts): Json<EnsureKeysetOpts>,
@@ -748,9 +757,17 @@ pub async fn ensure_keyset(
         }
     };
 
-    // Grant the client access to the keyset (ignore errors if already granted).
-    if let Ok(client_key) = opts.creds.build_key_provider()?.client_key().await {
-        let _ = zerokms.grant_keyset(client_key.key_id, keyset_id).await;
+    // Grant the client access to the keyset.
+    // "Already granted" errors are expected and ignored; other failures are logged.
+    match opts.creds.build_key_provider()?.client_key().await {
+        Ok(client_key) => {
+            if let Err(e) = zerokms.grant_keyset(client_key.key_id, keyset_id).await {
+                eprintln!("Warning: grant_keyset failed (may be already granted): {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: could not resolve client key for grant: {e}");
+        }
     }
 
     Ok(Json(EnsureKeysetResult {
