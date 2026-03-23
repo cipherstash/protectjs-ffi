@@ -1,6 +1,12 @@
 // This module is the CJS entry point for the library.
 
+import { type CredentialOpts, withEnvCredentials } from './credentials.js'
 import * as native from './load.cjs'
+export {
+  withEnvCredentials,
+  type EnvReader,
+  type CredentialOpts,
+} from './credentials.js'
 
 declare const sym: unique symbol
 
@@ -119,27 +125,6 @@ async function wrapAsync<T>(fn: () => Promise<T>): Promise<T> {
   } catch (err) {
     throw normalizeError(err)
   }
-}
-
-/** Fill in credential fields from env vars when not explicitly set. */
-function withEnvCredentials<T extends CredentialOpts>(opts: T): T
-function withEnvCredentials(opts: CredentialOpts | undefined): CredentialOpts
-function withEnvCredentials<T extends CredentialOpts>(
-  opts: T | undefined,
-): T | CredentialOpts {
-  // CS_CLIENT_ID and CS_CLIENT_KEY are a keypair — only use them when both are set
-  const envClientId = process.env.CS_CLIENT_ID
-  const envClientKey = process.env.CS_CLIENT_KEY
-  const hasEnvClientKey =
-    envClientId !== undefined && envClientKey !== undefined
-
-  const creds: CredentialOpts = {
-    clientId: opts?.clientId ?? (hasEnvClientKey ? envClientId : undefined),
-    clientKey: opts?.clientKey ?? (hasEnvClientKey ? envClientKey : undefined),
-    workspaceCrn: opts?.workspaceCrn ?? process.env.CS_WORKSPACE_CRN,
-    accessKey: opts?.accessKey ?? process.env.CS_ACCESS_KEY,
-  }
-  return opts ? { ...opts, ...creds } : creds
 }
 
 function wrapSync<T>(fn: () => T): T {
@@ -386,13 +371,6 @@ export type TokenFilter = { kind: 'downcase' }
 export type NewClientOptions = {
   encryptConfig: EncryptConfig
   clientOpts?: ClientOpts
-}
-
-export type CredentialOpts = {
-  workspaceCrn?: string
-  accessKey?: string
-  clientId?: string
-  clientKey?: string
 }
 
 export type ClientOpts = CredentialOpts & {
