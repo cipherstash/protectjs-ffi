@@ -2,12 +2,7 @@ mod encrypt_config;
 mod js_plaintext;
 
 use cipherstash_client::{
-    config::{
-        console_config::ConsoleConfig, cts_config::CtsConfig, errors::ConfigError,
-        zero_kms_config::ZeroKMSConfig, CipherStashConfigFile, CipherStashSecretConfigFile,
-        EnvSource, FileSource,
-    },
-    credentials::{ServiceCredentials, ServiceToken},
+    credentials::ServiceToken,
     encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
@@ -17,8 +12,11 @@ use cipherstash_client::{
         column::{Index, IndexType},
         ColumnConfig,
     },
-    zerokms::{self, RecordDecryptError, WithContext, ZeroKMSWithClientKey},
-    IdentifiedBy, UnverifiedContext,
+    zerokms::{
+        self, FallbackKeyProvider, KeyProvider, RecordDecryptError, SecretKey, WithContext,
+        ZeroKMSBuilder, ZeroKMSBuilderError, ZeroKMSWithClientKey,
+    },
+    AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
 use encrypt_config::{EncryptConfig, Identifier};
@@ -44,8 +42,8 @@ extern crate quickcheck_macros;
 
 #[derive(Clone)]
 struct Client {
-    cipher: Arc<ScopedZeroKMSNoRefresh>,
-    zerokms: Arc<ZeroKMSWithClientKey<ServiceCredentials>>,
+    cipher: Arc<ScopedZeroKMS>,
+    zerokms: Arc<ZeroKMSWithClientKey<AutoStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
@@ -140,7 +138,10 @@ pub struct Truncated<'a> {
 
 impl<'a> Truncated<'a> {
     pub fn new(value: impl Into<std::borrow::Cow<'a, str>>, max_len: usize) -> Self {
-        Self { value: value.into(), max_len }
+        Self {
+            value: value.into(),
+            max_len,
+        }
     }
 
     pub fn path(value: impl Into<std::borrow::Cow<'a, str>>) -> Self {
@@ -213,8 +214,12 @@ impl std::fmt::Display for JsonPathHint {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Configuration error: {0}")]
+    Config(String),
     #[error(transparent)]
-    Config(#[from] ConfigError),
+    ZeroKMSBuilder(#[from] ZeroKMSBuilderError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     #[error(transparent)]
     ZeroKMS(#[from] zerokms::Error),
     #[error(transparent)]
@@ -239,7 +244,9 @@ pub enum Error {
         index_type: String,
         hint: String,
     },
-    #[error("Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}")]
+    #[error(
+        "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
+    )]
     InvalidQueryInput {
         query_op: QueryOpKind,
         received: ReceivedKind,
@@ -260,16 +267,80 @@ pub enum Error {
     },
 }
 
-type ScopedZeroKMSNoRefresh = ScopedCipher<ServiceCredentials>;
+type ScopedZeroKMS = ScopedCipher<AutoStrategy>;
 
+/// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ClientOpts {
+struct CredentialOpts {
     workspace_crn: Option<Crn>,
     access_key: Option<String>,
     client_id: Option<String>,
     client_key: Option<String>,
+}
+
+impl CredentialOpts {
+    /// Build an [`AutoStrategy`] from optional workspace CRN and access key,
+    /// falling back to env vars and profile store for unset fields.
+    fn build_strategy(&self) -> Result<AutoStrategy, Error> {
+        let mut builder = AutoStrategy::builder();
+        if let Some(key) = self.access_key.as_ref() {
+            builder = builder.with_access_key(key);
+        }
+        if let Some(crn) = self.workspace_crn.as_ref() {
+            builder = builder.with_workspace_crn(crn.clone());
+        }
+        Ok(builder.detect()?)
+    }
+
+    /// Build an `Option<SecretKey>` from the `client_id` + `client_key` pair.
+    ///
+    /// Returns `None` if either field is missing (triggers `FallbackKeyProvider` to try the
+    /// profile store). Returns `Err` if the values are present but invalid.
+    fn secret_key(&self) -> Result<Option<SecretKey>, Error> {
+        match (self.client_id.as_ref(), self.client_key.as_ref()) {
+            (Some(id), Some(key)) => SecretKey::from_hex(id.clone(), key.clone())
+                .map(Some)
+                .map_err(|e| Error::Config(e.to_string())),
+            _ => Ok(None),
+        }
+    }
+
+    /// Build a key provider that resolves the client key from explicit fields,
+    /// falling back to the profile store (`~/.cipherstash/secretkey.json`).
+    ///
+    /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
+    /// and passed through as explicit fields to support Bun.
+    fn build_key_provider(
+        &self,
+    ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
+        Ok(FallbackKeyProvider::new(
+            self.secret_key()?,
+            stack_profile::ProfileStore::default(),
+        ))
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ClientOpts {
+    #[serde(flatten)]
+    creds: CredentialOpts,
     keyset: Option<IdentifiedBy>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnsureKeysetOpts {
+    name: String,
+    #[serde(flatten)]
+    creds: CredentialOpts,
+}
+
+#[derive(Serialize)]
+struct EnsureKeysetResult {
+    id: String,
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -599,7 +670,10 @@ fn to_query_plaintext(
                         // String → selector (path queries like "$.user.email")
                         validate_json_path(path)?;
                         let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
-                        Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecSelector)))
+                        Ok((
+                            plaintext,
+                            InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
+                        ))
                     }
                     JsPlaintext::JsonB(_) => {
                         // Object/Array → Store mode for containment queries
@@ -607,22 +681,18 @@ fn to_query_plaintext(
                         let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
                         Ok((plaintext, InferredQueryMode::StoreMode))
                     }
-                    JsPlaintext::Number(n) => {
-                        Err(Error::InvalidQueryInput {
-                            query_op: QueryOpKind::SteVecDefault,
-                            received: ReceivedKind::Number(*n),
-                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
-                            hint: QueryInputHint::UsePathOrObject,
-                        })
-                    }
-                    JsPlaintext::Boolean(b) => {
-                        Err(Error::InvalidQueryInput {
-                            query_op: QueryOpKind::SteVecDefault,
-                            received: ReceivedKind::Boolean(*b),
-                            expected: ExpectedKind::StringPathOrJsonObjectOrArray,
-                            hint: QueryInputHint::UsePathOrObject,
-                        })
-                    }
+                    JsPlaintext::Number(n) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::Number(*n),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::UsePathOrObject,
+                    }),
+                    JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::Boolean(*b),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::UsePathOrObject,
+                    }),
                 }
             } else {
                 // Non-SteVec indexes: use column's storage type (original behavior)
@@ -638,42 +708,15 @@ pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
-    let console_config = ConsoleConfig::builder().with_env().build()?;
-    let cts_config = CtsConfig::builder().with_env().build()?;
 
-    let zerokms_config_builder = {
-        let mut zerokms_config_builder = ZeroKMSConfig::builder()
-            .add_source(EnvSource::default())
-            // Both files are optional and ignored if the file doesn't exist
-            .add_source(FileSource::<CipherStashSecretConfigFile>::default().optional())
-            .add_source(FileSource::<CipherStashConfigFile>::default().optional())
-            .console_config(&console_config)
-            .cts_config(&cts_config);
+    let strategy = client_opts.creds.build_strategy()?;
+    let zerokms = ZeroKMSBuilder::new(strategy)
+        .with_key_provider(client_opts.creds.build_key_provider()?)
+        .build()
+        .await?;
 
-        if let Some(workspace_crn) = client_opts.workspace_crn {
-            zerokms_config_builder = zerokms_config_builder.workspace_crn(workspace_crn);
-        }
-
-        if let Some(access_key) = client_opts.access_key {
-            zerokms_config_builder = zerokms_config_builder.access_key(access_key);
-        }
-
-        if let Some(client_id) = client_opts.client_id {
-            zerokms_config_builder = zerokms_config_builder.try_with_client_id(&client_id)?;
-        }
-
-        if let Some(client_key) = client_opts.client_key {
-            zerokms_config_builder = zerokms_config_builder.try_with_client_key(&client_key)?;
-        }
-
-        zerokms_config_builder
-    };
-
-    let zerokms_config = zerokms_config_builder.build_with_client_key()?;
-
-    let zerokms = Arc::new(zerokms_config.create_client());
-
-    let cipher = ScopedZeroKMSNoRefresh::init(zerokms.clone(), client_opts.keyset).await?;
+    let zerokms = Arc::new(zerokms);
+    let cipher = ScopedZeroKMS::init(zerokms.clone(), client_opts.keyset).await?;
 
     let client = Client {
         cipher: Arc::new(cipher),
@@ -682,6 +725,55 @@ pub async fn new_client(
     };
 
     Ok(Boxed(client))
+}
+
+/// Test-only helper: ensures a keyset with the given name exists, creating it if necessary,
+/// and grants the current client access.
+///
+/// This function is designed for **test setup**, not production use. It performs a simple
+/// list-then-create which is not safe against concurrent calls (TOCTOU), but that's acceptable
+/// because test setup runs sequentially before any test execution.
+///
+/// The grant step is best-effort: "already granted" errors are expected and ignored,
+/// but other grant failures are logged as warnings since they may indicate misconfiguration.
+#[neon::export]
+pub async fn ensure_keyset(
+    Json(opts): Json<EnsureKeysetOpts>,
+) -> Result<Json<EnsureKeysetResult>, neon::types::extract::Error> {
+    let strategy = opts.creds.build_strategy()?;
+
+    // Management-only client (no client key needed for list/create)
+    let zerokms = ZeroKMSBuilder::new(strategy).build()?;
+
+    let keysets = zerokms.list_keysets(false).await?;
+
+    let (keyset_id, name) = match keysets.iter().find(|ks| ks.name == opts.name) {
+        Some(ks) => (ks.id, ks.name.clone()),
+        None => {
+            let created = zerokms
+                .create_keyset(&opts.name, &format!("Auto-created keyset '{}'", opts.name))
+                .await?;
+            (created.id, created.name)
+        }
+    };
+
+    // Grant the client access to the keyset.
+    // "Already granted" errors are expected and ignored; other failures are logged.
+    match opts.creds.build_key_provider()?.client_key().await {
+        Ok(client_key) => {
+            if let Err(e) = zerokms.grant_keyset(client_key.key_id, keyset_id).await {
+                eprintln!("Warning: grant_keyset failed (may be already granted): {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: could not resolve client key for grant: {e}");
+        }
+    }
+
+    Ok(Json(EnsureKeysetResult {
+        id: keyset_id.to_string(),
+        name,
+    }))
 }
 
 #[neon::export]
@@ -1329,6 +1421,7 @@ mod tests {
             let config = make_column_config_with_indexes(vec![Index::new(IndexType::SteVec {
                 prefix: "test".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             })]);
             let result = find_index_for_type(&config, "test_column", "ste_vec");
             assert!(result.is_ok());
@@ -1446,6 +1539,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1471,6 +1565,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1493,6 +1588,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1515,6 +1611,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1540,6 +1637,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1559,6 +1657,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1584,6 +1683,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1634,6 +1734,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1671,6 +1772,7 @@ mod tests {
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
+                array_index_mode: Default::default(),
             };
 
             let result = to_query_plaintext(

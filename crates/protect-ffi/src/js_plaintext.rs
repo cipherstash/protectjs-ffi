@@ -2,7 +2,7 @@ use cipherstash_client::encryption::{Plaintext, TryFromPlaintext, TypeParseError
 use cipherstash_client::schema::ColumnType;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use vitaminc_protected::OpaqueDebug;
+use vitaminc::protected::OpaqueDebug;
 
 #[derive(Deserialize, Serialize, OpaqueDebug, PartialEq)]
 #[serde(untagged)]
@@ -348,9 +348,17 @@ mod tests {
             assert!(result.is_err());
             let err_msg = result.unwrap_err().0;
             // Should mention valid targets for String
-            assert!(err_msg.contains("Utf8Str"), "Error should mention valid target Utf8Str: {}", err_msg);
+            assert!(
+                err_msg.contains("Utf8Str"),
+                "Error should mention valid target Utf8Str: {}",
+                err_msg
+            );
             // Should mention cast_as setting
-            assert!(err_msg.contains("cast_as"), "Error should mention cast_as setting: {}", err_msg);
+            assert!(
+                err_msg.contains("cast_as"),
+                "Error should mention cast_as setting: {}",
+                err_msg
+            );
 
             // Test Number type shows its valid targets
             let js_number = JsPlaintext::Number(42.0);
@@ -358,22 +366,33 @@ mod tests {
             assert!(result.is_err());
             let err_msg = result.unwrap_err().0;
             // Should mention valid targets for Number
-            assert!(err_msg.contains("Float") || err_msg.contains("BigInt"),
-                "Error should mention valid numeric targets: {}", err_msg);
+            assert!(
+                err_msg.contains("Float") || err_msg.contains("BigInt"),
+                "Error should mention valid numeric targets: {}",
+                err_msg
+            );
 
             // Test Boolean shows its valid target
             let js_bool = JsPlaintext::Boolean(true);
             let result = js_bool.to_plaintext_with_type(ColumnType::Int);
             assert!(result.is_err());
             let err_msg = result.unwrap_err().0;
-            assert!(err_msg.contains("Boolean"), "Error should mention valid target Boolean: {}", err_msg);
+            assert!(
+                err_msg.contains("Boolean"),
+                "Error should mention valid target Boolean: {}",
+                err_msg
+            );
 
             // Test JsonB shows its valid target
             let js_json = JsPlaintext::JsonB(serde_json::json!({"a": 1}));
             let result = js_json.to_plaintext_with_type(ColumnType::Int);
             assert!(result.is_err());
             let err_msg = result.unwrap_err().0;
-            assert!(err_msg.contains("JsonB"), "Error should mention valid target JsonB: {}", err_msg);
+            assert!(
+                err_msg.contains("JsonB"),
+                "Error should mention valid target JsonB: {}",
+                err_msg
+            );
         }
     }
 }

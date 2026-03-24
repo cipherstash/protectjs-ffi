@@ -163,7 +163,7 @@ describe('SteVec index field generation', () => {
   })
 
   describe('array flag (a)', () => {
-    test('should set array flag for array elements', async () => {
+    test('should not set array flag when array_index_mode is default (NONE)', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
       const ciphertext = await encrypt(client, {
@@ -175,9 +175,9 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
 
-      // Array items should have a: true
+      // With default ArrayIndexMode (NONE), array items should not have a: true
       const arrayEntries = encrypted.sv.filter((e) => e.a === true)
-      expect(arrayEntries.length).toBeGreaterThan(0)
+      expect(arrayEntries.length).toBe(0)
     })
 
     test('should not set array flag for non-array elements', async () => {

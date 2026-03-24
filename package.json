@@ -4,8 +4,9 @@
   "description": "",
   "main": "./lib/index.cjs",
   "scripts": {
-    "test": "npm run test:typecheck && npm run test:lint && npm run test:format && npm run test:rust",
+    "test": "npm run test:typecheck && npm run test:unit && npm run test:lint && npm run test:format && npm run test:rust",
     "test:typecheck": "tsc",
+    "test:unit": "vitest run",
     "test:rust": "cargo test",
     "test:lint": "npm run test:lint:ts",
     "test:lint:ts": "biome lint",
@@ -61,7 +62,8 @@
     "@neon-rs/cli": "^0.1.82",
     "@tsconfig/node20": "^20.1.4",
     "@types/node": "^20.11.16",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@neon-rs/load": "^0.1.82"

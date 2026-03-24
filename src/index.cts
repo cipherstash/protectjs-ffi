@@ -1,6 +1,12 @@
 // This module is the CJS entry point for the library.
 
+import { type CredentialOpts, withEnvCredentials } from './credentials.js'
 import * as native from './load.cjs'
+export {
+  withEnvCredentials,
+  type EnvReader,
+  type CredentialOpts,
+} from './credentials.js'
 
 declare const sym: unique symbol
 
@@ -34,6 +40,7 @@ declare module './load.cjs' {
     client: Client,
     opts: EncryptQueryBulkOptions,
   ): Promise<Encrypted[]>
+  function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
 export type ProtectErrorCode =
@@ -129,7 +136,12 @@ function wrapSync<T>(fn: () => T): T {
 }
 
 export function newClient(opts: NewClientOptions): Promise<Client> {
-  return wrapAsync(() => native.newClient(opts))
+  return wrapAsync(() =>
+    native.newClient({
+      ...opts,
+      clientOpts: withEnvCredentials(opts.clientOpts),
+    }),
+  )
 }
 
 export function encrypt(
@@ -191,6 +203,17 @@ export function encryptQueryBulk(
   opts: EncryptQueryBulkOptions,
 ): Promise<Encrypted[]> {
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
+}
+
+/**
+ * Test-only helper: ensures a keyset with the given name exists, creating it if necessary,
+ * and grants the current client access. Not safe for concurrent use — intended for
+ * sequential test setup only.
+ */
+export function ensureKeyset(
+  opts: EnsureKeysetOpts,
+): Promise<EnsureKeysetResult> {
+  return wrapAsync(() => native.ensureKeyset(withEnvCredentials(opts)))
 }
 
 export type EncryptPayload = {
@@ -328,9 +351,15 @@ export type MatchIndexOpts = {
   include_original?: boolean
 }
 
+export type ArrayIndexMode =
+  | 'all'
+  | 'none'
+  | { item?: boolean; wildcard?: boolean; position?: boolean }
+
 export type SteVecIndexOpts = {
   prefix: string
   term_filters?: TokenFilter[]
+  array_index_mode?: ArrayIndexMode
 }
 
 export type Tokenizer =
@@ -344,15 +373,20 @@ export type NewClientOptions = {
   clientOpts?: ClientOpts
 }
 
-export type ClientOpts = {
-  workspaceCrn?: string
-  accessKey?: string
-  clientId?: string
-  clientKey?: string
+export type ClientOpts = CredentialOpts & {
   keyset?: KeysetIdentifier
 }
 
 export type KeysetIdentifier = { Uuid: string } | { Name: string }
+
+export type EnsureKeysetOpts = CredentialOpts & {
+  name: string
+}
+
+export type EnsureKeysetResult = {
+  id: string
+  name: string
+}
 
 export type JsPlaintext =
   | string
