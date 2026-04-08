@@ -546,9 +546,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-client"
-version = "0.34.0-alpha.3"
+version = "0.34.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e81684e600f1a1d6969d749e8208df0b9d755406d16a77471b03cd885ea22f6e"
+checksum = "2817e2af36833f0b039c6db1e6e9b7ccdfa18d52f380160be04a038171d928e9"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -602,6 +602,7 @@ dependencies = [
  "url",
  "uuid",
  "vitaminc",
+ "vitaminc-protected",
  "winnow 0.6.26",
  "zeroize",
  "zerokms-protocol",
@@ -609,9 +610,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-config"
-version = "0.34.0-alpha.3"
+version = "0.34.0-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "329af1d375eb9c864da969b8b22a3112c065c2c3dca20e91736b09f88525288d"
+checksum = "dada63a7c66016003017a2b616c300a539166cc01ce6c432346b91a3f758fb04"
 dependencies = [
  "bitflags",
  "serde",
@@ -620,9 +621,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-core"
-version = "0.34.0-alpha.3"
+version = "0.34.0-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f0720cc522f469637e96260692dc7e8a6aa2e4701ad3ab6cf5030b549395a28"
+checksum = "3a5d7cd4a1312c804aae9de1086e1082f6a92f9bea8043a736144bd79faa5aa0"
 dependencies = [
  "hmac",
  "lazy_static",
@@ -817,9 +818,9 @@ dependencies = [
 
 [[package]]
 name = "cts-common"
-version = "0.34.0-alpha.3"
+version = "0.34.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "771e283326b6c3d539eebf2b58e294494a9128956b29b433e5a7d002299767f7"
+checksum = "6f15cbcdd1727bd0b143dc12bae8ef0140e9b325dc7e6c4d42588a89a417a55e"
 dependencies = [
  "arrayvec",
  "base32",
@@ -2382,6 +2383,7 @@ dependencies = [
  "proc-macro-error-attr2",
  "proc-macro2",
  "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3307,9 +3309,9 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stack-auth"
-version = "0.34.0-alpha.3"
+version = "0.34.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f54ab2a253914789cb8a6c963d96ab52fcde0b7a9d93ddce48f5b011655b5d94"
+checksum = "91c7865afcdb50cedb9d862ef416b9cd78613283cf2f634f0155413386caeb14"
 dependencies = [
  "aquamarine",
  "cts-common",
@@ -3326,14 +3328,16 @@ dependencies = [
  "url",
  "uuid",
  "vitaminc",
+ "vitaminc-protected",
  "zeroize",
+ "zerokms-protocol",
 ]
 
 [[package]]
 name = "stack-profile"
-version = "0.34.0-alpha.3"
+version = "0.34.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb1af2420e3f0e311dc11c75ff53542bd67287e571b13ca9e02c61ce0c7c6afb"
+checksum = "f5b52062ad4898877eceae7c7121599cc2ecc76e0cc8096f82f31c4faaaec0e4"
 dependencies = [
  "dirs",
  "gethostname",
@@ -3930,6 +3934,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "validator"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43fb22e1a008ece370ce08a3e9e4447a910e92621bb49b85d6e48a45397e7cfa"
+dependencies = [
+ "idna",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "url",
+ "validator_derive",
+]
+
+[[package]]
+name = "validator_derive"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7df16e474ef958526d1205f6dda359fdfab79d9aa6d54bafcb92dcd07673dca"
+dependencies = [
+ "darling",
+ "once_cell",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3937,10 +3971,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vitaminc"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afa8fafc0ad0f5167cf566ae9462244eb9519589a5f4f572dd29e25c17044729"
+checksum = "7c8b739a2cb1e528e77a69267728532f52d2d5ce18ae2839e26c797859fe9015"
 dependencies = [
+ "vitaminc-aead",
  "vitaminc-encrypt",
  "vitaminc-protected",
  "vitaminc-random",
@@ -3949,9 +3984,9 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-aead"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b4b637c298276d38be6805b2e8d02e65b295c95a930ae64745c83927748f3f4"
+checksum = "7c29cef4d4b0d018c4223d366017d2a9756012acf76e25011aaca877f3c74904"
 dependencies = [
  "bytes",
  "serde",
@@ -3962,9 +3997,9 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-encrypt"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3043eaa8e51989d0b46d3bd9ec6e8011fa056f073be6f84f36eb744b56bf2072"
+checksum = "c4e3869aaf60ebb95ccbdfcf003985132325b4d1ac6f5d945ad2fbb9149afd3a"
 dependencies = [
  "aws-lc-rs",
  "vitaminc-aead",
@@ -3975,9 +4010,9 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-protected"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc9119fd6bee8a47926f1ba2f7c22dded40d33d0cab91ff78ffd809018c40f7c"
+checksum = "af693c39d3cd1c818ef6267539433c6ceca87840b12d24124adbc9c8ecba1709"
 dependencies = [
  "bitvec",
  "digest",
@@ -4001,9 +4036,9 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-random"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53be0590f352c7cb8b19a1b9a7f2574a817ffe359f31890798db1a85093e97c1"
+checksum = "ea9de431cb93359d293ec7e70d05d87117a57f34bfc5bc94f040b81d4dd1afd6"
 dependencies = [
  "rand 0.10.0",
  "thiserror 2.0.18",
@@ -4025,9 +4060,9 @@ dependencies = [
 
 [[package]]
 name = "vitaminc-traits"
-version = "0.1.0-pre4.1"
+version = "0.1.0-pre4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c76728e304ad79cb5b1aeacb28946cb79d804984713290eee27c6a6d2742da8e"
+checksum = "c25a9e51d24c3befddd71e907dd4ae9f21cfbaae065fb0ef5202e5d21cd198d0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4865,9 +4900,9 @@ dependencies = [
 
 [[package]]
 name = "zerokms-protocol"
-version = "0.12.2"
+version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5590ba35fbdff69a30e88071aad36673bafdb36a1ed7693fde4295faca5bbd8a"
+checksum = "8c120b9a9690c5ea7ddec9256956edeb5250e3a51e9dd971c33d9cf5aa3e82fb"
 dependencies = [
  "base64",
  "cipherstash-config",
@@ -4881,6 +4916,7 @@ dependencies = [
  "thiserror 1.0.69",
  "utoipa",
  "uuid",
+ "validator",
  "zeroize",
 ]
 
