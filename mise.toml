@@ -1,5 +1,7 @@
 [tools]
 node = "latest"
+zig = "latest"
+"cargo:cargo-zigbuild" = "latest"
 
 [env]
 PGPORT = "5436"
