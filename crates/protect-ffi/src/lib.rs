@@ -66,6 +66,7 @@ pub enum ReceivedKind {
     JsonObject,
     JsonArray,
     JsonScalar(String),
+    Date,
 }
 
 impl std::fmt::Display for ReceivedKind {
@@ -77,6 +78,7 @@ impl std::fmt::Display for ReceivedKind {
             Self::JsonObject => write!(f, "JSON object"),
             Self::JsonArray => write!(f, "JSON array"),
             Self::JsonScalar(s) => write!(f, "JSON scalar {}", s),
+            Self::Date => write!(f, "Date"),
         }
     }
 }
@@ -657,6 +659,14 @@ fn to_query_plaintext(
                 JsPlaintext::JsonB(_) => {
                     // This is the expected type - proceed
                 }
+                JsPlaintext::Date(_) => {
+                    return Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::Date,
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::WrapInObject,
+                    });
+                }
             }
             // Use Store mode to produce sv array for containment matching
             let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
@@ -690,6 +700,12 @@ fn to_query_plaintext(
                     JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
                         query_op: QueryOpKind::SteVecDefault,
                         received: ReceivedKind::Boolean(*b),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::UsePathOrObject,
+                    }),
+                    JsPlaintext::Date(_) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::Date,
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
                     }),

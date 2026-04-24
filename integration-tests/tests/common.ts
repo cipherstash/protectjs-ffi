@@ -41,6 +41,21 @@ export const jsonOpaque: EncryptConfig = {
   },
 }
 
+// Config with a date and a timestamp column for testing JS Date round-trips
+export const datesConfig: EncryptConfig = {
+  v: 1,
+  tables: {
+    events: {
+      occurred_on: {
+        cast_as: 'date',
+      },
+      occurred_at: {
+        cast_as: 'timestamp',
+      },
+    },
+  },
+}
+
 // A single JSON column with an ste_vec index
 export const jsonSteVec: EncryptConfig = {
   v: 1,
