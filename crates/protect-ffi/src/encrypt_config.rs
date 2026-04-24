@@ -75,6 +75,7 @@ pub enum CastAs {
     #[default]
     String,
     Text,
+    Timestamp,
     Json,
 }
 
@@ -143,6 +144,7 @@ impl From<CastAs> for ColumnType {
             CastAs::Number => ColumnType::Float,
             CastAs::String => ColumnType::Utf8Str,
             CastAs::Text => ColumnType::Utf8Str,
+            CastAs::Timestamp => ColumnType::Timestamp,
             CastAs::Json => ColumnType::JsonB,
         }
     }
@@ -234,6 +236,7 @@ fn cast_as_name(cast_as: &CastAs) -> &'static str {
         CastAs::Number => "number",
         CastAs::String => "string",
         CastAs::Text => "text",
+        CastAs::Timestamp => "timestamp",
         CastAs::Json => "json",
     }
 }
@@ -294,6 +297,51 @@ mod tests {
         assert_eq!(column.cast_type, ColumnType::Float);
         assert_eq!(column.name, "favourite_int");
         assert!(column.indexes.is_empty());
+    }
+
+    #[test]
+    fn can_parse_timestamp_cast_as() {
+        let json = json!({
+            "v": 1,
+            "tables": {
+                "events": {
+                    "occurred_at": {
+                        "cast_as": "timestamp"
+                    }
+                }
+            }
+        });
+
+        let encrypt_config = parse(json);
+
+        let ident = Identifier::new("events", "occurred_at");
+
+        let column = encrypt_config.get(&ident).expect("column exists");
+
+        assert_eq!(column.cast_type, ColumnType::Timestamp);
+        assert_eq!(column.name, "occurred_at");
+    }
+
+    #[test]
+    fn can_parse_date_cast_as() {
+        let json = json!({
+            "v": 1,
+            "tables": {
+                "events": {
+                    "occurred_on": {
+                        "cast_as": "date"
+                    }
+                }
+            }
+        });
+
+        let encrypt_config = parse(json);
+
+        let ident = Identifier::new("events", "occurred_on");
+
+        let column = encrypt_config.get(&ident).expect("column exists");
+
+        assert_eq!(column.cast_type, ColumnType::Date);
     }
 
     #[test]

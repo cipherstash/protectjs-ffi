@@ -318,6 +318,7 @@ export type CastAs =
   | 'number'
   | 'string' // deprecated, use text instead but keep for backwards compatibility
   | 'text'
+  | 'timestamp'
   | 'json'
 
 // Extract the tables from a specific config
