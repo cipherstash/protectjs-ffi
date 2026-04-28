@@ -62,7 +62,8 @@ jobs:
               return { os: "windows-latest", platform, script: "build" };
             });
             const linux = platforms.Linux.map(platform => {
-              return { os: "blacksmith-4vcpu-ubuntu-2404", platform, script: "build" };
+              const script = platform.includes('gnu') ? "zigbuild" : "build";
+              return { os: "blacksmith-4vcpu-ubuntu-2404", platform, script: script };
             });
             return [...macOS, ...windows, ...linux];
 
@@ -124,8 +125,12 @@ jobs:
             sudo tar zxvf x86_64-linux-musl-native.tgz -C /opt/
             export PATH="/opt/x86_64-linux-musl-native/bin/:${PATH}"
             export RUSTFLAGS="-C target-feature=-crt-static"
+            npm run ${{ matrix.cfg.script }}
+          elif [[ $CARGO_BUILD_TARGET =~ gnu ]]; then
+            CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET}.2.28" npm run ${{ matrix.cfg.script }}
+          else
+            npm run ${{ matrix.cfg.script }}
           fi
-          npm run ${{ matrix.cfg.script }}
       - name: Pack
         id: pack
         shell: bash
