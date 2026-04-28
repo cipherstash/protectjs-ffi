@@ -67,5 +67,8 @@
   },
   "dependencies": {
     "@neon-rs/load": "^0.1.82"
+  },
+  "overrides": {
+    "vite": "^8.0.5"
   }
 }
