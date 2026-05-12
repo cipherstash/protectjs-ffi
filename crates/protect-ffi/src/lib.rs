@@ -514,6 +514,7 @@ fn index_type_description(index_type: &str) -> &'static str {
     match index_type {
         "ste_vec" => "JSON path and containment queries",
         "ore" => "range comparisons (<, >, <=, >=)",
+        "ope" => "range comparisons (<, >, <=, >=)",
         "match" => "full-text search queries",
         "unique" => "exact match queries",
         _ => "unknown query type",
@@ -529,6 +530,7 @@ fn format_available_indexes(column_config: &ColumnConfig) -> String {
             IndexType::SteVec { .. } => "ste_vec",
             IndexType::Match { .. } => "match",
             IndexType::Ore => "ore",
+            IndexType::Ope => "ope",
             IndexType::Unique { .. } => "unique",
         })
         .collect();
@@ -555,6 +557,7 @@ fn find_index_for_type<'a>(
                 (IndexType::SteVec { .. }, "ste_vec")
                     | (IndexType::Match { .. }, "match")
                     | (IndexType::Ore, "ore")
+                    | (IndexType::Ope, "ope")
                     | (IndexType::Unique { .. }, "unique")
             )
         })
@@ -604,7 +607,7 @@ enum InferredQueryMode {
 /// - SteVecTerm: Always JSON (fragment to match with @>) → StoreMode (produces sv array)
 /// - Default: For SteVec indexes, infers from plaintext type:
 ///   - String → QueryMode with SteVecSelector (path queries)
-///   - JsonB (Object/Array) → StoreMode (containment queries need sv array)
+///   - Json (Object/Array) → StoreMode (containment queries need sv array)
 ///   - Other indexes use column's cast_type and QueryMode with Default
 fn to_query_plaintext(
     js_plaintext: &JsPlaintext,
@@ -621,8 +624,8 @@ fn to_query_plaintext(
             if let JsPlaintext::String(path) = js_plaintext {
                 validate_json_path(path)?;
             }
-            // Force Utf8Str conversion regardless of column type
-            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
+            // Force Text conversion regardless of column type
+            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Text)?;
             Ok((
                 plaintext,
                 InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
@@ -669,7 +672,7 @@ fn to_query_plaintext(
                 }
             }
             // Use Store mode to produce sv array for containment matching
-            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
+            let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Json)?;
             Ok((plaintext, InferredQueryMode::StoreMode))
         }
         QueryOp::Default => {
@@ -679,7 +682,7 @@ fn to_query_plaintext(
                     JsPlaintext::String(path) => {
                         // String → selector (path queries like "$.user.email")
                         validate_json_path(path)?;
-                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Utf8Str)?;
+                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Text)?;
                         Ok((
                             plaintext,
                             InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
@@ -688,7 +691,7 @@ fn to_query_plaintext(
                     JsPlaintext::JsonB(_) => {
                         // Object/Array → Store mode for containment queries
                         // This produces sv array needed for @> operator matching
-                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::JsonB)?;
+                        let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Json)?;
                         Ok((plaintext, InferredQueryMode::StoreMode))
                     }
                     JsPlaintext::Number(n) => Err(Error::InvalidQueryInput {
@@ -823,6 +826,7 @@ async fn encrypt(
         service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
+        decryption_policy: None,
     };
 
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
@@ -894,6 +898,7 @@ async fn encrypt_bulk(
             service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
+            decryption_policy: None,
         };
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
@@ -964,6 +969,7 @@ async fn encrypt_query(
         service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
+        decryption_policy: None,
     };
 
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
@@ -1045,6 +1051,7 @@ async fn encrypt_query_bulk(
             service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
+            decryption_policy: None,
         };
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
@@ -1425,7 +1432,7 @@ mod tests {
         fn make_column_config_with_indexes(indexes: Vec<Index>) -> ColumnConfig {
             ColumnConfig {
                 name: "test_column".to_string(),
-                cast_type: cipherstash_client::schema::column::ColumnType::Utf8Str,
+                cast_type: cipherstash_client::schema::column::ColumnType::Text,
                 indexes,
                 in_place: false,
                 mode: cipherstash_client::schema::column::ColumnMode::Encrypted,
@@ -1562,14 +1569,14 @@ mod tests {
                 &js_plaintext,
                 QueryOp::Default,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // String on SteVec should infer QueryMode with SteVecSelector
             assert!(matches!(
                 result,
                 Ok((
-                    Plaintext::Utf8Str(Some(_)),
+                    Plaintext::Text(Some(_)),
                     InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
                 ))
             ));
@@ -1588,13 +1595,13 @@ mod tests {
                 &js_plaintext,
                 QueryOp::Default,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // Object on SteVec should infer StoreMode (produces sv array for containment)
             assert!(matches!(
                 result,
-                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+                Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
             ));
         }
 
@@ -1611,13 +1618,13 @@ mod tests {
                 &js_plaintext,
                 QueryOp::Default,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // Array on SteVec should infer StoreMode (produces sv array for containment)
             assert!(matches!(
                 result,
-                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+                Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
             ));
         }
 
@@ -1634,7 +1641,7 @@ mod tests {
                 &js_plaintext,
                 QueryOp::Default,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // Numbers should return error for SteVec queries
@@ -1660,7 +1667,7 @@ mod tests {
                 &js_plaintext,
                 QueryOp::Default,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // Booleans should return error for SteVec queries
@@ -1680,14 +1687,14 @@ mod tests {
                 &js_plaintext,
                 QueryOp::SteVecSelector,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // Explicit SteVecSelector should use QueryMode
             assert!(matches!(
                 result,
                 Ok((
-                    Plaintext::Utf8Str(Some(_)),
+                    Plaintext::Text(Some(_)),
                     InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
                 ))
             ));
@@ -1706,13 +1713,13 @@ mod tests {
                 &js_plaintext,
                 QueryOp::SteVecTerm,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             // Explicit SteVecTerm uses StoreMode to produce sv array for containment
             assert!(matches!(
                 result,
-                Ok((Plaintext::JsonB(Some(_)), InferredQueryMode::StoreMode))
+                Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
             ));
         }
 
@@ -1731,14 +1738,14 @@ mod tests {
                 &js_plaintext,
                 QueryOp::Default,
                 &index_type,
-                ColumnType::Utf8Str,
+                ColumnType::Text,
             );
 
             // Non-SteVec with Default should use column type and QueryMode with Default
             assert!(matches!(
                 result,
                 Ok((
-                    Plaintext::Utf8Str(Some(_)),
+                    Plaintext::Text(Some(_)),
                     InferredQueryMode::QueryMode(QueryOp::Default)
                 ))
             ));
@@ -1757,7 +1764,7 @@ mod tests {
                 &js_plaintext,
                 QueryOp::SteVecTerm,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             assert!(result.is_err());
@@ -1795,7 +1802,7 @@ mod tests {
                 &js_plaintext,
                 QueryOp::SteVecSelector,
                 &index_type,
-                ColumnType::JsonB,
+                ColumnType::Json,
             );
 
             assert!(result.is_err());
