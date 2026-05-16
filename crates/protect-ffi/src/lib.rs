@@ -1,4 +1,6 @@
 mod js_plaintext;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 use cipherstash_client::{
     credentials::ServiceToken,
@@ -1244,7 +1246,7 @@ fn encrypted_record_from_mp_base85(
 ///
 /// Used by `encrypt` / `encrypt_bulk`, which always run with `EqlOperation::Store` and
 /// therefore must produce storage ciphertexts (never query payloads).
-fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
+pub(crate) fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
     match output {
         EqlOutput::Store(ciphertext) => Ok(ciphertext),
         EqlOutput::Query(_) => Err(Error::InvariantViolation(
