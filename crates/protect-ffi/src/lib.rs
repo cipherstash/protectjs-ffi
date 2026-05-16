@@ -20,6 +20,7 @@ use cipherstash_client::{
 };
 use cts_common::Crn;
 use js_plaintext::JsPlaintext;
+#[cfg(not(target_arch = "wasm32"))]
 use neon::{
     prelude::*,
     types::extract::{Boxed, Json},
@@ -31,6 +32,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::Runtime;
 
 #[cfg(test)]
@@ -46,6 +48,7 @@ struct Client {
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Finalize for Client {}
 
 /// Re-export EqlCiphertext as Encrypted for backward compatibility.
@@ -308,6 +311,10 @@ impl CredentialOpts {
     ///
     /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
     /// and passed through as explicit fields to support Bun.
+    ///
+    /// Wasm32 has no filesystem — the wasm binding will pass the client key
+    /// inline instead and skip the fallback path entirely.
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_key_provider(
         &self,
     ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
@@ -717,6 +724,7 @@ fn to_query_plaintext(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
@@ -750,6 +758,7 @@ pub async fn new_client(
 ///
 /// The grant step is best-effort: "already granted" errors are expected and ignored,
 /// but other grant failures are logged as warnings since they may indicate misconfiguration.
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn ensure_keyset(
     Json(opts): Json<EnsureKeysetOpts>,
@@ -790,6 +799,7 @@ pub async fn ensure_keyset(
     }))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt(
     Boxed(client): Boxed<Client>,
@@ -830,6 +840,7 @@ async fn encrypt(
     Ok(Json(eql_ciphertext))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
@@ -918,6 +929,7 @@ async fn encrypt_bulk(
     Ok(Json(final_results))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
@@ -973,6 +985,7 @@ async fn encrypt_query(
     Ok(Json(eql_output))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
@@ -1069,6 +1082,7 @@ async fn encrypt_query_bulk(
     Ok(Json(final_results))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
@@ -1095,6 +1109,7 @@ async fn decrypt(
         .map_err(From::from)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
@@ -1135,6 +1150,7 @@ async fn decrypt_bulk(
     Ok(Json(plaintexts))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
@@ -1189,6 +1205,7 @@ async fn decrypt_bulk_fallible(
     Ok(Json(results))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
     let result: Result<EqlCiphertext, _> = serde_json::from_value(raw);
@@ -1236,8 +1253,10 @@ fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     let runtime = RUNTIME
