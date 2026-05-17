@@ -142,10 +142,10 @@ impl From<CastAs> for ColumnType {
             CastAs::Boolean => ColumnType::Boolean,
             CastAs::Date => ColumnType::Date,
             CastAs::Number => ColumnType::Float,
-            CastAs::String => ColumnType::Utf8Str,
-            CastAs::Text => ColumnType::Utf8Str,
+            CastAs::String => ColumnType::Text,
+            CastAs::Text => ColumnType::Text,
             CastAs::Timestamp => ColumnType::Timestamp,
-            CastAs::Json => ColumnType::JsonB,
+            CastAs::Json => ColumnType::Json,
         }
     }
 }
@@ -271,7 +271,7 @@ mod tests {
 
         let column = encrypt_config.get(&ident).expect("column exists");
 
-        assert_eq!(column.cast_type, ColumnType::Utf8Str);
+        assert_eq!(column.cast_type, ColumnType::Text);
         assert!(column.indexes.is_empty());
     }
 
@@ -557,7 +557,7 @@ mod tests {
 
         let column = encrypt_config.get(&ident).expect("column exists");
 
-        assert_eq!(column.cast_type, ColumnType::JsonB);
+        assert_eq!(column.cast_type, ColumnType::Json);
         assert_eq!(
             column.indexes[0].index_type,
             IndexType::SteVec {
@@ -642,6 +642,6 @@ mod tests {
         let config = result.unwrap();
         let ident = Identifier::new("users", "event_data");
         let column = config.get(&ident).expect("column exists");
-        assert_eq!(column.cast_type, ColumnType::JsonB);
+        assert_eq!(column.cast_type, ColumnType::Json);
     }
 }

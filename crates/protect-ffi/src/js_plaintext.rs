@@ -26,10 +26,10 @@ pub(crate) enum JsPlaintext {
 impl From<JsPlaintext> for Plaintext {
     fn from(value: JsPlaintext) -> Self {
         match value {
-            JsPlaintext::String(s) => Plaintext::Utf8Str(Some(s)),
+            JsPlaintext::String(s) => Plaintext::Text(Some(s)),
             JsPlaintext::Number(n) => Plaintext::Float(Some(n)),
             JsPlaintext::Boolean(b) => Plaintext::Boolean(Some(b)),
-            JsPlaintext::JsonB(j) => Plaintext::JsonB(Some(j)),
+            JsPlaintext::JsonB(j) => Plaintext::Json(Some(j)),
             JsPlaintext::Date(dt) => Plaintext::Timestamp(Some(dt)),
         }
     }
@@ -40,10 +40,8 @@ impl TryFrom<Plaintext> for JsPlaintext {
 
     fn try_from(value: Plaintext) -> Result<Self, Self::Error> {
         match value {
-            v @ Plaintext::Utf8Str(Some(_)) => {
-                String::try_from_plaintext(v).map(JsPlaintext::String)
-            }
-            v @ Plaintext::JsonB(Some(_)) => {
+            v @ Plaintext::Text(Some(_)) => String::try_from_plaintext(v).map(JsPlaintext::String),
+            v @ Plaintext::Json(Some(_)) => {
                 serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB)
             }
             // Note: BigInt is converted to f64, which may lose precision for integers larger than
@@ -77,10 +75,8 @@ impl JsPlaintext {
         column_type: ColumnType,
     ) -> Result<Plaintext, TypeParseError> {
         match (self, column_type) {
-            // String conversions - Utf8Str, Date, and Timestamp (the latter two parse).
-            (JsPlaintext::String(s), ColumnType::Utf8Str) => {
-                Ok(Plaintext::Utf8Str(Some(s.clone())))
-            }
+            // String conversions - Text, Date, and Timestamp (the latter two parse).
+            (JsPlaintext::String(s), ColumnType::Text) => Ok(Plaintext::Text(Some(s.clone()))),
             (JsPlaintext::String(s), ColumnType::Date) => parse_naive_date(s)
                 .map(|d| Plaintext::NaiveDate(Some(d)))
                 .map_err(|e| TypeParseError(format!("Cannot parse Date: {}", e))),
@@ -111,8 +107,8 @@ impl JsPlaintext {
             // Boolean conversions - only allow to Boolean
             (JsPlaintext::Boolean(b), ColumnType::Boolean) => Ok(Plaintext::Boolean(Some(*b))),
 
-            // JsonB conversions - only allow to JsonB
-            (JsPlaintext::JsonB(j), ColumnType::JsonB) => Ok(Plaintext::JsonB(Some(j.clone()))),
+            // Json conversions - only allow to Json
+            (JsPlaintext::JsonB(j), ColumnType::Json) => Ok(Plaintext::Json(Some(j.clone()))),
 
             // Date conversions: the value is a full UTC timestamp; cast_as picks
             // the storage form.
@@ -120,9 +116,7 @@ impl JsPlaintext {
                 Ok(Plaintext::NaiveDate(Some(dt.date_naive())))
             }
             (JsPlaintext::Date(dt), ColumnType::Timestamp) => Ok(Plaintext::Timestamp(Some(*dt))),
-            (JsPlaintext::Date(dt), ColumnType::Utf8Str) => {
-                Ok(Plaintext::Utf8Str(Some(dt.to_rfc3339())))
-            }
+            (JsPlaintext::Date(dt), ColumnType::Text) => Ok(Plaintext::Text(Some(dt.to_rfc3339()))),
 
             // All other conversions are not allowed - provide helpful error message
             (js_type, col_type) => {
@@ -197,7 +191,7 @@ mod tests {
         fn test_string(s: String) {
             let js_string = JsPlaintext::String(s.clone());
             let plaintext_string: Plaintext = js_string.into();
-            assert_eq!(plaintext_string, Plaintext::Utf8Str(Some(s)));
+            assert_eq!(plaintext_string, Plaintext::Text(Some(s)));
         }
 
         #[quickcheck]
@@ -224,7 +218,7 @@ mod tests {
             let plaintext_jsonb: Plaintext = js_jsonb.into();
             assert_eq!(
                 plaintext_jsonb,
-                Plaintext::JsonB(Some(serde_json::json!({"key": "value"})))
+                Plaintext::Json(Some(serde_json::json!({"key": "value"})))
             );
         }
 
@@ -246,7 +240,7 @@ mod tests {
 
         #[quickcheck]
         fn test_utf8str(s: String) {
-            let plaintext_string = Plaintext::Utf8Str(Some(s.clone()));
+            let plaintext_string = Plaintext::Text(Some(s.clone()));
             let js_string: JsPlaintext = plaintext_string.try_into().unwrap();
             assert_eq!(js_string, JsPlaintext::String(s));
         }
@@ -271,7 +265,7 @@ mod tests {
 
         #[test]
         fn test_jsonb() {
-            let plaintext_jsonb = Plaintext::JsonB(Some(serde_json::json!({"key": "value"})));
+            let plaintext_jsonb = Plaintext::Json(Some(serde_json::json!({"key": "value"})));
             let js_jsonb: JsPlaintext = plaintext_jsonb.try_into().unwrap();
             assert_eq!(
                 js_jsonb,
@@ -327,10 +321,8 @@ mod tests {
         #[test]
         fn test_string_to_utf8str() {
             let js_string = JsPlaintext::String("hello".to_string());
-            let result = js_string
-                .to_plaintext_with_type(ColumnType::Utf8Str)
-                .unwrap();
-            assert_eq!(result, Plaintext::Utf8Str(Some("hello".to_string())));
+            let result = js_string.to_plaintext_with_type(ColumnType::Text).unwrap();
+            assert_eq!(result, Plaintext::Text(Some("hello".to_string())));
         }
 
         #[test]
@@ -410,7 +402,7 @@ mod tests {
         #[test]
         fn test_boolean_to_string_fails() {
             let js_bool = JsPlaintext::Boolean(true);
-            let result = js_bool.to_plaintext_with_type(ColumnType::Utf8Str);
+            let result = js_bool.to_plaintext_with_type(ColumnType::Text);
             assert!(result.is_err());
             assert!(result.unwrap_err().0.contains("Cannot convert"));
         }
@@ -419,15 +411,15 @@ mod tests {
         fn test_jsonb_to_jsonb() {
             let json_value = serde_json::json!({"key": "value"});
             let js_jsonb = JsPlaintext::JsonB(json_value.clone());
-            let result = js_jsonb.to_plaintext_with_type(ColumnType::JsonB).unwrap();
-            assert_eq!(result, Plaintext::JsonB(Some(json_value)));
+            let result = js_jsonb.to_plaintext_with_type(ColumnType::Json).unwrap();
+            assert_eq!(result, Plaintext::Json(Some(json_value)));
         }
 
         #[test]
         fn test_jsonb_to_string_fails() {
             let json_value = serde_json::json!({"key": "value"});
             let js_jsonb = JsPlaintext::JsonB(json_value);
-            let result = js_jsonb.to_plaintext_with_type(ColumnType::Utf8Str);
+            let result = js_jsonb.to_plaintext_with_type(ColumnType::Text);
             assert!(result.is_err());
             assert!(result.unwrap_err().0.contains("Cannot convert"));
         }
@@ -527,12 +519,12 @@ mod tests {
         fn test_date_value_to_string_column_serializes_rfc3339() {
             let t = sample_dt();
             let js = JsPlaintext::Date(t);
-            let result = js.to_plaintext_with_type(ColumnType::Utf8Str).unwrap();
-            if let Plaintext::Utf8Str(Some(ref s)) = result {
+            let result = js.to_plaintext_with_type(ColumnType::Text).unwrap();
+            if let Plaintext::Text(Some(ref s)) = result {
                 let parsed = DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
                 assert_eq!(parsed, t);
             } else {
-                panic!("Expected Plaintext::Utf8Str");
+                panic!("Expected Plaintext::Text");
             }
         }
 
