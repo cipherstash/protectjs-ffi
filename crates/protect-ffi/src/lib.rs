@@ -1445,6 +1445,7 @@ mod tests {
                 prefix: "test".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             })]);
             let result = find_index_for_type(&config, "test_column", "ste_vec");
             assert!(result.is_ok());
@@ -1563,6 +1564,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1589,6 +1591,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1612,6 +1615,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1635,6 +1639,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1661,6 +1666,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1681,6 +1687,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1707,6 +1714,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1758,6 +1766,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(
@@ -1796,6 +1805,7 @@ mod tests {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             };
 
             let result = to_query_plaintext(

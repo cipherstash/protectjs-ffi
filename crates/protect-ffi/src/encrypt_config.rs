@@ -1,6 +1,6 @@
 use super::Error;
 use cipherstash_client::schema::{
-    column::{ArrayIndexMode, Index, IndexType, TokenFilter, Tokenizer},
+    column::{ArrayIndexMode, Index, IndexType, SteVecMode, TokenFilter, Tokenizer},
     ColumnConfig, ColumnType,
 };
 use serde::{Deserialize, Serialize};
@@ -220,6 +220,7 @@ impl Column {
                 prefix,
                 term_filters,
                 array_index_mode,
+                mode: SteVecMode::default(),
             }))
         }
 
@@ -564,6 +565,7 @@ mod tests {
                 prefix: "event-data".into(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
+                mode: Default::default(),
             },
         );
     }
