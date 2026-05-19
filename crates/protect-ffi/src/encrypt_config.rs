@@ -115,6 +115,8 @@ pub struct SteVecIndexOpts {
     term_filters: Vec<TokenFilter>,
     #[serde(default)]
     array_index_mode: ArrayIndexMode,
+    #[serde(default)]
+    mode: SteVecMode,
 }
 
 fn default_tokenizer() -> Tokenizer {
@@ -214,13 +216,14 @@ impl Column {
             prefix,
             term_filters,
             array_index_mode,
+            mode,
         }) = self.indexes.ste_vec_index
         {
             config = config.add_index(Index::new(IndexType::SteVec {
                 prefix,
                 term_filters,
                 array_index_mode,
-                mode: SteVecMode::default(),
+                mode,
             }))
         }
 
@@ -566,6 +569,42 @@ mod tests {
                 term_filters: vec![],
                 array_index_mode: Default::default(),
                 mode: Default::default(),
+            },
+        );
+    }
+
+    #[test]
+    fn can_parse_ste_vec_index_with_mode() {
+        let json = json!({
+            "v": 1,
+            "tables": {
+                "users": {
+                    "event_data": {
+                        "cast_as": "json",
+                        "indexes": {
+                            "ste_vec": {
+                                "prefix": "event-data",
+                                "mode": "standard"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let encrypt_config = parse(json);
+
+        let ident = Identifier::new("users", "event_data");
+
+        let column = encrypt_config.get(&ident).expect("column exists");
+
+        assert_eq!(
+            column.indexes[0].index_type,
+            IndexType::SteVec {
+                prefix: "event-data".into(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: SteVecMode::Standard,
             },
         );
     }

@@ -357,10 +357,19 @@ export type ArrayIndexMode =
   | 'none'
   | { item?: boolean; wildcard?: boolean; position?: boolean }
 
+/**
+ * Encoding mode for SteVec indexes.
+ *
+ * - `compat`: backwards-compatible encoding (default).
+ * - `standard`: standard encoding.
+ */
+export type SteVecMode = 'compat' | 'standard'
+
 export type SteVecIndexOpts = {
   prefix: string
   term_filters?: TokenFilter[]
   array_index_mode?: ArrayIndexMode
+  mode?: SteVecMode
 }
 
 export type Tokenizer =

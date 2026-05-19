@@ -321,7 +321,12 @@ type Column = {
     ore?: {}
     unique?: { token_filters?: TokenFilter[] }
     match?: { tokenizer?: Tokenizer; k?: number; m?: number; include_original?: boolean }
-    ste_vec?: { prefix: string; term_filters?: TokenFilter[] }
+    ste_vec?: {
+      prefix: string
+      term_filters?: TokenFilter[]
+      array_index_mode?: ArrayIndexMode
+      mode?: 'compat' | 'standard'
+    }
   }
 }
 ```
@@ -356,6 +361,8 @@ const config = {
 | `indexes.ste_vec` | object | Yes* | Enables JSONB queries |
 | `indexes.ste_vec.prefix` | string | Yes | Unique identifier for index |
 | `indexes.ste_vec.term_filters` | array | No | Token filters for values |
+| `indexes.ste_vec.array_index_mode` | string \| object | No | Controls how array elements are indexed |
+| `indexes.ste_vec.mode` | string | No | Encoding mode: `'compat'` (default) or `'standard'` |
 
 *Required for path/containment queries. Without `ste_vec`, JSON is stored as opaque blob.
 
