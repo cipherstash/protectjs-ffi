@@ -13,3 +13,6 @@ cipherstash-*.sql
 
 # Test coverage
 integration-tests/coverage/
+
+# Git worktrees
+.worktrees/
