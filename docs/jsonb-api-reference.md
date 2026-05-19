@@ -357,14 +357,39 @@ const config = {
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `cast_as` | string | Yes | Must be `'json'` for JSONB |
-| `indexes.ste_vec` | object | Yes* | Enables JSONB queries |
+| `v` | number | Yes | Config schema version. Must be `1`; other values fail at `newClient` with `UNSUPPORTED_CONFIG_VERSION`. |
+| `cast_as` | string | Yes | Must be `'json'` for JSONB. See *cast_as vocabulary* below. |
+| `indexes.ste_vec` | object | Yes* | Enables JSONB queries. Requires `cast_as: 'json'`; other values fail at `newClient` with `STE_VEC_REQUIRES_JSON_CAST_AS`. |
 | `indexes.ste_vec.prefix` | string | Yes | Unique identifier for index |
 | `indexes.ste_vec.term_filters` | array | No | Token filters for values |
-| `indexes.ste_vec.array_index_mode` | string \| object | No | Controls how array elements are indexed |
-| `indexes.ste_vec.mode` | string | No | Encoding mode: `'compat'` (default) or `'standard'` |
+| `indexes.ste_vec.array_index_mode` | string \| object | No | Controls how array elements are indexed. Defaults to `'none'`. |
+| `indexes.ste_vec.mode` | string | No | Encoding mode: `'standard'` (default) or `'compat'`. See *SteVec mode* below. |
+| `indexes.match` | object | No | Full-text search index. Requires a text-family `cast_as` (`'text'` or `'string'`); other values fail at `newClient` with `MATCH_REQUIRES_TEXT`. |
 
 *Required for path/containment queries. Without `ste_vec`, JSON is stored as opaque blob.
+
+### cast_as vocabulary
+
+The public `cast_as` union accepts a JS-friendly vocabulary. Three values are translated internally before reaching the native config; the remaining values pass through unchanged.
+
+| Public value | Internal value | Notes |
+|-------------|----------------|-------|
+| `'string'` | `text` | Translated automatically |
+| `'number'` | `float` | Translated automatically |
+| `'bigint'` | `big_int` | Translated automatically |
+| `'text'` | `text` | Pass-through |
+| `'boolean'` | `boolean` | Pass-through |
+| `'date'` | `date` | Pass-through |
+| `'json'` | `json` | Pass-through; required for `ste_vec` indexes |
+| `'timestamp'` | `timestamp` | Pass-through |
+
+The translation happens in TypeScript at the `newClient` boundary and is invisible to callers.
+
+### SteVec mode
+
+The `mode` option controls the encoding format used for `ste_vec` index entries. The default is `'standard'`. Use `'compat'` only when you need to read data indexed by an older release that used `Compat` encoding.
+
+**Warning:** changing `mode` on an existing column requires re-encrypting all stored data for that column; the two encodings are not cross-compatible.
 
 ### Opaque vs Searchable JSON
 
@@ -493,6 +518,8 @@ type ProtectErrorCode =
   | 'INVALID_QUERY_INPUT'
   | 'INVALID_JSON_PATH'
   | 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  | 'MATCH_REQUIRES_TEXT'
+  | 'UNSUPPORTED_CONFIG_VERSION'
   | 'UNKNOWN'
 
 class ProtectError extends Error {
