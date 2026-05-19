@@ -2,6 +2,10 @@
 
 import { type CredentialOpts, withEnvCredentials } from './credentials.js'
 import * as native from './load.cjs'
+import {
+  type NativeEncryptConfig,
+  normalizeEncryptConfig,
+} from './normalizeEncryptConfig.js'
 export {
   withEnvCredentials,
   type EnvReader,
@@ -16,7 +20,7 @@ export type Client = { readonly [sym]: unknown }
 // Use this declaration to assign types to the protect-ffi's exports,
 // which otherwise default to `any`.
 declare module './load.cjs' {
-  function newClient(opts: NewClientOptions): Promise<Client>
+  function newClient(opts: NativeNewClientOptions): Promise<Client>
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
   function isEncrypted(encrypted: Encrypted): boolean
@@ -51,6 +55,8 @@ export type ProtectErrorCode =
   | 'INVALID_QUERY_INPUT'
   | 'INVALID_JSON_PATH'
   | 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  | 'MATCH_REQUIRES_TEXT'
+  | 'UNSUPPORTED_CONFIG_VERSION'
   | 'UNKNOWN'
 
 export class ProtectError extends Error {
@@ -95,8 +101,14 @@ function inferErrorCode(message: string): ProtectErrorCode {
   if (message.includes(' index configured')) {
     return 'MISSING_INDEX'
   }
-  if (message.includes("ste_vec index requires cast_as: 'json'")) {
+  if (message.includes('requires plaintext_type: json')) {
     return 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  }
+  if (message.includes('requires plaintext_type: text')) {
+    return 'MATCH_REQUIRES_TEXT'
+  }
+  if (message.includes('unsupported config version')) {
+    return 'UNSUPPORTED_CONFIG_VERSION'
   }
   return 'UNKNOWN'
 }
@@ -138,7 +150,7 @@ function wrapSync<T>(fn: () => T): T {
 export function newClient(opts: NewClientOptions): Promise<Client> {
   return wrapAsync(() =>
     native.newClient({
-      ...opts,
+      encryptConfig: normalizeEncryptConfig(opts.encryptConfig),
       clientOpts: withEnvCredentials(opts.clientOpts),
     }),
   )
@@ -380,6 +392,12 @@ export type TokenFilter = { kind: 'downcase' }
 
 export type NewClientOptions = {
   encryptConfig: EncryptConfig
+  clientOpts?: ClientOpts
+}
+
+/** Options passed to the native `newClient` after vocabulary normalization. */
+type NativeNewClientOptions = {
+  encryptConfig: NativeEncryptConfig
   clientOpts?: ClientOpts
 }
 
