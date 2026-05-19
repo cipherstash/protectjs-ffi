@@ -1,4 +1,3 @@
-mod encrypt_config;
 mod js_plaintext;
 
 use cipherstash_client::{
@@ -10,7 +9,8 @@ use cipherstash_client::{
     },
     schema::{
         column::{Index, IndexType},
-        ColumnConfig,
+        errors::ConfigError,
+        CanonicalEncryptionConfig, ColumnConfig, Identifier,
     },
     zerokms::{
         self, FallbackKeyProvider, KeyProvider, RecordDecryptError, SecretKey, WithContext,
@@ -19,7 +19,6 @@ use cipherstash_client::{
     AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
-use encrypt_config::{EncryptConfig, Identifier};
 use js_plaintext::JsPlaintext;
 use neon::{
     prelude::*,
@@ -217,7 +216,7 @@ impl std::fmt::Display for JsonPathHint {
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Configuration error: {0}")]
-    Config(String),
+    Credentials(String),
     #[error(transparent)]
     ZeroKMSBuilder(#[from] ZeroKMSBuilderError),
     #[error(transparent)]
@@ -261,12 +260,8 @@ pub enum Error {
         reason: JsonPathReason,
         hint: JsonPathHint,
     },
-    #[error("Configuration error for column '{table}.{column}': ste_vec index requires cast_as: 'json', but found cast_as: '{found_cast_as}'. Either change cast_as to 'json' or remove the ste_vec index.")]
-    SteVecRequiresJsonCastAs {
-        table: String,
-        column: String,
-        found_cast_as: String,
-    },
+    #[error(transparent)]
+    Config(#[from] ConfigError),
 }
 
 type ScopedZeroKMS = ScopedCipher<AutoStrategy>;
@@ -303,7 +298,7 @@ impl CredentialOpts {
         match (self.client_id.as_ref(), self.client_key.as_ref()) {
             (Some(id), Some(key)) => SecretKey::from_hex(id.clone(), key.clone())
                 .map(Some)
-                .map_err(|e| Error::Config(e.to_string())),
+                .map_err(|e| Error::Credentials(e.to_string())),
             _ => Ok(None),
         }
     }
@@ -348,7 +343,7 @@ struct EnsureKeysetResult {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewClientOptions {
-    encrypt_config: EncryptConfig,
+    encrypt_config: CanonicalEncryptionConfig,
     client_opts: Option<ClientOpts>,
 }
 
