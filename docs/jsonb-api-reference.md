@@ -183,7 +183,7 @@ type EqlCiphertext = {
   // Searchable encrypted metadata (top-level)
   ob?: string[]   // ORE block (64-bit integers)
   bf?: number[]   // Bloom filter (match index)
-  hm?: string     // HMAC-SHA256 (unique index / SteVec MAC entries)
+  hm?: string     // HMAC-SHA256 (unique index)
   s?: string      // Selector (SteVec path)
   oc?: string     // SteVec ORE CLLW term — Standard mode (numeric ∪ string)
   op?: string     // SteVec OPE CLLW term — Compat mode (numeric ∪ string)
