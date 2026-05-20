@@ -199,11 +199,15 @@ describe('SteVec index field generation', () => {
     })
   })
 
-  describe('ORE index fields (ocf/ocv)', () => {
-    test('should include ORE fixed field (ocf) for numeric values', async () => {
+  // Under SteVec Standard mode (the cipherstash-client 0.34.1-alpha.7
+  // default), numeric and string values share a single orderable field `oc`
+  // — the old `ocf`/`ocv` split has been collapsed via tagged-plaintext
+  // encoding. Non-orderable values (booleans, null, arrays, objects) carry
+  // an `hm` HMAC field instead.
+  describe('ORE index field (oc)', () => {
+    test('should include ORE field (oc) for numeric values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
-      // SteVec automatically generates ORE fields for numeric values
       const ciphertext = await encrypt(client, {
         plaintext: { count: 42, price: 99.99 },
         table: 'users',
@@ -212,25 +216,20 @@ describe('SteVec index field generation', () => {
 
       expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as {
-        sv: Array<{ ocf?: string; ocv?: string; c: string }>
+        sv: Array<{ hm?: string; oc?: string; c: string }>
       }
 
-      // Numeric entries should have ORE fixed field
-      const entriesWithOreFixed = encrypted.sv.filter(
-        (e) => e.ocf !== undefined,
-      )
-      expect(entriesWithOreFixed.length).toBeGreaterThan(0)
+      const entriesWithOre = encrypted.sv.filter((e) => e.oc !== undefined)
+      expect(entriesWithOre.length).toBeGreaterThan(0)
 
-      // ORE fields should be hex encoded
-      for (const entry of entriesWithOreFixed) {
-        expect(entry.ocf).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithOre) {
+        expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
       }
     })
 
-    test('should include ORE variable field (ocv) for string values', async () => {
+    test('should include ORE field (oc) for string values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
-      // SteVec automatically generates ORE variable fields for string values
       const ciphertext = await encrypt(client, {
         plaintext: { name: 'alice', city: 'london' },
         table: 'users',
@@ -239,27 +238,24 @@ describe('SteVec index field generation', () => {
 
       expect(ciphertext.sv).toBeDefined()
       const encrypted = ciphertext as {
-        sv: Array<{ ocf?: string; ocv?: string; c: string }>
+        sv: Array<{ hm?: string; oc?: string; c: string }>
       }
 
-      // String entries should have ORE variable field
-      const entriesWithOreVariable = encrypted.sv.filter(
-        (e) => e.ocv !== undefined,
-      )
-      expect(entriesWithOreVariable.length).toBeGreaterThan(0)
+      const entriesWithOre = encrypted.sv.filter((e) => e.oc !== undefined)
+      expect(entriesWithOre.length).toBeGreaterThan(0)
 
-      // ORE fields should be hex encoded
-      for (const entry of entriesWithOreVariable) {
-        expect(entry.ocv).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithOre) {
+        expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
       }
     })
   })
 
-  describe('unique index field (b3)', () => {
-    test('should include blake3 hash for string values', async () => {
+  describe('HMAC index field (hm)', () => {
+    test('should include HMAC entry for the root object', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
-      // SteVec automatically generates blake3 hash for string values
+      // The root object (and any nested object, array, boolean, or null)
+      // produces an HMAC entry under Standard mode.
       const ciphertext = await encrypt(client, {
         plaintext: { name: 'test', email: 'test@example.com' },
         table: 'users',
@@ -267,38 +263,33 @@ describe('SteVec index field generation', () => {
       })
 
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
+      const encrypted = ciphertext as { sv: Array<{ hm?: string; c: string }> }
 
-      // String entries should have blake3 hash
-      const entriesWithB3 = encrypted.sv.filter((e) => e.b3 !== undefined)
-      expect(entriesWithB3.length).toBeGreaterThan(0)
+      const entriesWithHm = encrypted.sv.filter((e) => e.hm !== undefined)
+      expect(entriesWithHm.length).toBeGreaterThan(0)
 
-      // b3 should be hex encoded
-      for (const entry of entriesWithB3) {
-        expect(entry.b3).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithHm) {
+        expect(entry.hm).toMatch(/^[0-9a-f]+$/i)
       }
     })
 
-    test('should include blake3 hash for numeric values', async () => {
+    test('should include HMAC entries for boolean values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
-      // SteVec also generates blake3 hash for numeric values for exact match lookups
       const ciphertext = await encrypt(client, {
-        plaintext: { count: 42, price: 99.99 },
+        plaintext: { active: true, verified: false },
         table: 'users',
         column: 'profile',
       })
 
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ b3?: string; c: string }> }
+      const encrypted = ciphertext as { sv: Array<{ hm?: string; c: string }> }
 
-      // Numeric entries should also have blake3 hash for exact matching
-      const entriesWithB3 = encrypted.sv.filter((e) => e.b3 !== undefined)
-      expect(entriesWithB3.length).toBeGreaterThan(0)
+      const entriesWithHm = encrypted.sv.filter((e) => e.hm !== undefined)
+      expect(entriesWithHm.length).toBeGreaterThan(0)
 
-      // b3 should be hex encoded
-      for (const entry of entriesWithB3) {
-        expect(entry.b3).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithHm) {
+        expect(entry.hm).toMatch(/^[0-9a-f]+$/i)
       }
     })
   })

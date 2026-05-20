@@ -185,9 +185,10 @@ type EqlCiphertext = {
   bf?: number[]   // Bloom filter (match index)
   hm?: string     // HMAC-SHA256 (unique index)
   s?: string      // Selector (SteVec path)
-  b3?: string     // Blake3 hash (SteVec exact match)
-  ocf?: string    // ORE CLLW fixed (SteVec numeric)
-  ocv?: string    // ORE CLLW variable (SteVec string)
+  oc?: string     // SteVec ORE CLLW term — Standard mode (numeric ∪ string)
+  op?: string     // SteVec OPE CLLW term — Compat mode (numeric ∪ string)
+  opf?: string    // OPE CLLW fixed (non-SteVec numeric)
+  opv?: string    // OPE CLLW variable (non-SteVec string)
 
   // Nested entries
   sv?: EqlCiphertextBody[]  // SteVec flattened entries
@@ -197,12 +198,21 @@ type EqlCiphertextBody = {
   c?: string      // Entry ciphertext
   a?: boolean     // Array flag
   s?: string      // Entry selector
-  b3?: string     // Entry blake3
-  ocf?: string    // Entry ORE fixed
-  ocv?: string    // Entry ORE variable
+  hm?: string     // Entry HMAC — non-orderable values (objects, arrays, booleans, null)
+  oc?: string     // Entry ORE CLLW term (Standard mode) — orderable values (strings, numbers)
+  op?: string     // Entry OPE CLLW term (Compat mode) — orderable values (strings, numbers)
   sv?: EqlCiphertextBody[]  // Nested entries
 }
 ```
+
+Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-alpha.7), each `sv` entry carries either `hm` or `oc` depending on the underlying JSON value:
+
+| JSON value type | SteVec entry field |
+|-----------------|--------------------|
+| Object, array, boolean, null | `hm` (HMAC-SHA256) |
+| String, number | `oc` (CLLW ORE, tagged-plaintext) |
+
+Under **Compat** mode (`ste_vec.mode: 'compat'`), the orderable term is OPE instead of ORE and serializes as `op`. Numeric and string values share a single orderable field in both modes — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
 
 ### Output by Operation
 
@@ -214,15 +224,15 @@ type EqlCiphertextBody = {
 
 ### Example Outputs
 
-**Storage encryption:**
+**Storage encryption (Standard mode):**
 ```json
 {
   "i": { "t": "users", "c": "profile" },
   "v": 2,
   "c": "base85encodedciphertext...",
   "sv": [
-    { "s": "abc123", "b3": "def456", "ocv": "ghi789", "c": "..." },
-    { "s": "jkl012", "b3": "mno345", "ocf": "pqr678", "c": "..." }
+    { "s": "abc123", "hm": "def456", "c": "..." },
+    { "s": "jkl012", "oc": "pqr678", "c": "..." }
   ]
 }
 ```
@@ -236,14 +246,14 @@ type EqlCiphertextBody = {
 }
 ```
 
-**Term query:**
+**Term query (Standard mode):**
 ```json
 {
   "i": { "t": "users", "c": "profile" },
   "v": 2,
   "c": "base85encodedciphertext...",
   "sv": [
-    { "s": "abc123", "b3": "def456", "ocv": "ghi789", "c": "..." }
+    { "s": "abc123", "oc": "ghi789", "c": "..." }
   ]
 }
 ```
@@ -316,12 +326,19 @@ type EncryptConfig = {
 }
 
 type Column = {
-  cast_as?: 'string' | 'number' | 'bigint' | 'boolean' | 'date' | 'json'
+  cast_as?:
+    | 'bigint' | 'boolean' | 'date' | 'json'
+    | 'number' | 'string' | 'text' | 'timestamp'
   indexes?: {
     ore?: {}
     unique?: { token_filters?: TokenFilter[] }
     match?: { tokenizer?: Tokenizer; k?: number; m?: number; include_original?: boolean }
-    ste_vec?: { prefix: string; term_filters?: TokenFilter[] }
+    ste_vec?: {
+      prefix: string
+      term_filters?: TokenFilter[]
+      array_index_mode?: ArrayIndexMode
+      mode?: 'compat' | 'standard'
+    }
   }
 }
 ```
@@ -352,12 +369,39 @@ const config = {
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `cast_as` | string | Yes | Must be `'json'` for JSONB |
-| `indexes.ste_vec` | object | Yes* | Enables JSONB queries |
+| `v` | number | Yes | Config schema version. Must be `1`; other values fail at `newClient` with `UNSUPPORTED_CONFIG_VERSION`. |
+| `cast_as` | string | Yes | Must be `'json'` for JSONB. See *cast_as vocabulary* below. |
+| `indexes.ste_vec` | object | Yes* | Enables JSONB queries. Requires `cast_as: 'json'`; other values fail at `newClient` with `STE_VEC_REQUIRES_JSON_CAST_AS`. |
 | `indexes.ste_vec.prefix` | string | Yes | Unique identifier for index |
 | `indexes.ste_vec.term_filters` | array | No | Token filters for values |
+| `indexes.ste_vec.array_index_mode` | string \| object | No | Controls how array elements are indexed. Defaults to `'none'`. |
+| `indexes.ste_vec.mode` | string | No | Encoding mode: `'standard'` (default) or `'compat'`. See *SteVec mode* below. |
+| `indexes.match` | object | No | Full-text search index. Requires a text-family `cast_as` (`'text'` or `'string'`); other values fail at `newClient` with `MATCH_REQUIRES_TEXT`. |
 
 *Required for path/containment queries. Without `ste_vec`, JSON is stored as opaque blob.
+
+### cast_as vocabulary
+
+The public `cast_as` union accepts a JS-friendly vocabulary. Three values are translated internally before reaching the native config; the remaining values pass through unchanged.
+
+| Public value | Internal value | Notes |
+|-------------|----------------|-------|
+| `'string'` | `text` | Translated automatically |
+| `'number'` | `float` | Translated automatically |
+| `'bigint'` | `big_int` | Translated automatically |
+| `'text'` | `text` | Pass-through |
+| `'boolean'` | `boolean` | Pass-through |
+| `'date'` | `date` | Pass-through |
+| `'json'` | `json` | Pass-through; required for `ste_vec` indexes |
+| `'timestamp'` | `timestamp` | Pass-through |
+
+The translation happens in TypeScript at the `newClient` boundary and is invisible to callers.
+
+### SteVec mode
+
+The `mode` option controls the encoding format used for `ste_vec` index entries. The default is `'standard'`. Use `'compat'` only when you need to read data indexed by an older release that used `Compat` encoding.
+
+**Warning:** changing `mode` on an existing column requires re-encrypting all stored data for that column; the two encodings are not cross-compatible.
 
 ### Opaque vs Searchable JSON
 
@@ -486,6 +530,8 @@ type ProtectErrorCode =
   | 'INVALID_QUERY_INPUT'
   | 'INVALID_JSON_PATH'
   | 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  | 'MATCH_REQUIRES_TEXT'
+  | 'UNSUPPORTED_CONFIG_VERSION'
   | 'UNKNOWN'
 
 class ProtectError extends Error {
