@@ -54,8 +54,9 @@ describe('encryptBulk output structure for nested JSON', () => {
 
     expect(sv.length).toBeGreaterThan(0)
 
-    // Verify root ciphertext exists (for storage)
-    expect(encrypted).toHaveProperty('c')
+    // EQL v2.3: SteVec storage places the root ciphertext at sv[0].c, not at the root.
+    expect(encrypted).not.toHaveProperty('c')
+    expect(sv[0]).toHaveProperty('c')
 
     // Verify identifier and version
     expect(encrypted).toHaveProperty('i')
@@ -284,13 +285,14 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
     console.log('\n=== QUERY (encryptQueryBulk with ste_vec_term) ===')
     console.log(JSON.stringify(queried[0], null, 2))
 
-    // Document the differences
+    // Document the differences. EQL v2.3 places the root ciphertext at sv[0].c
+    // for SteVec storage payloads — no `c` at the root.
     console.log('\n=== STRUCTURAL COMPARISON ===')
     console.log(
-      `Storage has 'c' (root ciphertext): ${stored[0].c !== undefined}`,
+      `Storage has 'sv[0].c' (root ciphertext): ${stored[0].sv?.[0]?.c !== undefined}`,
     )
     console.log(
-      `Query has 'c' (root ciphertext): ${queried[0].c !== undefined}`,
+      `Query has 'sv[0].c' (root ciphertext): ${queried[0].sv?.[0]?.c !== undefined}`,
     )
     console.log(
       `Storage has 'sv' (flattened entries): ${stored[0].sv !== undefined}`,
@@ -355,9 +357,10 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
       console.log(row.join(' '))
     }
 
-    // Storage should have c and sv
-    expect(stored[0]).toHaveProperty('c')
+    // EQL v2.3: SteVec storage has sv (root ciphertext lives at sv[0].c, not the root).
+    expect(stored[0]).not.toHaveProperty('c')
     expect(stored[0]).toHaveProperty('sv')
+    expect(stored[0].sv?.[0]).toHaveProperty('c')
 
     // Selector query should have s (selector) but not c
     expect(querySelector[0]).toHaveProperty('s')
@@ -816,10 +819,12 @@ describe('type inference with nested structures', () => {
       queryOp: 'default',
     })
 
-    // null as JsonB goes through StoreMode, producing sv array
+    // null as JsonB goes through StoreMode, producing sv array.
+    // EQL v2.3: the root ciphertext lives at sv[0].c, not at the root.
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
-    expect(result).toHaveProperty('c')
+    expect(result).not.toHaveProperty('c')
     expect(result).toHaveProperty('sv')
+    expect(result.sv?.[0]).toHaveProperty('c')
   })
 })
