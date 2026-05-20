@@ -93,30 +93,30 @@ describe('encryptBulk output structure for nested JSON', () => {
     const sv = encrypted.sv
     if (!sv) throw new Error('sv should be defined')
 
-    // Count entries by field presence
+    // Count entries by field presence. Under SteVec Standard mode (the
+    // cipherstash-client 0.34.1-alpha.7 default) numeric and string values
+    // share a single orderable field `oc`, and non-orderable values
+    // (booleans, null, arrays, objects) carry an `hm` HMAC.
     const withSelector = sv.filter((e) => e.s !== undefined)
-    const withBlake3 = sv.filter((e) => e.b3 !== undefined)
-    const withOreFixed = sv.filter((e) => e.ocf !== undefined)
-    const withOreVariable = sv.filter((e) => e.ocv !== undefined)
+    const withHmac = sv.filter((e) => e.hm !== undefined)
+    const withOreCllw = sv.filter((e) => e.oc !== undefined)
     const withArrayFlag = sv.filter((e) => e.a === true)
 
     console.log('SteVec entry counts:')
     console.log(`  Total entries: ${sv.length}`)
     console.log(`  With selector (s): ${withSelector.length}`)
-    console.log(`  With blake3 (b3): ${withBlake3.length}`)
-    console.log(`  With ORE fixed (ocf): ${withOreFixed.length}`)
-    console.log(`  With ORE variable (ocv): ${withOreVariable.length}`)
+    console.log(`  With HMAC (hm): ${withHmac.length}`)
+    console.log(`  With ORE CLLW (oc): ${withOreCllw.length}`)
     console.log(`  With array flag (a): ${withArrayFlag.length}`)
 
     // All entries should have selectors
     expect(withSelector.length).toBe(sv.length)
 
-    // String values should have blake3 and ORE variable
-    expect(withBlake3.length).toBeGreaterThan(0)
-    expect(withOreVariable.length).toBeGreaterThan(0)
+    // Scalar string and numeric values produce ORE CLLW (`oc`) entries
+    expect(withOreCllw.length).toBeGreaterThan(0)
 
-    // Numeric values should have ORE fixed
-    expect(withOreFixed.length).toBeGreaterThan(0)
+    // Non-orderable values (root object, booleans, arrays) produce HMAC (`hm`) entries
+    expect(withHmac.length).toBeGreaterThan(0)
 
     // With default ArrayIndexMode (NONE), array elements should not have array flag
     expect(withArrayFlag.length).toBe(0)
