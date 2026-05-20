@@ -23,7 +23,7 @@ use cipherstash_client::eql::{
     encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlOperation, EqlOutput,
     Identifier as EqlIdentifier, PreparedPlaintext,
 };
-use cipherstash_client::schema::ColumnConfig;
+use cipherstash_client::schema::{CanonicalEncryptionConfig, ColumnConfig, Identifier};
 use cipherstash_client::zerokms::{self, ClientKey, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey};
 use cipherstash_client::IdentifiedBy;
 use serde::Deserialize;
@@ -32,7 +32,6 @@ use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::encrypt_config::{EncryptConfig, Identifier};
 use crate::js_plaintext::JsPlaintext;
 use crate::{
     encrypted_record_from_mp_base85, find_index_for_type, into_store_ciphertext, parse_query_op,
@@ -105,7 +104,7 @@ pub struct WasmClient {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewClientOpts {
-    encrypt_config: EncryptConfig,
+    encrypt_config: CanonicalEncryptionConfig,
     /// UUID identifying the client key (workspace's data-encryption keyset).
     client_id: String,
     /// Hex-encoded v1 client key. Required — wasm has no
