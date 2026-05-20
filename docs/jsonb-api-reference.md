@@ -183,11 +183,12 @@ type EqlCiphertext = {
   // Searchable encrypted metadata (top-level)
   ob?: string[]   // ORE block (64-bit integers)
   bf?: number[]   // Bloom filter (match index)
-  hm?: string     // HMAC-SHA256 (unique index)
+  hm?: string     // HMAC-SHA256 (unique index / SteVec MAC entries)
   s?: string      // Selector (SteVec path)
-  b3?: string     // Blake3 hash (SteVec exact match)
-  ocf?: string    // ORE CLLW fixed (SteVec numeric)
-  ocv?: string    // ORE CLLW variable (SteVec string)
+  oc?: string     // SteVec ORE CLLW term — Standard mode (numeric ∪ string)
+  op?: string     // SteVec OPE CLLW term — Compat mode (numeric ∪ string)
+  opf?: string    // OPE CLLW fixed (non-SteVec numeric)
+  opv?: string    // OPE CLLW variable (non-SteVec string)
 
   // Nested entries
   sv?: EqlCiphertextBody[]  // SteVec flattened entries
@@ -197,12 +198,21 @@ type EqlCiphertextBody = {
   c?: string      // Entry ciphertext
   a?: boolean     // Array flag
   s?: string      // Entry selector
-  b3?: string     // Entry blake3
-  ocf?: string    // Entry ORE fixed
-  ocv?: string    // Entry ORE variable
+  hm?: string     // Entry HMAC — non-orderable values (objects, arrays, booleans, null)
+  oc?: string     // Entry ORE CLLW term (Standard mode) — orderable values (strings, numbers)
+  op?: string     // Entry OPE CLLW term (Compat mode) — orderable values (strings, numbers)
   sv?: EqlCiphertextBody[]  // Nested entries
 }
 ```
+
+Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-alpha.7), each `sv` entry carries either `hm` or `oc` depending on the underlying JSON value:
+
+| JSON value type | SteVec entry field |
+|-----------------|--------------------|
+| Object, array, boolean, null | `hm` (HMAC-SHA256) |
+| String, number | `oc` (CLLW ORE, tagged-plaintext) |
+
+Under **Compat** mode (`ste_vec.mode: 'compat'`), the orderable term is OPE instead of ORE and serializes as `op`. Numeric and string values share a single orderable field in both modes — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
 
 ### Output by Operation
 
@@ -214,15 +224,15 @@ type EqlCiphertextBody = {
 
 ### Example Outputs
 
-**Storage encryption:**
+**Storage encryption (Standard mode):**
 ```json
 {
   "i": { "t": "users", "c": "profile" },
   "v": 2,
   "c": "base85encodedciphertext...",
   "sv": [
-    { "s": "abc123", "b3": "def456", "ocv": "ghi789", "c": "..." },
-    { "s": "jkl012", "b3": "mno345", "ocf": "pqr678", "c": "..." }
+    { "s": "abc123", "hm": "def456", "c": "..." },
+    { "s": "jkl012", "oc": "pqr678", "c": "..." }
   ]
 }
 ```
@@ -236,14 +246,14 @@ type EqlCiphertextBody = {
 }
 ```
 
-**Term query:**
+**Term query (Standard mode):**
 ```json
 {
   "i": { "t": "users", "c": "profile" },
   "v": 2,
   "c": "base85encodedciphertext...",
   "sv": [
-    { "s": "abc123", "b3": "def456", "ocv": "ghi789", "c": "..." }
+    { "s": "abc123", "oc": "ghi789", "c": "..." }
   ]
 }
 ```

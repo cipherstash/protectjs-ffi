@@ -215,7 +215,7 @@ impl std::fmt::Display for JsonPathHint {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Configuration error: {0}")]
+    #[error("Credential error: {0}")]
     Credentials(String),
     #[error(transparent)]
     ZeroKMSBuilder(#[from] ZeroKMSBuilderError),
