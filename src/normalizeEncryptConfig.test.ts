@@ -3,47 +3,28 @@ import type { EncryptConfig } from './index.cjs'
 import { normalizeEncryptConfig } from './normalizeEncryptConfig.js'
 
 describe('normalizeEncryptConfig', () => {
-  it('remaps cast_as string -> text', () => {
-    const input: EncryptConfig = {
+  it.each([
+    ['string', 'text'],
+    ['number', 'float'],
+    ['bigint', 'big_int'],
+  ] as const)('remaps cast_as %s -> %s', (input, expected) => {
+    const config: EncryptConfig = {
       v: 1,
-      tables: { users: { name: { cast_as: 'string' } } },
+      tables: { t: { c: { cast_as: input } } },
     }
-    expect(normalizeEncryptConfig(input).tables.users.name.cast_as).toBe('text')
+    expect(normalizeEncryptConfig(config).tables.t.c.cast_as).toBe(expected)
   })
 
-  it('remaps cast_as number -> float', () => {
-    const input: EncryptConfig = {
-      v: 1,
-      tables: { users: { age: { cast_as: 'number' } } },
-    }
-    expect(normalizeEncryptConfig(input).tables.users.age.cast_as).toBe('float')
-  })
-
-  it('remaps cast_as bigint -> big_int', () => {
-    const input: EncryptConfig = {
-      v: 1,
-      tables: { users: { id: { cast_as: 'bigint' } } },
-    }
-    expect(normalizeEncryptConfig(input).tables.users.id.cast_as).toBe(
-      'big_int',
-    )
-  })
-
-  it('leaves canonical cast_as values unchanged', () => {
-    for (const value of [
-      'text',
-      'json',
-      'boolean',
-      'date',
-      'timestamp',
-    ] as const) {
+  it.each(['text', 'json', 'boolean', 'date', 'timestamp'] as const)(
+    'leaves canonical cast_as %s unchanged',
+    (value) => {
       const input: EncryptConfig = {
         v: 1,
         tables: { t: { c: { cast_as: value } } },
       }
       expect(normalizeEncryptConfig(input).tables.t.c.cast_as).toBe(value)
-    }
-  })
+    },
+  )
 
   it('leaves omitted cast_as omitted', () => {
     const input: EncryptConfig = { v: 1, tables: { t: { c: {} } } }
