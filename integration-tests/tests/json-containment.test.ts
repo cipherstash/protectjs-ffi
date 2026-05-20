@@ -10,7 +10,7 @@ import {
   newClient,
 } from '@cipherstash/protect-ffi'
 
-import { jsonSteVec } from './common.js'
+import { assertSteVec, jsonSteVec } from './common.js'
 
 /**
  * JSON Containment Investigation Tests
@@ -46,6 +46,7 @@ describe('encryptBulk output structure for nested JSON', () => {
     const encrypted = result[0]
 
     // Verify sv structure exists
+    assertSteVec(encrypted)
     expect(encrypted).toHaveProperty('sv')
     expect(Array.isArray(encrypted.sv)).toBe(true)
 
@@ -89,6 +90,7 @@ describe('encryptBulk output structure for nested JSON', () => {
     const result = await encryptBulk(client, { plaintexts })
     const encrypted = result[0]
 
+    assertSteVec(encrypted)
     expect(encrypted.sv).toBeDefined()
 
     const sv = encrypted.sv
@@ -147,6 +149,7 @@ describe('encryptBulk output structure for nested JSON', () => {
     const result = await encryptBulk(client, { plaintexts })
     const encrypted = result[0]
 
+    assertSteVec(encrypted)
     expect(encrypted.sv).toBeDefined()
 
     const sv = encrypted.sv
@@ -285,31 +288,36 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
     console.log('\n=== QUERY (encryptQueryBulk with ste_vec_term) ===')
     console.log(JSON.stringify(queried[0], null, 2))
 
+    const storedEnc = stored[0]
+    const queriedEnc = queried[0]
+    assertSteVec(storedEnc)
+    assertSteVec(queriedEnc)
+
     // Document the differences. EQL v2.3 places the root ciphertext at sv[0].c
     // for SteVec storage payloads — no `c` at the root.
     console.log('\n=== STRUCTURAL COMPARISON ===')
     console.log(
-      `Storage has 'sv[0].c' (root ciphertext): ${stored[0].sv?.[0]?.c !== undefined}`,
+      `Storage has 'sv[0].c' (root ciphertext): ${storedEnc.sv?.[0]?.c !== undefined}`,
     )
     console.log(
-      `Query has 'sv[0].c' (root ciphertext): ${queried[0].sv?.[0]?.c !== undefined}`,
+      `Query has 'sv[0].c' (root ciphertext): ${queriedEnc.sv?.[0]?.c !== undefined}`,
     )
     console.log(
-      `Storage has 'sv' (flattened entries): ${stored[0].sv !== undefined}`,
+      `Storage has 'sv' (flattened entries): ${storedEnc.sv !== undefined}`,
     )
     console.log(
-      `Query has 'sv' (flattened entries): ${queried[0].sv !== undefined}`,
+      `Query has 'sv' (flattened entries): ${queriedEnc.sv !== undefined}`,
     )
 
-    if (stored[0].sv && queried[0].sv) {
-      console.log(`Storage sv count: ${stored[0].sv.length}`)
-      console.log(`Query sv count: ${queried[0].sv.length}`)
+    if (storedEnc.sv && queriedEnc.sv) {
+      console.log(`Storage sv count: ${storedEnc.sv.length}`)
+      console.log(`Query sv count: ${queriedEnc.sv.length}`)
     }
 
-    expect(stored[0]).toHaveProperty('i')
-    expect(stored[0]).toHaveProperty('v')
-    expect(queried[0]).toHaveProperty('i')
-    expect(queried[0]).toHaveProperty('v')
+    expect(storedEnc).toHaveProperty('i')
+    expect(storedEnc).toHaveProperty('v')
+    expect(queriedEnc).toHaveProperty('i')
+    expect(queriedEnc).toHaveProperty('v')
   })
 
   test('compare storage vs query (selector operation only)', async () => {
@@ -357,10 +365,13 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
       console.log(row.join(' '))
     }
 
+    const storedEnc = stored[0]
+    assertSteVec(storedEnc)
+
     // EQL v2.3: SteVec storage has sv (root ciphertext lives at sv[0].c, not the root).
-    expect(stored[0]).not.toHaveProperty('c')
-    expect(stored[0]).toHaveProperty('sv')
-    expect(stored[0].sv?.[0]).toHaveProperty('c')
+    expect(storedEnc).not.toHaveProperty('c')
+    expect(storedEnc).toHaveProperty('sv')
+    expect(storedEnc.sv?.[0]).toHaveProperty('c')
 
     // Selector query should have s (selector) but not c
     expect(querySelector[0]).toHaveProperty('s')
@@ -718,6 +729,9 @@ describe('type inference equivalence', () => {
     expect(inferred).toHaveProperty('v')
     expect(explicit).toHaveProperty('v')
 
+    assertSteVec(inferred)
+    assertSteVec(explicit)
+
     // Identifier should match (same table/column)
     expect(inferred.i).toEqual(explicit.i)
 
@@ -753,6 +767,9 @@ describe('type inference equivalence', () => {
     expect(explicit).toHaveProperty('s')
     expect(inferred).not.toHaveProperty('c')
     expect(explicit).not.toHaveProperty('c')
+
+    assertSteVec(inferred)
+    assertSteVec(explicit)
 
     // Identifier should match
     expect(inferred.i).toEqual(explicit.i)
@@ -825,6 +842,7 @@ describe('type inference with nested structures', () => {
     expect(result).toHaveProperty('v')
     expect(result).not.toHaveProperty('c')
     expect(result).toHaveProperty('sv')
+    assertSteVec(result)
     expect(result.sv?.[0]).toHaveProperty('c')
   })
 })

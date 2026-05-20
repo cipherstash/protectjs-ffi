@@ -11,7 +11,7 @@ import {
 } from '@cipherstash/protect-ffi'
 
 // Import shared encryptConfig from common.js
-import { encryptConfig } from './common.js'
+import { assertScalar, assertSteVec, encryptConfig } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>
 
@@ -85,6 +85,7 @@ describe('encryptQuery for ste_vec indexes', () => {
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
     expect(result.k).toBe('sv')
+    assertSteVec(result)
     expect(result).toHaveProperty('sv') // Flattened entries for containment matching
     expect(Array.isArray(result.sv)).toBe(true)
     expect(result).not.toHaveProperty('c')
@@ -123,6 +124,7 @@ describe('encryptQuery for string indexes', () => {
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
     expect(result).toHaveProperty('ob') // ORE blocks for range queries
+    assertScalar(result)
     expect(Array.isArray(result.ob)).toBe(true)
   })
 
@@ -139,6 +141,7 @@ describe('encryptQuery for string indexes', () => {
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
     expect(result).toHaveProperty('bf') // bloom filter for fuzzy/substring match
+    assertScalar(result)
     expect(Array.isArray(result.bf)).toBe(true)
   })
 
@@ -155,6 +158,7 @@ describe('encryptQuery for string indexes', () => {
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
     expect(result).toHaveProperty('hm') // HMAC for exact match queries
+    assertScalar(result)
     expect(typeof result.hm).toBe('string')
   })
 })
@@ -173,6 +177,7 @@ describe('encryptQuery for numeric indexes', () => {
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
     expect(result).toHaveProperty('ob') // ORE blocks for range queries
+    assertScalar(result)
     expect(Array.isArray(result.ob)).toBe(true)
   })
 })
@@ -330,6 +335,9 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
     expect(results[0]).toHaveProperty('hm')
     expect(results[1]).toHaveProperty('hm')
     expect(results[2]).toHaveProperty('hm')
+    assertScalar(results[0])
+    assertScalar(results[1])
+    assertScalar(results[2])
     // Results should be different (different plaintexts)
     expect(results[0].hm).not.toEqual(results[1].hm)
     expect(results[1].hm).not.toEqual(results[2].hm)

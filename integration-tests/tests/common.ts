@@ -1,4 +1,33 @@
-import type { EncryptConfig } from '../../lib/index.cjs'
+import type {
+  Encrypted,
+  EncryptedScalar,
+  EncryptedSteVec,
+  EncryptConfig,
+} from '../../lib/index.cjs'
+
+/**
+ * Narrows an `Encrypted` payload to the `k: "sv"` variant for assertion-based
+ * tests. Throws if the payload is not a SteVec — covers the common test pattern
+ * where we encrypted a JSON column and expect a SteVec storage payload.
+ */
+export function assertSteVec(
+  payload: Encrypted,
+): asserts payload is EncryptedSteVec {
+  if (payload.k !== 'sv') {
+    throw new Error(`expected k:"sv" payload, got k:"${payload.k}"`)
+  }
+}
+
+/**
+ * Narrows an `Encrypted` payload to the `k: "ct"` variant. Throws otherwise.
+ */
+export function assertScalar(
+  payload: Encrypted,
+): asserts payload is EncryptedScalar {
+  if (payload.k !== 'ct') {
+    throw new Error(`expected k:"ct" payload, got k:"${payload.k}"`)
+  }
+}
 
 export const encryptConfig: EncryptConfig = {
   v: 1,

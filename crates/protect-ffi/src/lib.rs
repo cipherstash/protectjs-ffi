@@ -1201,6 +1201,12 @@ fn encrypted_record_from_mp_base85(
 ) -> Result<WithContext<'static>, Error> {
     // The encrypted record (mp_base85) lives on the scalar payload directly, or on the
     // first entry of the SteVec for structured payloads.
+    //
+    // The SteVec invariant — root record is always `sv[0]` — is established by upstream
+    // (`SteVec::into_root_ciphertext` in `cipherstash-client`'s encryption crate, and
+    // `extract_root_ciphertext` in the EQL crate, both of which take `into_iter().next()`).
+    // Neither accessor is exposed on the public `SteVecPayload` wire type, so we mirror
+    // the pattern here.
     let encrypted_record = match encrypted {
         EqlCiphertext::Encrypted(payload) => payload.ciphertext,
         EqlCiphertext::SteVec(payload) => {
@@ -1272,7 +1278,61 @@ mod tests {
 
     mod is_encrypted {
         use super::*;
+        use cipherstash_client::eql::{
+            EncryptedPayload, SteVecEntry, SteVecEntryTerm, SteVecPayload, EQL_SCHEMA_VERSION,
+        };
+        use cipherstash_client::zerokms::EncryptedRecord;
         use serde_json::json;
+
+        fn dummy_encrypted_record() -> EncryptedRecord {
+            EncryptedRecord {
+                iv: Default::default(),
+                ciphertext: vec![1; 16],
+                tag: vec![2; 16],
+                descriptor: "users/email".to_string(),
+                keyset_id: None,
+                decryption_policy: None,
+            }
+        }
+
+        #[test]
+        fn valid_scalar_ciphertext_is_encrypted() {
+            // A well-formed `k = "ct"` storage payload must round-trip through
+            // is_encrypted as true. Guards against regressions where the predicate
+            // collapses to always-false.
+            let payload = EqlCiphertext::Encrypted(EncryptedPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: dummy_encrypted_record(),
+                hmac_256: None,
+                bloom_filter: None,
+                ore_block_u64_8_256: None,
+            });
+            let value = serde_json::to_value(&payload).unwrap();
+            assert_eq!(value["k"], "ct");
+            assert!(is_encrypted(Json(value)));
+        }
+
+        #[test]
+        fn valid_ste_vec_ciphertext_is_encrypted() {
+            // A well-formed `k = "sv"` storage payload (with a root SteVec entry)
+            // must round-trip through is_encrypted as true.
+            let payload = EqlCiphertext::SteVec(SteVecPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "profile"),
+                ste_vec: vec![SteVecEntry {
+                    selector: "deadbeef".into(),
+                    ciphertext: dummy_encrypted_record(),
+                    is_array: None,
+                    term: SteVecEntryTerm::Hmac {
+                        hmac_256: "feedface".into(),
+                    },
+                }],
+            });
+            let value = serde_json::to_value(&payload).unwrap();
+            assert_eq!(value["k"], "sv");
+            assert!(is_encrypted(Json(value)));
+        }
 
         #[test]
         fn invalid_ciphertext_is_not_encrypted() {
