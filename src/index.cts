@@ -252,37 +252,71 @@ export type Context = {
 /**
  * Represents an EQL v2.3 payload returned by the FFI.
  *
- * This TypeScript type mirrors the Rust `EqlCiphertext` enum from `cipherstash-client`,
- * which is a discriminated union keyed on `k`:
- * - `k: "ct"` — scalar payload with root-scope index terms (`c`, `hm`, `bf`, `ob`).
- *   Storage payloads always carry `c`; query payloads omit `c`.
- * - `k: "sv"` — STE-vector payload with per-selector entries in `sv`.
- *   Storage payloads carry the root ciphertext at `sv[0].c`; query payloads
- *   carry either a single selector (`s`) or a containment vector (`q`).
+ * Discriminated union keyed on `k`. Narrow on `k` before accessing variant-only
+ * fields:
+ *
+ * ```ts
+ * if (payload.k === 'sv') {
+ *   payload.sv?.forEach(...)
+ * }
+ * ```
+ *
+ * - `k: "ct"` — scalar payload (storage or query for `unique` / `match` / `ore`
+ *   indexes). Storage payloads always carry `c`; query payloads omit `c` and
+ *   carry exactly one of `hm`, `bf`, or `ob`.
+ * - `k: "sv"` — STE-vector payload. The FFI emits this for SteVec storage
+ *   *and* for JSON containment queries (`ste_vec_term`), both of which carry
+ *   per-selector entries in `sv` with the root document ciphertext at
+ *   `sv[0].c`. Selector queries (`ste_vec_selector`) instead carry a single
+ *   tokenized selector `s` and omit `sv`.
  */
-export type Encrypted = {
-  /** EQL v2.3 root discriminator — `"ct"` for scalar, `"sv"` for STE-vector */
-  k: 'ct' | 'sv'
-  /** The encryption version */
+export type Encrypted = EncryptedScalar | EncryptedSteVec
+
+/** Scalar EQL v2.3 payload (`k: "ct"`). */
+export type EncryptedScalar = {
+  k: 'ct'
+  /** EQL schema version */
   v: number
-  /** The table and column identifier */
+  /** Table and column identifier */
   i: { t: string; c: string }
-  /** Encrypted ciphertext (mp_base85). Present on scalar storage payloads; absent on scalar queries. */
+  /** Encrypted ciphertext (mp_base85). Required on storage payloads; absent on query payloads. */
   c?: string
-  /** HMAC-SHA256 hash for exact-match equality (unique index) */
+  /** HMAC-SHA256 hash — `unique` index term on storage, or `unique` lookup term on queries. */
   hm?: string
-  /** Bloom filter (set bit positions) for LIKE / ILIKE (match index) */
+  /** Bloom filter (set bit positions) — `match` index term on storage, or `match` lookup term on queries. */
   bf?: number[]
-  /** Block ORE u64_8_256 term for ordered comparisons (ore index) */
+  /** Block ORE u64_8_256 term — `ore` index term on storage, or `ore` comparison term on queries. */
   ob?: string[]
-  /** Per-selector SteVec entries (present on `k:"sv"` storage payloads) */
-  sv?: SteVecEntry[]
-  /** Tokenized selector for `ste_vec_selector` queries (present on `k:"sv"` query payloads) */
-  s?: string
-  /** CLLW ORE term for `ste_vec_term` queries (present on `k:"sv"` query payloads) */
-  oc?: string
-  /** Full STE query vector for JSON containment queries (present on `k:"sv"` containment queries) */
-  q?: unknown
+}
+
+/**
+ * STE-vector EQL v2.3 payload (`k: "sv"`). The FFI emits two disjoint shapes:
+ *
+ * - {@link EncryptedSteVecStorage} for storage encryption and JSON containment
+ *   queries — carries a non-empty `sv` with the root ciphertext at `sv[0].c`.
+ * - {@link EncryptedSteVecSelector} for `ste_vec_selector` queries — carries
+ *   only a tokenized selector `s`.
+ */
+export type EncryptedSteVec = EncryptedSteVecStorage | EncryptedSteVecSelector
+
+/** SteVec storage payload (also used for containment queries). */
+export type EncryptedSteVecStorage = {
+  k: 'sv'
+  v: number
+  i: { t: string; c: string }
+  /** Per-selector entries; root document ciphertext lives at `sv[0].c`. */
+  sv: [SteVecEntry, ...SteVecEntry[]]
+  s?: never
+}
+
+/** SteVec selector query payload (`ste_vec_selector`). */
+export type EncryptedSteVecSelector = {
+  k: 'sv'
+  v: number
+  i: { t: string; c: string }
+  /** Tokenized selector for path queries. */
+  s: string
+  sv?: never
 }
 
 /**

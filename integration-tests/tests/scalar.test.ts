@@ -10,7 +10,12 @@ import {
 } from '@cipherstash/protect-ffi'
 
 // Import shared configs from common.js
-import { encryptConfig, jsonSteVec } from './common.js'
+import {
+  assertScalar,
+  assertSteVec,
+  encryptConfig,
+  jsonSteVec,
+} from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>
 
@@ -182,7 +187,7 @@ describe('EQL v2.3 wire format', () => {
       column: 'profile',
     })
 
-    expect(ciphertext.k).toBe('sv')
+    assertSteVec(ciphertext)
     expect(ciphertext).toHaveProperty('sv')
     // SteVec payloads place the root ciphertext at sv[0].c, not at the root.
     expect(ciphertext).not.toHaveProperty('c')
@@ -200,6 +205,7 @@ describe('encrypted output SEM fields', () => {
       column: 'email', // has unique: {} index
     })
 
+    assertScalar(ciphertext)
     // hm = HMAC for exact match queries
     expect(ciphertext.hm).toBeDefined()
     expect(typeof ciphertext.hm).toBe('string')
@@ -215,6 +221,7 @@ describe('encrypted output SEM fields', () => {
       column: 'score', // has ore: {} index
     })
 
+    assertScalar(ciphertext)
     // ob = ORE blocks for range queries
     expect(ciphertext.ob).toBeDefined()
     expect(Array.isArray(ciphertext.ob)).toBe(true)
@@ -230,6 +237,7 @@ describe('encrypted output SEM fields', () => {
       column: 'email', // has match: {} index
     })
 
+    assertScalar(ciphertext)
     // bf = bloom filter for fuzzy/substring match queries
     expect(ciphertext.bf).toBeDefined()
     expect(Array.isArray(ciphertext.bf)).toBe(true)
@@ -245,6 +253,7 @@ describe('encrypted output SEM fields', () => {
       column: 'email', // has ore, match, and unique indexes
     })
 
+    assertScalar(ciphertext)
     // email column has all three index types
     expect(ciphertext.hm).toBeDefined() // unique
     expect(ciphertext.ob).toBeDefined() // ore

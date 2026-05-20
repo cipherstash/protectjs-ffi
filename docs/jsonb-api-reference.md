@@ -201,7 +201,7 @@ type SteVecEntry = {
 }
 ```
 
-Query payloads share the same `{ k, v, i, ... }` shape but omit `c` (queries do not encrypt for storage). A `k = "sv"` query carries either `s` (selector lookup), `hm`/`oc` (per-element term), or `q` (full STE query vector for containment).
+Query payloads share the same `{ k, v, i, ... }` shape but omit `c` at the root (queries do not encrypt for storage). For `k = "ct"` queries, the payload carries exactly one of `hm`, `bf`, or `ob`. For `k = "sv"` queries, the FFI emits two shapes: selector queries (`ste_vec_selector`) carry a single tokenized `s`; containment queries (`ste_vec_term`) are emitted as full SteVec storage payloads with an `sv` array — see the *Output by Operation* table below.
 
 Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-alpha.7), each `sv` entry carries either `hm` or `oc` depending on the underlying JSON value:
 

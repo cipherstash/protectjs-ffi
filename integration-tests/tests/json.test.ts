@@ -8,7 +8,7 @@ import {
 } from '@cipherstash/protect-ffi'
 
 // Import shared encryptConfig from common.js
-import { jsonOpaque, jsonSteVec } from './common.js'
+import { assertSteVec, jsonOpaque, jsonSteVec } from './common.js'
 
 type UserColumn = Identifier<typeof jsonOpaque>
 
@@ -114,8 +114,7 @@ describe('SteVec output structure', () => {
       column: 'profile',
     })
 
-    // SteVec variant must have these fields
-    expect(ciphertext.k).toBe('sv')
+    assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(ciphertext).toHaveProperty('sv')
     expect(ciphertext).toHaveProperty('i')
@@ -124,11 +123,10 @@ describe('SteVec output structure', () => {
     expect(ciphertext).not.toHaveProperty('c')
 
     // Validate entry structure uses new field names
-    const encrypted = ciphertext as { sv: unknown[] }
-    expect(Array.isArray(encrypted.sv)).toBe(true)
-    expect(encrypted.sv.length).toBeGreaterThan(0)
+    expect(Array.isArray(ciphertext.sv)).toBe(true)
+    expect(ciphertext.sv?.length ?? 0).toBeGreaterThan(0)
 
-    const entry = encrypted.sv[0] as Record<string, unknown>
+    const entry = ciphertext.sv?.[0]
     expect(entry).toHaveProperty('c') // Entry ciphertext (new format)
     expect(entry).toHaveProperty('s') // Tokenized selector
 
@@ -151,11 +149,12 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ s?: string; c: string }> }
+      const sv = ciphertext.sv ?? []
 
       // At least one entry should have a selector
-      const entriesWithSelector = encrypted.sv.filter((e) => e.s !== undefined)
+      const entriesWithSelector = sv.filter((e) => e.s !== undefined)
       expect(entriesWithSelector.length).toBeGreaterThan(0)
 
       // Selector should be hex encoded
@@ -175,11 +174,12 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
+      const sv = ciphertext.sv ?? []
 
       // With default ArrayIndexMode (NONE), array items should not have a: true
-      const arrayEntries = encrypted.sv.filter((e) => e.a === true)
+      const arrayEntries = sv.filter((e) => e.a === true)
       expect(arrayEntries.length).toBe(0)
     })
 
@@ -192,11 +192,11 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ a?: boolean; c: string }> }
 
       // Non-array items should not have a: true
-      for (const entry of encrypted.sv) {
+      for (const entry of ciphertext.sv ?? []) {
         expect(entry.a).not.toBe(true)
       }
     })
@@ -217,12 +217,11 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as {
-        sv: Array<{ hm?: string; oc?: string; c: string }>
-      }
+      const sv = ciphertext.sv ?? []
 
-      const entriesWithOre = encrypted.sv.filter((e) => e.oc !== undefined)
+      const entriesWithOre = sv.filter((e) => e.oc !== undefined)
       expect(entriesWithOre.length).toBeGreaterThan(0)
 
       for (const entry of entriesWithOre) {
@@ -239,12 +238,11 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as {
-        sv: Array<{ hm?: string; oc?: string; c: string }>
-      }
+      const sv = ciphertext.sv ?? []
 
-      const entriesWithOre = encrypted.sv.filter((e) => e.oc !== undefined)
+      const entriesWithOre = sv.filter((e) => e.oc !== undefined)
       expect(entriesWithOre.length).toBeGreaterThan(0)
 
       for (const entry of entriesWithOre) {
@@ -265,10 +263,11 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ hm?: string; c: string }> }
+      const sv = ciphertext.sv ?? []
 
-      const entriesWithHm = encrypted.sv.filter((e) => e.hm !== undefined)
+      const entriesWithHm = sv.filter((e) => e.hm !== undefined)
       expect(entriesWithHm.length).toBeGreaterThan(0)
 
       for (const entry of entriesWithHm) {
@@ -285,10 +284,11 @@ describe('SteVec index field generation', () => {
         column: 'profile',
       })
 
+      assertSteVec(ciphertext)
       expect(ciphertext.sv).toBeDefined()
-      const encrypted = ciphertext as { sv: Array<{ hm?: string; c: string }> }
+      const sv = ciphertext.sv ?? []
 
-      const entriesWithHm = encrypted.sv.filter((e) => e.hm !== undefined)
+      const entriesWithHm = sv.filter((e) => e.hm !== undefined)
       expect(entriesWithHm.length).toBeGreaterThan(0)
 
       for (const entry of entriesWithHm) {
@@ -318,7 +318,7 @@ describe('deeply nested JSON encryption', () => {
       column: 'profile',
     })
 
-    // Verify sv structure exists for nested JSON
+    assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
     expect(ciphertext.sv?.length).toBeGreaterThan(0)
@@ -340,7 +340,7 @@ describe('deeply nested JSON encryption', () => {
       column: 'profile',
     })
 
-    // Verify sv structure for nested arrays
+    assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
 
@@ -373,7 +373,7 @@ describe('deeply nested JSON encryption', () => {
       column: 'profile',
     })
 
-    // Verify sv structure for mixed nested content
+    assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
     expect(ciphertext.sv?.length).toBeGreaterThan(0)
