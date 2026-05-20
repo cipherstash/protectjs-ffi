@@ -289,24 +289,34 @@ export type EncryptedScalar = {
   ob?: string[]
 }
 
-/** STE-vector EQL v2.3 payload (`k: "sv"`). */
-export type EncryptedSteVec = {
+/**
+ * STE-vector EQL v2.3 payload (`k: "sv"`). The FFI emits two disjoint shapes:
+ *
+ * - {@link EncryptedSteVecStorage} for storage encryption and JSON containment
+ *   queries — carries a non-empty `sv` with the root ciphertext at `sv[0].c`.
+ * - {@link EncryptedSteVecSelector} for `ste_vec_selector` queries — carries
+ *   only a tokenized selector `s`.
+ */
+export type EncryptedSteVec = EncryptedSteVecStorage | EncryptedSteVecSelector
+
+/** SteVec storage payload (also used for containment queries). */
+export type EncryptedSteVecStorage = {
   k: 'sv'
-  /** EQL schema version */
   v: number
-  /** Table and column identifier */
   i: { t: string; c: string }
-  /**
-   * Per-selector SteVec entries. Present on SteVec storage payloads and on
-   * JSON containment queries (which the FFI emits as storage payloads). The
-   * root document ciphertext lives at `sv[0].c`. Absent on selector queries.
-   */
-  sv?: SteVecEntry[]
-  /**
-   * Tokenized selector for `ste_vec_selector` queries. Present only on
-   * selector query payloads; absent on storage / containment payloads.
-   */
-  s?: string
+  /** Per-selector entries; root document ciphertext lives at `sv[0].c`. */
+  sv: [SteVecEntry, ...SteVecEntry[]]
+  s?: never
+}
+
+/** SteVec selector query payload (`ste_vec_selector`). */
+export type EncryptedSteVecSelector = {
+  k: 'sv'
+  v: number
+  i: { t: string; c: string }
+  /** Tokenized selector for path queries. */
+  s: string
+  sv?: never
 }
 
 /**
