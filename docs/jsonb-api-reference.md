@@ -316,7 +316,9 @@ type EncryptConfig = {
 }
 
 type Column = {
-  cast_as?: 'string' | 'number' | 'bigint' | 'boolean' | 'date' | 'json'
+  cast_as?:
+    | 'bigint' | 'boolean' | 'date' | 'json'
+    | 'number' | 'string' | 'text' | 'timestamp'
   indexes?: {
     ore?: {}
     unique?: { token_filters?: TokenFilter[] }

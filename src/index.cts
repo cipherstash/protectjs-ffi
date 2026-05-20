@@ -372,8 +372,9 @@ export type ArrayIndexMode =
 /**
  * Encoding mode for SteVec indexes.
  *
- * - `compat`: backwards-compatible encoding (default).
- * - `standard`: standard encoding.
+ * - `standard`: standard encoding (default).
+ * - `compat`: backwards-compatible encoding. Set explicitly to preserve the
+ *   pre-0.34.1-alpha.7 behaviour.
  */
 export type SteVecMode = 'compat' | 'standard'
 
