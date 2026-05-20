@@ -4,7 +4,6 @@ import { describe, expect, test } from 'vitest'
 import {
   decrypt,
   encrypt,
-  type Encrypted,
   type Identifier,
   newClient,
   isEncrypted,
@@ -158,54 +157,8 @@ describe('isEncrypted validation', () => {
   })
 })
 
-describe('old format backwards compatibility', () => {
-  test('should decrypt old format data with k: ct discriminant field', async () => {
-    const client = await newClient({ encryptConfig })
-    const plaintext = 'test@example.com'
-
-    // Encrypt to get valid ciphertext
-    const ciphertext = await encrypt(client, {
-      plaintext,
-      table: 'users',
-      column: 'email',
-    })
-
-    // Simulate old format by adding "k" field (old discriminant for ciphertext variant)
-    const oldFormat = { ...ciphertext, k: 'ct' }
-
-    // Should still be recognized as encrypted (serde ignores unknown fields)
-    expect(isEncrypted(oldFormat)).toBe(true)
-
-    // Should decrypt correctly
-    const decrypted = await decrypt(client, {
-      ciphertext: oldFormat as Encrypted,
-    })
-    expect(decrypted).toBe(plaintext)
-  })
-
-  test('should decrypt old SteVec format with k: sv discriminant', async () => {
-    const client = await newClient({ encryptConfig: jsonSteVec })
-    const plaintext = { name: 'test' }
-
-    const ciphertext = await encrypt(client, {
-      plaintext,
-      table: 'users',
-      column: 'profile',
-    })
-
-    // Simulate old SteVec format
-    const oldFormat = { ...ciphertext, k: 'sv' }
-
-    expect(isEncrypted(oldFormat)).toBe(true)
-    const decrypted = await decrypt(client, {
-      ciphertext: oldFormat as Encrypted,
-    })
-    expect(decrypted).toEqual(plaintext)
-  })
-})
-
-describe('new format validation', () => {
-  test('encrypted output should not contain k field', async () => {
+describe('EQL v2.3 wire format', () => {
+  test('scalar storage payload carries k:"ct" discriminator', async () => {
     const client = await newClient({ encryptConfig })
 
     const ciphertext = await encrypt(client, {
@@ -214,16 +167,13 @@ describe('new format validation', () => {
       column: 'email',
     })
 
-    // New format must NOT have the "k" discriminant
-    expect(ciphertext).not.toHaveProperty('k')
-
-    // Verify required fields are present
+    expect(ciphertext.k).toBe('ct')
     expect(ciphertext).toHaveProperty('c')
     expect(ciphertext).toHaveProperty('i')
     expect(ciphertext).toHaveProperty('v')
   })
 
-  test('encrypted JSON output should not contain k field', async () => {
+  test('SteVec storage payload carries k:"sv" discriminator', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
     const ciphertext = await encrypt(client, {
@@ -232,8 +182,11 @@ describe('new format validation', () => {
       column: 'profile',
     })
 
-    expect(ciphertext).not.toHaveProperty('k')
-    expect(ciphertext).toHaveProperty('sv') // SteVec field
+    expect(ciphertext.k).toBe('sv')
+    expect(ciphertext).toHaveProperty('sv')
+    // SteVec payloads place the root ciphertext at sv[0].c, not at the root.
+    expect(ciphertext).not.toHaveProperty('c')
+    expect(ciphertext.sv?.[0]).toHaveProperty('c')
   })
 })
 

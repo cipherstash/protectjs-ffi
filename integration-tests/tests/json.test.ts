@@ -115,11 +115,13 @@ describe('SteVec output structure', () => {
     })
 
     // SteVec variant must have these fields
+    expect(ciphertext.k).toBe('sv')
     expect(ciphertext.sv).toBeDefined()
-    expect(ciphertext).toHaveProperty('c') // Root ciphertext
     expect(ciphertext).toHaveProperty('sv')
     expect(ciphertext).toHaveProperty('i')
     expect(ciphertext).toHaveProperty('v')
+    // EQL v2.3 places the root ciphertext at sv[0].c — not at the root.
+    expect(ciphertext).not.toHaveProperty('c')
 
     // Validate entry structure uses new field names
     const encrypted = ciphertext as { sv: unknown[] }
@@ -128,6 +130,7 @@ describe('SteVec output structure', () => {
 
     const entry = encrypted.sv[0] as Record<string, unknown>
     expect(entry).toHaveProperty('c') // Entry ciphertext (new format)
+    expect(entry).toHaveProperty('s') // Tokenized selector
 
     // Old field names should NOT exist
     expect(entry).not.toHaveProperty('tokenized_selector')

@@ -4,7 +4,7 @@ use cipherstash_client::{
     credentials::ServiceToken,
     encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
     eql::{
-        encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation,
+        encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation, EqlOutput,
         Identifier as EqlIdentifier, PreparedPlaintext,
     },
     schema::{
@@ -50,10 +50,10 @@ impl Finalize for Client {}
 
 /// Re-export EqlCiphertext as Encrypted for backward compatibility.
 ///
-/// This is a unified structure that contains the identifier, version, and the encrypted body
-/// with all associated cryptographic searchable encrypted metadata (SEM).
-///
-/// Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
+/// `EqlCiphertext` is the EQL v2.3 storage payload — a discriminated enum that is either
+/// a scalar `Encrypted` payload (`k = "ct"`) or a structured `SteVec` payload (`k = "sv"`).
+/// The MessagePack-Base85 ciphertext lives at `c` on the scalar variant, or at `sv[0].c`
+/// for the SteVec variant.
 pub type Encrypted = EqlCiphertext;
 
 /// What type of value was received in a query
@@ -825,7 +825,7 @@ async fn encrypt(
     };
 
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    let eql_ciphertext = encrypted.remove(0);
+    let eql_ciphertext = into_store_ciphertext(encrypted.remove(0))?;
 
     Ok(Json(eql_ciphertext))
 }
@@ -899,8 +899,8 @@ async fn encrypt_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_ciphertext, (original_idx, _ident)) in encrypted.into_iter().zip(payload_data) {
-            results[original_idx] = Some(eql_ciphertext);
+        for (eql_output, (original_idx, _ident)) in encrypted.into_iter().zip(payload_data) {
+            results[original_idx] = Some(into_store_ciphertext(eql_output)?);
         }
     }
 
@@ -922,7 +922,7 @@ async fn encrypt_bulk(
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryOptions>,
-) -> Result<Json<EqlCiphertext>, neon::types::extract::Error> {
+) -> Result<Json<EqlOutput>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
@@ -968,16 +968,16 @@ async fn encrypt_query(
     };
 
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    let eql_ciphertext = encrypted.remove(0);
+    let eql_output = encrypted.remove(0);
 
-    Ok(Json(eql_ciphertext))
+    Ok(Json(eql_output))
 }
 
 #[neon::export]
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryBulkOptions>,
-) -> Result<Json<Vec<EqlCiphertext>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<EqlOutput>>, neon::types::extract::Error> {
     // Group payloads by lock_context (same pattern as encrypt_bulk)
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, QueryPayload)>> = BTreeMap::new();
 
@@ -991,7 +991,7 @@ async fn encrypt_query_bulk(
     }
 
     let total_count: usize = groups.values().map(|g| g.len()).sum();
-    let mut results: Vec<Option<EqlCiphertext>> = (0..total_count).map(|_| None).collect();
+    let mut results: Vec<Option<EqlOutput>> = (0..total_count).map(|_| None).collect();
 
     for (lock_context_claims, payloads) in groups {
         let lock_context: Vec<zerokms::Context> = lock_context_claims
@@ -1051,12 +1051,12 @@ async fn encrypt_query_bulk(
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
-        for (eql_ciphertext, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(eql_ciphertext);
+        for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
+            results[original_idx] = Some(eql_output);
         }
     }
 
-    let final_results: Vec<EqlCiphertext> = results
+    let final_results: Vec<EqlOutput> = results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -1199,15 +1199,41 @@ fn encrypted_record_from_mp_base85(
     encrypted: EqlCiphertext,
     encryption_context: Vec<zerokms::Context>,
 ) -> Result<WithContext<'static>, Error> {
-    // EqlCiphertext.body.ciphertext is already deserialized from mp_base85 by serde
-    let encrypted_record = encrypted.body.ciphertext.ok_or_else(|| {
-        Error::InvariantViolation("Missing ciphertext in EQL payload".to_string())
-    })?;
+    // The encrypted record (mp_base85) lives on the scalar payload directly, or on the
+    // first entry of the SteVec for structured payloads.
+    let encrypted_record = match encrypted {
+        EqlCiphertext::Encrypted(payload) => payload.ciphertext,
+        EqlCiphertext::SteVec(payload) => {
+            payload
+                .ste_vec
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    Error::InvariantViolation(
+                        "Missing root entry in SteVec EQL payload".to_string(),
+                    )
+                })?
+                .ciphertext
+        }
+    };
 
     Ok(WithContext {
         record: encrypted_record,
         context: Cow::Owned(encryption_context),
     })
+}
+
+/// Extracts the [`EqlCiphertext`] from a Store-mode [`EqlOutput`].
+///
+/// Used by `encrypt` / `encrypt_bulk`, which always run with `EqlOperation::Store` and
+/// therefore must produce storage ciphertexts (never query payloads).
+fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
+    match output {
+        EqlOutput::Store(ciphertext) => Ok(ciphertext),
+        EqlOutput::Query(_) => Err(Error::InvariantViolation(
+            "encrypt_eql returned a query payload for a store-mode encryption".to_string(),
+        )),
+    }
 }
 
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -1249,64 +1275,34 @@ mod tests {
         use serde_json::json;
 
         #[test]
-        fn valid_eql_ciphertext_is_encrypted() {
-            // EqlCiphertext with minimal required fields (no ciphertext needed for validation)
-            let valid_encrypted = json!({
-                "i": {"t": "users", "c": "email"},
-                "v": 2
-            });
-
-            assert!(is_encrypted(Json(valid_encrypted)));
-        }
-
-        #[test]
-        fn valid_eql_ciphertext_with_ste_vec_is_encrypted() {
-            // EqlCiphertext with SteVec entries (no ciphertext values needed)
-            let valid_encrypted = json!({
-                "i": {"t": "users", "c": "profile"},
-                "v": 2,
-                "sv": [
-                    {"s": "deadbeef"}
-                ]
-            });
-
-            assert!(is_encrypted(Json(valid_encrypted)));
-        }
-
-        #[test]
         fn invalid_ciphertext_is_not_encrypted() {
-            // Missing required fields
+            // Random JSON without the EQL discriminator must not be recognized as an
+            // encrypted payload.
             let invalid_encrypted = json!({"random": "data"});
             assert!(!is_encrypted(Json(invalid_encrypted)));
         }
 
         #[test]
-        fn old_format_with_k_field_is_still_valid() {
-            // Prior to cipherstash-client 0.32.0, protect-ffi used a discriminated union
-            // with a "k" tag field ("ct" for ciphertext, "sv" for ste_vec). The new
-            // EqlCiphertext format is a unified flat structure without the discriminant.
-            //
-            // The "k" field should be silently ignored by serde (no deny_unknown_fields),
-            // allowing old format data to be recognized as valid encrypted data.
-            // Only the required fields (i, v) need to be present.
-            let old_format = json!({
-                "k": "ct",  // Should be silently ignored
+        fn missing_discriminator_is_not_encrypted() {
+            // EQL v2.3 requires a `k` discriminator at the root ("ct" for scalar
+            // payloads, "sv" for SteVec). Payloads without `k` are rejected even if
+            // the other required fields are present.
+            let no_discriminator = json!({
                 "i": {"t": "users", "c": "email"},
                 "v": 2
-                // Note: "c" is optional, so minimal valid payload works
             });
-            assert!(is_encrypted(Json(old_format)));
+            assert!(!is_encrypted(Json(no_discriminator)));
         }
 
         #[test]
-        fn old_ste_vec_format_with_k_field_is_still_valid() {
-            // Old SteVec format used "k": "sv" discriminant
-            let old_format = json!({
-                "k": "sv",  // Should be silently ignored
-                "i": {"t": "users", "c": "profile"},
+        fn unknown_discriminator_is_not_encrypted() {
+            // Only "ct" and "sv" are valid EQL v2.3 root discriminators.
+            let unknown_discriminator = json!({
+                "k": "wat",
+                "i": {"t": "users", "c": "email"},
                 "v": 2
             });
-            assert!(is_encrypted(Json(old_format)));
+            assert!(!is_encrypted(Json(unknown_discriminator)));
         }
     }
 
