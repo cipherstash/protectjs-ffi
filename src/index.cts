@@ -250,68 +250,62 @@ export type Context = {
 }
 
 /**
- * Represents encrypted data in the EQL format.
+ * Represents an EQL v2.3 payload returned by the FFI.
  *
- * This TypeScript type mirrors the Rust `EqlCiphertext` structure from `cipherstash-client`.
- * The Rust type hierarchy is:
- * - `EqlCiphertext` (identifier + version + body)
- *   - `EqlCiphertextBody` (ciphertext + SEM fields + array flag)
- *     - `EqlSEM` (all searchable encrypted metadata fields)
- *
- * In the serialized JSON format, `#[serde(flatten)]` is used in Rust to produce a flat
- * structure where all fields appear at the top level rather than nested.
- *
- * Note: The ciphertext field (c) is serialized in MessagePack Base85 format.
+ * This TypeScript type mirrors the Rust `EqlCiphertext` enum from `cipherstash-client`,
+ * which is a discriminated union keyed on `k`:
+ * - `k: "ct"` — scalar payload with root-scope index terms (`c`, `hm`, `bf`, `ob`).
+ *   Storage payloads always carry `c`; query payloads omit `c`.
+ * - `k: "sv"` — STE-vector payload with per-selector entries in `sv`.
+ *   Storage payloads carry the root ciphertext at `sv[0].c`; query payloads
+ *   carry either a single selector (`s`) or a containment vector (`q`).
  */
 export type Encrypted = {
-  /** The table and column identifier */
-  i: { t: string; c: string }
+  /** EQL v2.3 root discriminator — `"ct"` for scalar, `"sv"` for STE-vector */
+  k: 'ct' | 'sv'
   /** The encryption version */
   v: number
-  /** The encrypted ciphertext (mp_base85 encoded, optional for query-mode payloads) */
+  /** The table and column identifier */
+  i: { t: string; c: string }
+  /** Encrypted ciphertext (mp_base85). Present on scalar storage payloads; absent on scalar queries. */
   c?: string
-  /** Whether this encrypted value is part of an array */
-  a?: boolean
-  /** ORE block index for 64-bit integers */
-  ob?: string[]
-  /** Bloom filter for approximate match queries */
-  bf?: number[]
-  /** HMAC-SHA256 hash for exact matches */
+  /** HMAC-SHA256 hash for exact-match equality (unique index) */
   hm?: string
-  /** Selector value for field selection (SteVec) */
+  /** Bloom filter (set bit positions) for LIKE / ILIKE (match index) */
+  bf?: number[]
+  /** Block ORE u64_8_256 term for ordered comparisons (ore index) */
+  ob?: string[]
+  /** Per-selector SteVec entries (present on `k:"sv"` storage payloads) */
+  sv?: SteVecEntry[]
+  /** Tokenized selector for `ste_vec_selector` queries (present on `k:"sv"` query payloads) */
   s?: string
-  /** Blake3 hash for exact matches (SteVec) */
-  b3?: string
-  /** ORE CLLW fixed-width index for 64-bit values (SteVec) */
-  ocf?: string
-  /** ORE CLLW variable-width index for strings (SteVec) */
-  ocv?: string
-  /** Structured encryption vector entries (recursive) */
-  sv?: EqlCiphertextBody[]
+  /** CLLW ORE term for `ste_vec_term` queries (present on `k:"sv"` query payloads) */
+  oc?: string
+  /** Full STE query vector for JSON containment queries (present on `k:"sv"` containment queries) */
+  q?: unknown
 }
 
 /**
- * Body of an EQL ciphertext, used recursively in SteVec entries.
+ * One entry inside a SteVec payload (`k: "sv"`).
+ *
+ * Every element carries `s` (selector), `c` (entry ciphertext), and exactly one
+ * per-element equality / ordering term (`hm` or `oc`).
  */
-export type EqlCiphertextBody = {
-  /** The encrypted ciphertext (mp_base85 encoded) */
-  c?: string
-  /** Whether this entry is part of an array */
+export type SteVecEntry = {
+  /** Hex-encoded tokenized selector — deterministic per (path, key) */
+  s: string
+  /** Per-entry encrypted record (mp_base85 encoded) */
+  c: string
+  /** Array marker — true when the selector points at a JSON array context */
   a?: boolean
-  /** Selector value for field selection */
-  s?: string
-  /** Blake3 hash for exact matches */
-  b3?: string
-  /** ORE CLLW fixed-width index */
-  ocf?: string
-  /** ORE CLLW variable-width index */
-  ocv?: string
-  /** Nested SteVec entries (for deeply nested JSON) */
-  sv?: EqlCiphertextBody[]
+  /** Per-entry HMAC term for non-orderable leaves (objects, arrays, booleans, null) */
+  hm?: string
+  /** Per-entry CLLW ORE term for orderable leaves (strings, numbers) — Standard mode */
+  oc?: string
 }
 
-/** @deprecated Use EqlCiphertextBody instead */
-export type SteVecEntry = EqlCiphertextBody
+/** @deprecated Use SteVecEntry instead */
+export type EqlCiphertextBody = SteVecEntry
 
 export type EncryptConfig = {
   v: number

@@ -168,42 +168,40 @@ Error: Unsupported conversion from "String" to JsonB
 
 ### EqlCiphertext Format
 
-All encryption operations return an `EqlCiphertext` structure:
+All encryption operations return an EQL v2.3 payload, a discriminated union keyed on `k`:
 
 ```typescript
-type EqlCiphertext = {
-  // Required fields
-  i: { t: string; c: string }  // Identifier (table, column)
+type EqlCiphertext = EncryptedScalar | EncryptedSteVec
+
+// k = "ct" — scalar payload
+type EncryptedScalar = {
+  k: 'ct'
   v: number                     // Version
-
-  // Optional body fields
-  c?: string      // Encrypted ciphertext (mp_base85)
-  a?: boolean     // Array flag
-
-  // Searchable encrypted metadata (top-level)
-  ob?: string[]   // ORE block (64-bit integers)
-  bf?: number[]   // Bloom filter (match index)
-  hm?: string     // HMAC-SHA256 (unique index)
-  s?: string      // Selector (SteVec path)
-  oc?: string     // SteVec ORE CLLW term — Standard mode (numeric ∪ string)
-  op?: string     // SteVec OPE CLLW term — Compat mode (numeric ∪ string)
-  opf?: string    // OPE CLLW fixed (non-SteVec numeric)
-  opv?: string    // OPE CLLW variable (non-SteVec string)
-
-  // Nested entries
-  sv?: EqlCiphertextBody[]  // SteVec flattened entries
+  i: { t: string; c: string }  // Identifier (table, column)
+  c: string                     // Encrypted ciphertext (mp_base85) — required for storage
+  hm?: string                   // HMAC-SHA256 (unique index)
+  bf?: number[]                 // Bloom filter (match index)
+  ob?: string[]                 // Block ORE u64_8_256 (ore index)
 }
 
-type EqlCiphertextBody = {
-  c?: string      // Entry ciphertext
-  a?: boolean     // Array flag
-  s?: string      // Entry selector
-  hm?: string     // Entry HMAC — non-orderable values (objects, arrays, booleans, null)
-  oc?: string     // Entry ORE CLLW term (Standard mode) — orderable values (strings, numbers)
-  op?: string     // Entry OPE CLLW term (Compat mode) — orderable values (strings, numbers)
-  sv?: EqlCiphertextBody[]  // Nested entries
+// k = "sv" — STE-vector payload
+type EncryptedSteVec = {
+  k: 'sv'
+  v: number                     // Version
+  i: { t: string; c: string }  // Identifier (table, column)
+  sv: SteVecEntry[]            // Per-selector entries; root ciphertext lives at sv[0].c
+}
+
+type SteVecEntry = {
+  s: string       // Hex-encoded tokenized selector
+  c: string       // Per-entry ciphertext (mp_base85) — required
+  a?: boolean     // Array marker
+  hm?: string     // HMAC term — non-orderable leaves (objects, arrays, booleans, null)
+  oc?: string     // CLLW ORE term — orderable leaves (strings, numbers), Standard mode
 }
 ```
+
+Query payloads share the same `{ k, v, i, ... }` shape but omit `c` (queries do not encrypt for storage). A `k = "sv"` query carries either `s` (selector lookup), `hm`/`oc` (per-element term), or `q` (full STE query vector for containment).
 
 Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-alpha.7), each `sv` entry carries either `hm` or `oc` depending on the underlying JSON value:
 
@@ -212,25 +210,40 @@ Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-al
 | Object, array, boolean, null | `hm` (HMAC-SHA256) |
 | String, number | `oc` (CLLW ORE, tagged-plaintext) |
 
-Under **Compat** mode (`ste_vec.mode: 'compat'`), the orderable term is OPE instead of ORE and serializes as `op`. Numeric and string values share a single orderable field in both modes — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
+Numeric and string values share the single `oc` orderable field — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
 
 ### Output by Operation
 
-| Operation | Fields Present |
-|-----------|----------------|
-| Storage (`encrypt`) | `i, v, c, sv` |
-| Selector query | `i, v, s` |
-| Term query | `i, v, c, sv` |
+| Operation | Discriminator | Fields Present |
+|-----------|---------------|----------------|
+| Scalar storage (`encrypt` on non-JSON column) | `k: "ct"` | `k, v, i, c` + any of `hm, bf, ob` |
+| SteVec storage (`encrypt` on JSON column) | `k: "sv"` | `k, v, i, sv` (root ciphertext at `sv[0].c`) |
+| Scalar query (`encryptQuery` with `ore`/`match`/`unique`) | `k: "ct"` | `k, v, i` + one of `hm, bf, ob` |
+| SteVec selector query (`encryptQuery` with `ste_vec_selector`) | `k: "sv"` | `k, v, i, s` |
+| SteVec containment query (`encryptQuery` with object/array input) | `k: "sv"` | `k, v, i, sv` |
 
 ### Example Outputs
 
-**Storage encryption (Standard mode):**
+**Scalar storage encryption (e.g. `email`, `score`):**
 ```json
 {
-  "i": { "t": "users", "c": "profile" },
+  "k": "ct",
   "v": 2,
+  "i": { "t": "users", "c": "email" },
   "c": "base85encodedciphertext...",
+  "hm": "abc123...",
+  "bf": [1, 2, 3]
+}
+```
+
+**SteVec storage encryption (Standard mode):**
+```json
+{
+  "k": "sv",
+  "v": 2,
+  "i": { "t": "users", "c": "profile" },
   "sv": [
+    { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
     { "s": "abc123", "hm": "def456", "c": "..." },
     { "s": "jkl012", "oc": "pqr678", "c": "..." }
   ]
@@ -240,18 +253,19 @@ Under **Compat** mode (`ste_vec.mode: 'compat'`), the orderable term is OPE inst
 **Selector query:**
 ```json
 {
-  "i": { "t": "users", "c": "profile" },
+  "k": "sv",
   "v": 2,
+  "i": { "t": "users", "c": "profile" },
   "s": "abc123def456"
 }
 ```
 
-**Term query (Standard mode):**
+**Containment query (Standard mode):**
 ```json
 {
-  "i": { "t": "users", "c": "profile" },
+  "k": "sv",
   "v": 2,
-  "c": "base85encodedciphertext...",
+  "i": { "t": "users", "c": "profile" },
   "sv": [
     { "s": "abc123", "oc": "ghi789", "c": "..." }
   ]
