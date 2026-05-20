@@ -84,7 +84,6 @@ describe('encryptQuery for ste_vec indexes', () => {
     // Under EQL v2.3 the root ciphertext lives at sv[0].c, not at the root.
     expect(result).toHaveProperty('i')
     expect(result).toHaveProperty('v')
-    expect(result.k).toBe('sv')
     assertSteVec(result)
     expect(result).toHaveProperty('sv') // Flattened entries for containment matching
     expect(Array.isArray(result.sv)).toBe(true)

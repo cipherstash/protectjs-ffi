@@ -114,8 +114,6 @@ describe('SteVec output structure', () => {
       column: 'profile',
     })
 
-    // SteVec variant must have these fields
-    expect(ciphertext.k).toBe('sv')
     assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(ciphertext).toHaveProperty('sv')
@@ -320,7 +318,6 @@ describe('deeply nested JSON encryption', () => {
       column: 'profile',
     })
 
-    // Verify sv structure exists for nested JSON
     assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
@@ -343,7 +340,6 @@ describe('deeply nested JSON encryption', () => {
       column: 'profile',
     })
 
-    // Verify sv structure for nested arrays
     assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)
@@ -377,7 +373,6 @@ describe('deeply nested JSON encryption', () => {
       column: 'profile',
     })
 
-    // Verify sv structure for mixed nested content
     assertSteVec(ciphertext)
     expect(ciphertext.sv).toBeDefined()
     expect(Array.isArray(ciphertext.sv)).toBe(true)

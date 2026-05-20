@@ -1199,14 +1199,8 @@ fn encrypted_record_from_mp_base85(
     encrypted: EqlCiphertext,
     encryption_context: Vec<zerokms::Context>,
 ) -> Result<WithContext<'static>, Error> {
-    // The encrypted record (mp_base85) lives on the scalar payload directly, or on the
-    // first entry of the SteVec for structured payloads.
-    //
-    // The SteVec invariant — root record is always `sv[0]` — is established by upstream
-    // (`SteVec::into_root_ciphertext` in `cipherstash-client`'s encryption crate, and
-    // `extract_root_ciphertext` in the EQL crate, both of which take `into_iter().next()`).
-    // Neither accessor is exposed on the public `SteVecPayload` wire type, so we mirror
-    // the pattern here.
+    // SteVec root invariant: ciphertext is always `sv[0]` (mirrors upstream
+    // `SteVec::into_root_ciphertext`, which is not exposed on the wire type).
     let encrypted_record = match encrypted {
         EqlCiphertext::Encrypted(payload) => payload.ciphertext,
         EqlCiphertext::SteVec(payload) => {
@@ -1297,9 +1291,6 @@ mod tests {
 
         #[test]
         fn valid_scalar_ciphertext_is_encrypted() {
-            // A well-formed `k = "ct"` storage payload must round-trip through
-            // is_encrypted as true. Guards against regressions where the predicate
-            // collapses to always-false.
             let payload = EqlCiphertext::Encrypted(EncryptedPayload {
                 version: EQL_SCHEMA_VERSION,
                 identifier: EqlIdentifier::new("users", "email"),
@@ -1315,8 +1306,6 @@ mod tests {
 
         #[test]
         fn valid_ste_vec_ciphertext_is_encrypted() {
-            // A well-formed `k = "sv"` storage payload (with a root SteVec entry)
-            // must round-trip through is_encrypted as true.
             let payload = EqlCiphertext::SteVec(SteVecPayload {
                 version: EQL_SCHEMA_VERSION,
                 identifier: EqlIdentifier::new("users", "profile"),

@@ -187,7 +187,6 @@ describe('EQL v2.3 wire format', () => {
       column: 'profile',
     })
 
-    expect(ciphertext.k).toBe('sv')
     assertSteVec(ciphertext)
     expect(ciphertext).toHaveProperty('sv')
     // SteVec payloads place the root ciphertext at sv[0].c, not at the root.

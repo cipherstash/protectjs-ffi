@@ -5,11 +5,6 @@ import type {
   EncryptConfig,
 } from '../../lib/index.cjs'
 
-/**
- * Narrows an `Encrypted` payload to the `k: "sv"` variant for assertion-based
- * tests. Throws if the payload is not a SteVec — covers the common test pattern
- * where we encrypted a JSON column and expect a SteVec storage payload.
- */
 export function assertSteVec(
   payload: Encrypted,
 ): asserts payload is EncryptedSteVec {
@@ -18,9 +13,6 @@ export function assertSteVec(
   }
 }
 
-/**
- * Narrows an `Encrypted` payload to the `k: "ct"` variant. Throws otherwise.
- */
 export function assertScalar(
   payload: Encrypted,
 ): asserts payload is EncryptedScalar {

@@ -45,7 +45,6 @@ describe('encryptBulk output structure for nested JSON', () => {
     expect(result).toHaveLength(1)
     const encrypted = result[0]
 
-    // Verify sv structure exists
     assertSteVec(encrypted)
     expect(encrypted).toHaveProperty('sv')
     expect(Array.isArray(encrypted.sv)).toBe(true)
@@ -293,8 +292,6 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
     assertSteVec(storedEnc)
     assertSteVec(queriedEnc)
 
-    // Document the differences. EQL v2.3 places the root ciphertext at sv[0].c
-    // for SteVec storage payloads — no `c` at the root.
     console.log('\n=== STRUCTURAL COMPARISON ===')
     console.log(
       `Storage has 'sv[0].c' (root ciphertext): ${storedEnc.sv?.[0]?.c !== undefined}`,
