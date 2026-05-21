@@ -23,7 +23,7 @@ declare module './load.cjs' {
   function newClient(opts: NativeNewClientOptions): Promise<Client>
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
-  function isEncrypted(encrypted: Encrypted): boolean
+  function isEncrypted(encrypted: unknown): boolean
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,
@@ -39,11 +39,11 @@ declare module './load.cjs' {
   function encryptQuery(
     client: Client,
     opts: EncryptQueryOptions,
-  ): Promise<Encrypted>
+  ): Promise<Encrypted | EncryptedQuery>
   function encryptQueryBulk(
     client: Client,
     opts: EncryptQueryBulkOptions,
-  ): Promise<Encrypted[]>
+  ): Promise<(Encrypted | EncryptedQuery)[]>
   function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
@@ -170,7 +170,7 @@ export function decrypt(
   return wrapAsync(() => native.decrypt(client, opts))
 }
 
-export function isEncrypted(encrypted: Encrypted): boolean {
+export function isEncrypted(encrypted: unknown): boolean {
   return wrapSync(() => native.isEncrypted(encrypted))
 }
 
@@ -206,14 +206,14 @@ export async function decryptBulkFallible(
 export function encryptQuery(
   client: Client,
   opts: EncryptQueryOptions,
-): Promise<Encrypted> {
+): Promise<Encrypted | EncryptedQuery> {
   return wrapAsync(() => native.encryptQuery(client, opts))
 }
 
 export function encryptQueryBulk(
   client: Client,
   opts: EncryptQueryBulkOptions,
-): Promise<Encrypted[]> {
+): Promise<(Encrypted | EncryptedQuery)[]> {
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
 }
 
@@ -250,57 +250,44 @@ export type Context = {
 }
 
 /**
- * Represents an EQL v2.3 payload returned by the FFI.
+ * EQL v2.3 **storage** payload — the shape persisted in an `eql_v2_encrypted`
+ * column. Returned by {@link encrypt} / {@link encryptBulk}; the only shape
+ * {@link decrypt} accepts.
  *
- * Discriminated union keyed on `k`. Narrow on `k` before accessing variant-only
- * fields:
+ * Discriminated on `k`. A storage payload always carries the ciphertext — `c`
+ * on the scalar variant, or `sv[0].c` on the STE-vector variant. Query payloads
+ * carry no ciphertext and are a separate type — see {@link EncryptedQuery}.
  *
  * ```ts
  * if (payload.k === 'sv') {
- *   payload.sv?.forEach(...)
+ *   payload.sv.forEach(...)
  * }
  * ```
- *
- * - `k: "ct"` — scalar payload (storage or query for `unique` / `match` / `ore`
- *   indexes). Storage payloads always carry `c`; query payloads omit `c` and
- *   carry exactly one of `hm`, `bf`, or `ob`.
- * - `k: "sv"` — STE-vector payload. The FFI emits this for SteVec storage
- *   *and* for JSON containment queries (`ste_vec_term`), both of which carry
- *   per-selector entries in `sv` with the root document ciphertext at
- *   `sv[0].c`. Selector queries (`ste_vec_selector`) instead carry a single
- *   tokenized selector `s` and omit `sv`.
  */
 export type Encrypted = EncryptedScalar | EncryptedSteVec
 
-/** Scalar EQL v2.3 payload (`k: "ct"`). */
+/** Scalar EQL v2.3 storage payload (`k: "ct"`). */
 export type EncryptedScalar = {
   k: 'ct'
   /** EQL schema version */
   v: number
   /** Table and column identifier */
   i: { t: string; c: string }
-  /** Encrypted ciphertext (mp_base85). Required on storage payloads; absent on query payloads. */
-  c?: string
-  /** HMAC-SHA256 hash — `unique` index term on storage, or `unique` lookup term on queries. */
+  /** Encrypted ciphertext (mp_base85). Always present on a storage payload. */
+  c: string
+  /** HMAC-SHA256 term — present when a `unique` index is configured. */
   hm?: string
-  /** Bloom filter (set bit positions) — `match` index term on storage, or `match` lookup term on queries. */
+  /** Bloom filter (set bit positions) — present when a `match` index is configured. */
   bf?: number[]
-  /** Block ORE u64_8_256 term — `ore` index term on storage, or `ore` comparison term on queries. */
+  /** Block ORE u64_8_256 term — present when an `ore` index is configured. */
   ob?: string[]
 }
 
 /**
- * STE-vector EQL v2.3 payload (`k: "sv"`). The FFI emits two disjoint shapes:
- *
- * - {@link EncryptedSteVecStorage} for storage encryption and JSON containment
- *   queries — carries a non-empty `sv` with the root ciphertext at `sv[0].c`.
- * - {@link EncryptedSteVecSelector} for `ste_vec_selector` queries — carries
- *   only a tokenized selector `s`.
+ * STE-vector EQL v2.3 storage payload (`k: "sv"`). Carries the per-selector
+ * entries in `sv`; the root document ciphertext lives at `sv[0].c`.
  */
-export type EncryptedSteVec = EncryptedSteVecStorage | EncryptedSteVecSelector
-
-/** SteVec storage payload (also used for containment queries). */
-export type EncryptedSteVecStorage = {
+export type EncryptedSteVec = {
   k: 'sv'
   v: number
   i: { t: string; c: string }
@@ -309,7 +296,39 @@ export type EncryptedSteVecStorage = {
   s?: never
 }
 
-/** SteVec selector query payload (`ste_vec_selector`). */
+/**
+ * EQL v2.3 **query** payload — an encrypted search term. Returned, alongside
+ * {@link Encrypted}, by {@link encryptQuery} / {@link encryptQueryBulk}.
+ *
+ * Unlike a storage payload, a query payload carries no ciphertext (`c`): it is
+ * matched against stored values, never decrypted. It must not be passed to
+ * {@link decrypt}.
+ *
+ * This covers the query shapes protect-ffi currently emits. cipherstash-client
+ * additionally defines `k: "sv"` hmac / ore / containment query terms; the FFI
+ * does not emit those today — JSON containment queries come back as an
+ * {@link EncryptedSteVec} storage payload.
+ */
+export type EncryptedQuery = EncryptedScalarQuery | EncryptedSteVecSelector
+
+/**
+ * Scalar query term (`k: "ct"`, no ciphertext) — a `unique` / `match` / `ore`
+ * lookup term carrying exactly one of `hm`, `bf`, or `ob`.
+ */
+export type EncryptedScalarQuery = {
+  k: 'ct'
+  /** EQL schema version */
+  v: number
+  /** Table and column identifier */
+  i: { t: string; c: string }
+  /** Query payloads carry no ciphertext — discriminates against {@link EncryptedScalar}. */
+  c?: never
+} & ({ hm: string } | { bf: number[] } | { ob: string[] })
+
+/**
+ * STE-vector selector query payload (`ste_vec_selector`) — a tokenized JSON
+ * path selector, no ciphertext.
+ */
 export type EncryptedSteVecSelector = {
   k: 'sv'
   v: number
