@@ -321,6 +321,8 @@ export type EncryptedScalarQuery = {
   v: number
   /** Table and column identifier */
   i: { t: string; c: string }
+  /** Query payloads carry no ciphertext — discriminates against {@link EncryptedScalar}. */
+  c?: never
 } & ({ hm: string } | { bf: number[] } | { ob: string[] })
 
 /**
