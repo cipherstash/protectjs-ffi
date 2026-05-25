@@ -25,7 +25,7 @@ use cipherstash_client::eql::{
 };
 use cipherstash_client::schema::{CanonicalEncryptionConfig, ColumnConfig, Identifier};
 use cipherstash_client::zerokms::{
-    self, SecretKey, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey,
+    self, SecretKey, ViturKeyMaterial, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey,
 };
 use cipherstash_client::IdentifiedBy;
 use serde::Deserialize;
@@ -33,6 +33,7 @@ use stack_auth::{AuthError, AuthStrategy, SecretToken, ServiceToken};
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::js_plaintext::JsPlaintext;
 use crate::{
@@ -117,6 +118,17 @@ pub struct WasmClient {
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
+/// Hex-encoded secret material that zeroizes its buffer on drop.
+///
+/// Used as the deserialization target for the client key so the raw hex
+/// material lives only inside a zeroize-on-drop wrapper from the moment
+/// serde produces it — even if `new_client` panics or returns early before
+/// the key is consumed into `SecretKey`. `#[serde(transparent)]` makes a
+/// bare JS string deserialize into it without any schema change.
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(transparent)]
+struct HexSecret(String);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewClientOpts {
@@ -126,9 +138,10 @@ struct NewClientOpts {
     /// than later inside `from_hex`.
     client_id: Uuid,
     /// Hex-encoded v1 client key. Required — wasm has no
-    /// `~/.cipherstash/secretkey.json` fallback. The String is consumed by
-    /// `SecretKey::from_hex`, which zeroizes the hex buffer once decoded.
-    client_key: String,
+    /// `~/.cipherstash/secretkey.json` fallback. Wrapped in [`HexSecret`]
+    /// so the raw hex buffer is zeroized on drop, including on any early
+    /// error path before the bytes are moved into `SecretKey`.
+    client_key: HexSecret,
     /// Optional keyset identifier (id or name). `None` uses the default
     /// keyset granted to the client.
     keyset: Option<IdentifiedBy>,
@@ -140,7 +153,7 @@ struct NewClientOpts {
 /// a `getToken(): Promise<{ token: string, ... }>` method works.
 #[wasm_bindgen(js_name = newClient)]
 pub async fn new_client(strategy: JsValue, opts: JsValue) -> Result<WasmClient, JsValue> {
-    let opts: NewClientOpts =
+    let mut opts: NewClientOpts =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
     // Pull `getToken` off the strategy object.
@@ -151,12 +164,17 @@ pub async fn new_client(strategy: JsValue, opts: JsValue) -> Result<WasmClient, 
         .map_err(|_| js_error("strategy.getToken is not a function"))?;
     let auth = JsAuthStrategy::new(strategy.clone(), get_token);
 
-    // `SecretKey` is a zeroize-on-drop wrapper around the raw key bytes; using
-    // it (rather than the bare `ClientKey`) ensures the in-memory key material
-    // is wiped when this scope exits. `from_hex` consumes and zeroizes the
-    // incoming hex string during decoding.
-    let secret_key = SecretKey::from_hex(opts.client_id.to_string(), opts.client_key)
-        .map_err(|e| js_error(&format!("invalid clientKey: {e}")))?;
+    // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
+    // `from_hex` takes a `String` for the UUID, which would force an
+    // `opts.client_id.to_string()` allocation that the round-trip parses back
+    // to `Uuid` — and that allocation is never zeroized. By decoding here we
+    // (a) keep the already-parsed `Uuid` and (b) keep the hex bytes inside
+    // `HexSecret`, which zeroizes on drop even on the error path.
+    let bytes_result = hex::decode(opts.client_key.0.as_bytes());
+    opts.client_key.0.zeroize();
+    let bytes =
+        bytes_result.map_err(|e| js_error(&format!("invalid clientKey: invalid hex: {e}")))?;
+    let secret_key = SecretKey::new(opts.client_id, ViturKeyMaterial::from(bytes));
 
     let zerokms = ZeroKMSBuilder::new(auth)
         .with_key_provider(secret_key)
