@@ -43,6 +43,5 @@ const outPath = resolve(wasmDir, "protect_ffi_inline.js");
 await writeFile(outPath, shim);
 
 console.log(
-  `inline-wasm: wrote protect_ffi_inline.js (` +
-    `${wasmBytes.length} wasm bytes -> ${base64.length} b64 chars)`,
+  `inline-wasm: wrote protect_ffi_inline.js (${wasmBytes.length} wasm bytes -> ${base64.length} b64 chars)`,
 );
