@@ -1158,51 +1158,71 @@ async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
-    let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
+    // Decode each ciphertext independently so a single invalid payload turns
+    // into a per-item `DecryptResult::Error` rather than aborting the whole
+    // batch — matches the `*Fallible` contract.
+    let parsed: Vec<Result<WithContext<'static>, Error>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
             let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            (payload.ciphertext, lock_context)
+            encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
         })
         .collect();
 
-    let encrypted_records: Vec<WithContext<'static>> = ciphertexts
-        .into_iter()
-        .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(ciphertext, encryption_context)
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
+    let mut results: Vec<Option<DecryptResult>> = (0..parsed.len()).map(|_| None).collect();
+    let mut valid_records: Vec<WithContext<'static>> = Vec::with_capacity(parsed.len());
+    let mut valid_indices: Vec<usize> = Vec::with_capacity(parsed.len());
+
+    for (idx, item) in parsed.into_iter().enumerate() {
+        match item {
+            Ok(record) => {
+                valid_records.push(record);
+                valid_indices.push(idx);
+            }
+            Err(e) => {
+                results[idx] = Some(DecryptResult::Error {
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
 
     let decrypted: Vec<Result<Vec<u8>, RecordDecryptError>> = client
         .zerokms
         .decrypt_fallible(
-            encrypted_records,
+            valid_records,
             opts.service_token.map(Cow::Owned),
             opts.unverified_context.map(Cow::Owned),
         )
         .await?;
 
-    let plaintexts: Vec<Result<JsPlaintext, Error>> = decrypted
+    for (item, idx) in decrypted.into_iter().zip(valid_indices) {
+        results[idx] = Some(match item {
+            Ok(bytes) => match Plaintext::from_slice(&bytes)
+                .map_err(Error::from)
+                .and_then(|p| JsPlaintext::try_from(p).map_err(Error::from))
+            {
+                Ok(data) => DecryptResult::Success { data },
+                Err(e) => DecryptResult::Error {
+                    error: e.to_string(),
+                },
+            },
+            Err(e) => DecryptResult::Error {
+                error: e.to_string(),
+            },
+        });
+    }
+
+    let results: Vec<DecryptResult> = results
         .into_iter()
-        .map(|item: Result<Vec<u8>, RecordDecryptError>| {
-            item.map_err(Error::from).and_then(|bytes| {
-                Plaintext::from_slice(&bytes)
-                    .map_err(Error::from)
-                    .and_then(|e| JsPlaintext::try_from(e).map_err(Error::from))
+        .enumerate()
+        .map(|(i, opt)| {
+            opt.ok_or_else(|| {
+                Error::InvariantViolation(format!("missing decrypt_fallible result at index {i}"))
             })
         })
-        .collect();
-
-    let results = plaintexts
-        .into_iter()
-        .map(|result| match result {
-            Ok(data) => DecryptResult::Success { data },
-            Err(err) => DecryptResult::Error {
-                error: err.to_string(),
-            },
-        })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(results))
 }
@@ -1246,7 +1266,7 @@ fn encrypted_record_from_mp_base85(
 ///
 /// Used by `encrypt` / `encrypt_bulk`, which always run with `EqlOperation::Store` and
 /// therefore must produce storage ciphertexts (never query payloads).
-pub(crate) fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
+fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
     match output {
         EqlOutput::Store(ciphertext) => Ok(ciphertext),
         EqlOutput::Query(_) => Err(Error::InvariantViolation(

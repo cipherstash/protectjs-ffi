@@ -10,6 +10,21 @@
 //! filesystem-backed `stack-profile`, the wasm path is fully inline: the
 //! client key is passed as a constructor option, and auth is delegated to
 //! the JS-supplied strategy on every ZeroKMS request.
+//!
+//! # Auth caching
+//!
+//! [`JsAuthStrategy::get_token`] is invoked on every ZeroKMS request —
+//! there is no Rust-side equivalent of [`stack_auth::AutoRefresh`] in the
+//! wasm path. Caching is the JS strategy's responsibility (cookies,
+//! `localStorage`, or whatever the embedding runtime provides). The
+//! adapter is intentionally a thin shim so the host environment owns the
+//! refresh / persistence policy.
+//!
+//! # Surface omissions
+//!
+//! Admin-shape operations (`ensureKeyset`, workspace management) are
+//! intentionally not exported on the wasm surface — provisioning belongs
+//! in your server, not in browser / edge code.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -42,6 +57,22 @@ use crate::{
     EncryptOptions, EncryptQueryBulkOptions, EncryptQueryOptions, Encrypted, Error,
     InferredQueryMode,
 };
+
+// ---------------------------------------------------------------------------
+// Module init
+// ---------------------------------------------------------------------------
+
+/// Install [`console_error_panic_hook`] so Rust panics surface as a JS
+/// `Error` in the browser / Node console instead of a bare
+/// `RuntimeError: unreachable executed` from the wasm trap. Idempotent —
+/// safe to call from any number of entry points.
+///
+/// Wired via `#[wasm_bindgen(start)]` so it runs once at module
+/// instantiation, before any `newClient` / `encrypt` / `decrypt` call.
+#[wasm_bindgen(start)]
+pub fn init() {
+    console_error_panic_hook::set_once();
+}
 
 // ---------------------------------------------------------------------------
 // Auth strategy adapter
@@ -344,7 +375,7 @@ async fn do_encrypt_bulk(
                 .to_plaintext_with_type(column_config.cast_type)?;
             let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
             let prepared = PreparedPlaintext::new(
-                Cow::Owned(column_config.clone()),
+                Cow::Borrowed(column_config),
                 eql_ident,
                 plaintext,
                 EqlOperation::Store,
@@ -459,7 +490,7 @@ async fn do_encrypt_query_bulk(
             };
             let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
             let prepared = PreparedPlaintext::new(
-                Cow::Owned(column_config.clone()),
+                Cow::Borrowed(column_config),
                 eql_ident,
                 plaintext,
                 eql_operation,
