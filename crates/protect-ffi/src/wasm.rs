@@ -24,7 +24,9 @@ use cipherstash_client::eql::{
     Identifier as EqlIdentifier, PreparedPlaintext,
 };
 use cipherstash_client::schema::{CanonicalEncryptionConfig, ColumnConfig, Identifier};
-use cipherstash_client::zerokms::{self, ClientKey, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey};
+use cipherstash_client::zerokms::{
+    self, SecretKey, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey,
+};
 use cipherstash_client::IdentifiedBy;
 use serde::Deserialize;
 use stack_auth::{AuthError, AuthStrategy, SecretToken, ServiceToken};
@@ -68,7 +70,14 @@ impl JsAuthStrategy {
     }
 }
 
-// Safety: wasm32 is single-threaded; JS handles do not cross threads.
+// Safety: wasm32-unknown-unknown is single-threaded, and `JsValue` /
+// `js_sys::Function` handles cannot cross threads even in principle. The
+// `Send + Sync` bound only exists because `cipherstash_client::ScopedCipher`
+// and `ZeroKMSWithClientKey` carry a blanket `C: Send + Sync + 'static`
+// bound on their methods (inherited from the native build). Dropping this
+// unsafe impl requires an upstream change in cipherstash-client to relax
+// those bounds on `target_arch = "wasm32"` (similar to the existing
+// `AuthStrategy` split in `stack-auth`).
 unsafe impl Send for JsAuthStrategy {}
 unsafe impl Sync for JsAuthStrategy {}
 
@@ -113,9 +122,12 @@ pub struct WasmClient {
 struct NewClientOpts {
     encrypt_config: CanonicalEncryptionConfig,
     /// UUID identifying the client key (workspace's data-encryption keyset).
-    client_id: String,
+    /// Typed as `Uuid` so a malformed value fails at deserialization rather
+    /// than later inside `from_hex`.
+    client_id: Uuid,
     /// Hex-encoded v1 client key. Required — wasm has no
-    /// `~/.cipherstash/secretkey.json` fallback.
+    /// `~/.cipherstash/secretkey.json` fallback. The String is consumed by
+    /// `SecretKey::from_hex`, which zeroizes the hex buffer once decoded.
     client_key: String,
     /// Optional keyset identifier (id or name). `None` uses the default
     /// keyset granted to the client.
@@ -139,14 +151,17 @@ pub async fn new_client(strategy: JsValue, opts: JsValue) -> Result<WasmClient, 
         .map_err(|_| js_error("strategy.getToken is not a function"))?;
     let auth = JsAuthStrategy::new(strategy.clone(), get_token);
 
-    let client_id = Uuid::parse_str(&opts.client_id)
-        .map_err(|e| js_error(&format!("invalid clientId: {e}")))?;
-    let client_key = ClientKey::from_hex_v1(client_id, &opts.client_key)
+    // `SecretKey` is a zeroize-on-drop wrapper around the raw key bytes; using
+    // it (rather than the bare `ClientKey`) ensures the in-memory key material
+    // is wiped when this scope exits. `from_hex` consumes and zeroizes the
+    // incoming hex string during decoding.
+    let secret_key = SecretKey::from_hex(opts.client_id.to_string(), opts.client_key)
         .map_err(|e| js_error(&format!("invalid clientKey: {e}")))?;
 
     let zerokms = ZeroKMSBuilder::new(auth)
-        .with_client_key(client_key)
+        .with_key_provider(secret_key)
         .build()
+        .await
         .map_err(|e| js_error(&e.to_string()))?;
     let zerokms = Arc::new(zerokms);
     let cipher = ScopedCipher::init(zerokms.clone(), opts.keyset)
