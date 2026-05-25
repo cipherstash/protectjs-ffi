@@ -58,6 +58,7 @@
   "types": "./lib/index.d.cts",
   "files": [
     "lib/**/*.?({c,m}){t,j}s",
+    "dist/wasm/package.json",
     "dist/wasm/protect_ffi.js",
     "dist/wasm/protect_ffi_bg.js",
     "dist/wasm/protect_ffi_bg.wasm",

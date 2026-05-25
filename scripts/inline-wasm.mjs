@@ -42,6 +42,15 @@ export {
 const outPath = resolve(wasmDir, 'protect_ffi_inline.js')
 await writeFile(outPath, shim)
 
+// wasm-pack `--target bundler` emits ESM (`import` / `export`) into
+// `protect_ffi.js`, and the inline shim above is ESM too. The root
+// `package.json` has no `"type": "module"`, so without a scoped marker
+// Node would parse these as CJS and fail to load the `./wasm` and
+// `./wasm-inline` subpath exports. Write a sibling `package.json` that
+// scopes only `dist/wasm/**` as ESM; CJS semantics elsewhere are unchanged.
+const pkgPath = resolve(wasmDir, 'package.json')
+await writeFile(pkgPath, `${JSON.stringify({ type: 'module' }, null, 2)}\n`)
+
 console.log(
-  `inline-wasm: wrote protect_ffi_inline.js (${wasmBytes.length} wasm bytes -> ${base64.length} b64 chars)`,
+  `inline-wasm: wrote protect_ffi_inline.js (${wasmBytes.length} wasm bytes -> ${base64.length} b64 chars) and package.json (type=module)`,
 )
