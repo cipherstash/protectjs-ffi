@@ -122,15 +122,15 @@ impl JsPlaintext {
             (js_type, col_type) => {
                 let valid_targets = match js_type {
                     JsPlaintext::String(_) => {
-                        "Utf8Str (string columns), Date, Timestamp (ISO 8601 strings)"
+                        "Text (string columns), Date, Timestamp (ISO 8601 strings)"
                     }
                     JsPlaintext::Number(_) => {
                         "Float, BigInt, Int, SmallInt, BigUInt, Decimal (numeric columns)"
                     }
                     JsPlaintext::Boolean(_) => "Boolean (boolean columns)",
-                    JsPlaintext::JsonB(_) => "JsonB (json columns)",
+                    JsPlaintext::JsonB(_) => "Json (json columns)",
                     JsPlaintext::Date(_) => {
-                        "Date, Timestamp (date/timestamp columns), Utf8Str (ISO 8601 string)"
+                        "Date, Timestamp (date/timestamp columns), Text (ISO 8601 string)"
                     }
                 };
                 let type_name = js_plaintext_type_name(js_type);
@@ -168,7 +168,7 @@ pub(crate) fn js_plaintext_type_name(js_plaintext: &JsPlaintext) -> &'static str
         JsPlaintext::String(_) => "String",
         JsPlaintext::Number(_) => "Number",
         JsPlaintext::Boolean(_) => "Boolean",
-        JsPlaintext::JsonB(_) => "JsonB",
+        JsPlaintext::JsonB(_) => "Json",
         JsPlaintext::Date(_) => "Date",
     }
 }
@@ -572,8 +572,8 @@ mod tests {
             let err_msg = result.unwrap_err().0;
             // Should mention valid targets for String
             assert!(
-                err_msg.contains("Utf8Str"),
-                "Error should mention valid target Utf8Str: {}",
+                err_msg.contains("Text"),
+                "Error should mention valid target Text: {}",
                 err_msg
             );
             // Should mention cast_as setting
@@ -612,8 +612,8 @@ mod tests {
             assert!(result.is_err());
             let err_msg = result.unwrap_err().0;
             assert!(
-                err_msg.contains("JsonB"),
-                "Error should mention valid target JsonB: {}",
+                err_msg.contains("Json"),
+                "Error should mention valid target Json: {}",
                 err_msg
             );
         }

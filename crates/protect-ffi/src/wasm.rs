@@ -52,12 +52,19 @@ use crate::{
 /// going through `stack_auth::AuthStrategyFn` because the JS callable type
 /// is hard to express as a Rust closure in a stored struct.
 pub(crate) struct JsAuthStrategy {
+    /// The original JS strategy object — kept so `getToken()` is invoked with the
+    /// correct `this` receiver. Class-based strategies read instance state via
+    /// `this`; calling with `JsValue::NULL` breaks them.
+    strategy: JsValue,
     get_token: js_sys::Function,
 }
 
 impl JsAuthStrategy {
-    fn new(get_token: js_sys::Function) -> Self {
-        Self { get_token }
+    fn new(strategy: JsValue, get_token: js_sys::Function) -> Self {
+        Self {
+            strategy,
+            get_token,
+        }
     }
 }
 
@@ -67,7 +74,7 @@ unsafe impl Sync for JsAuthStrategy {}
 
 impl AuthStrategy for &JsAuthStrategy {
     fn get_token(self) -> impl Future<Output = Result<ServiceToken, AuthError>> {
-        let promise = self.get_token.call0(&JsValue::NULL);
+        let promise = self.get_token.call0(&self.strategy);
         async move {
             let promise = promise
                 .map_err(|e| AuthError::Server(format!("strategy.getToken() threw: {e:?}")))?;
@@ -130,7 +137,7 @@ pub async fn new_client(strategy: JsValue, opts: JsValue) -> Result<WasmClient, 
     let get_token: js_sys::Function = get_token
         .dyn_into()
         .map_err(|_| js_error("strategy.getToken is not a function"))?;
-    let auth = JsAuthStrategy::new(get_token);
+    let auth = JsAuthStrategy::new(strategy.clone(), get_token);
 
     let client_id = Uuid::parse_str(&opts.client_id)
         .map_err(|e| js_error(&format!("invalid clientId: {e}")))?;
@@ -505,7 +512,10 @@ async fn do_decrypt_bulk_fallible(
     client: &WasmClient,
     opts: DecryptBulkOptions,
 ) -> Result<Vec<DecryptResult>, Error> {
-    let encrypted_records: Vec<WithContext<'static>> = opts
+    // Decode each ciphertext independently so a single invalid payload turns
+    // into a per-item `DecryptResult::Error` rather than aborting the whole
+    // batch — matches the `*Fallible` contract.
+    let parsed: Vec<Result<WithContext<'static>, Error>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -513,30 +523,61 @@ async fn do_decrypt_bulk_fallible(
                 payload.lock_context.map(Into::into).unwrap_or_default();
             encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect();
+
+    let mut results: Vec<Option<DecryptResult>> = (0..parsed.len()).map(|_| None).collect();
+    let mut valid_records: Vec<WithContext<'static>> = Vec::with_capacity(parsed.len());
+    let mut valid_indices: Vec<usize> = Vec::with_capacity(parsed.len());
+
+    for (idx, item) in parsed.into_iter().enumerate() {
+        match item {
+            Ok(record) => {
+                valid_records.push(record);
+                valid_indices.push(idx);
+            }
+            Err(e) => {
+                results[idx] = Some(DecryptResult::Error {
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
 
     let decrypted = client
         .zerokms
         .decrypt_fallible(
-            encrypted_records,
+            valid_records,
             opts.service_token.map(Cow::Owned),
             opts.unverified_context.map(Cow::Owned),
         )
         .await?;
 
-    Ok(decrypted
-        .into_iter()
-        .map(|item| match item {
+    for (item, idx) in decrypted.into_iter().zip(valid_indices) {
+        results[idx] = Some(match item {
             Ok(bytes) => match Plaintext::from_slice(&bytes)
                 .map_err(Error::from)
                 .and_then(|p| JsPlaintext::try_from(p).map_err(Error::from))
             {
                 Ok(data) => DecryptResult::Success { data },
-                Err(e) => DecryptResult::Error { error: e.to_string() },
+                Err(e) => DecryptResult::Error {
+                    error: e.to_string(),
+                },
             },
-            Err(e) => DecryptResult::Error { error: e.to_string() },
+            Err(e) => DecryptResult::Error {
+                error: e.to_string(),
+            },
+        });
+    }
+
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            opt.ok_or_else(|| {
+                Error::InvariantViolation(format!("missing decrypt_fallible result at index {i}"))
+            })
         })
-        .collect())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
