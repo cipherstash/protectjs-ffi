@@ -232,67 +232,70 @@ pub async fn new_client(strategy: JsValue, opts: JsValue) -> Result<WasmClient, 
 // Encrypt / decrypt JS surface
 // ---------------------------------------------------------------------------
 
+// Top-level wasm-bindgen exports mirror the flat function shape of
+// `@cipherstash/protect-ffi`'s Neon API (`encrypt(client, opts)`,
+// `decrypt(client, opts)`, etc.) so the conditional `exports` map can
+// resolve to the wasm output without consumers having to rewrite call
+// sites between native and Edge runtimes.
+
 #[wasm_bindgen]
-impl WasmClient {
-    #[wasm_bindgen]
-    pub async fn encrypt(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: EncryptOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_encrypt(self, opts).await.map_err(error_to_js)?;
-        to_js(&out)
-    }
+pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: EncryptOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_encrypt(client, opts).await.map_err(error_to_js)?;
+    to_js(&out)
+}
 
-    #[wasm_bindgen(js_name = encryptBulk)]
-    pub async fn encrypt_bulk(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: EncryptBulkOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_encrypt_bulk(self, opts).await.map_err(error_to_js)?;
-        to_js(&out)
-    }
+#[wasm_bindgen(js_name = encryptBulk)]
+pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: EncryptBulkOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_encrypt_bulk(client, opts).await.map_err(error_to_js)?;
+    to_js(&out)
+}
 
-    #[wasm_bindgen(js_name = encryptQuery)]
-    pub async fn encrypt_query(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: EncryptQueryOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_encrypt_query(self, opts).await.map_err(error_to_js)?;
-        to_js(&out)
-    }
+#[wasm_bindgen(js_name = encryptQuery)]
+pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: EncryptQueryOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_encrypt_query(client, opts).await.map_err(error_to_js)?;
+    to_js(&out)
+}
 
-    #[wasm_bindgen(js_name = encryptQueryBulk)]
-    pub async fn encrypt_query_bulk(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: EncryptQueryBulkOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_encrypt_query_bulk(self, opts)
-            .await
-            .map_err(error_to_js)?;
-        to_js(&out)
-    }
+#[wasm_bindgen(js_name = encryptQueryBulk)]
+pub async fn encrypt_query_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: EncryptQueryBulkOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_encrypt_query_bulk(client, opts)
+        .await
+        .map_err(error_to_js)?;
+    to_js(&out)
+}
 
-    #[wasm_bindgen]
-    pub async fn decrypt(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: DecryptOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_decrypt(self, opts).await.map_err(error_to_js)?;
-        to_js(&out)
-    }
+#[wasm_bindgen]
+pub async fn decrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: DecryptOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_decrypt(client, opts).await.map_err(error_to_js)?;
+    to_js(&out)
+}
 
-    #[wasm_bindgen(js_name = decryptBulk)]
-    pub async fn decrypt_bulk(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: DecryptBulkOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_decrypt_bulk(self, opts).await.map_err(error_to_js)?;
-        to_js(&out)
-    }
+#[wasm_bindgen(js_name = decryptBulk)]
+pub async fn decrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: DecryptBulkOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_decrypt_bulk(client, opts).await.map_err(error_to_js)?;
+    to_js(&out)
+}
 
-    #[wasm_bindgen(js_name = decryptBulkFallible)]
-    pub async fn decrypt_bulk_fallible(&self, opts: JsValue) -> Result<JsValue, JsValue> {
-        let opts: DecryptBulkOptions =
-            serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-        let out = do_decrypt_bulk_fallible(self, opts)
-            .await
-            .map_err(error_to_js)?;
-        to_js(&out)
-    }
+#[wasm_bindgen(js_name = decryptBulkFallible)]
+pub async fn decrypt_bulk_fallible(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts: DecryptBulkOptions =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let out = do_decrypt_bulk_fallible(client, opts)
+        .await
+        .map_err(error_to_js)?;
+    to_js(&out)
 }
 
 #[wasm_bindgen(js_name = isEncrypted)]
@@ -419,8 +422,12 @@ async fn do_encrypt_query(
         .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
     let index = find_index_for_type(column_config, &opts.column, &opts.index_type)?;
     let query_op = parse_query_op(&opts.query_op)?;
-    let (plaintext, inferred_mode) =
-        to_query_plaintext(&opts.plaintext, query_op, &index.index_type, column_config.cast_type)?;
+    let (plaintext, inferred_mode) = to_query_plaintext(
+        &opts.plaintext,
+        query_op,
+        &index.index_type,
+        column_config.cast_type,
+    )?;
     let eql_operation = match inferred_mode {
         InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
         InferredQueryMode::StoreMode => EqlOperation::Store,
@@ -659,4 +666,3 @@ fn error_to_js(e: Error) -> JsValue {
 fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(value).map_err(|e| js_error(&e.to_string()))
 }
-
