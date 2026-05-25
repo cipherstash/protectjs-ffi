@@ -26,25 +26,45 @@
     "prepack": "tsc &&neon update",
     "version": "neon bump --binaries platforms && git add .",
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
-    "dryrun": "gh workflow run publish.yml -f dryrun=true"
+    "dryrun": "gh workflow run publish.yml -f dryrun=true",
+    "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack",
+    "postbuild:wasm": "node scripts/inline-wasm.mjs"
   },
   "author": "",
   "license": "ISC",
   "exports": {
     ".": {
-      "import": {
-        "types": "./lib/index.d.mts",
-        "default": "./lib/index.mjs"
+      "node": {
+        "import": {
+          "types": "./lib/index.d.mts",
+          "default": "./lib/index.mjs"
+        },
+        "require": {
+          "types": "./lib/index.d.cts",
+          "default": "./lib/index.cjs"
+        }
       },
-      "require": {
-        "types": "./lib/index.d.cts",
-        "default": "./lib/index.cjs"
-      }
+      "default": "./dist/wasm/protect_ffi.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm/protect_ffi.d.ts",
+      "default": "./dist/wasm/protect_ffi.js"
+    },
+    "./wasm-inline": {
+      "types": "./dist/wasm/protect_ffi.d.ts",
+      "default": "./dist/wasm/protect_ffi_inline.js"
     }
   },
   "types": "./lib/index.d.cts",
   "files": [
-    "lib/**/*.?({c,m}){t,j}s"
+    "lib/**/*.?({c,m}){t,j}s",
+    "dist/wasm/package.json",
+    "dist/wasm/protect_ffi.js",
+    "dist/wasm/protect_ffi_bg.js",
+    "dist/wasm/protect_ffi_bg.wasm",
+    "dist/wasm/protect_ffi.d.ts",
+    "dist/wasm/protect_ffi_bg.wasm.d.ts",
+    "dist/wasm/protect_ffi_inline.js"
   ],
   "neon": {
     "type": "library",

@@ -80,6 +80,14 @@ jobs:
         shell: bash
         run: npm run debug
 
+      - name: Add wasm32 target
+        shell: bash
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cargo check (wasm32)
+        shell: bash
+        run: cargo check --target wasm32-unknown-unknown -p protect-ffi
+
       - name: Rust Lint
         run: mise lint:rust
 
