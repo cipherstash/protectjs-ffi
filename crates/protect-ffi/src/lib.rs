@@ -1,4 +1,6 @@
 mod js_plaintext;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 use cipherstash_client::{
     credentials::ServiceToken,
@@ -20,6 +22,7 @@ use cipherstash_client::{
 };
 use cts_common::Crn;
 use js_plaintext::JsPlaintext;
+#[cfg(not(target_arch = "wasm32"))]
 use neon::{
     prelude::*,
     types::extract::{Boxed, Json},
@@ -31,6 +34,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::Runtime;
 
 #[cfg(test)]
@@ -46,6 +50,7 @@ struct Client {
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Finalize for Client {}
 
 /// Re-export EqlCiphertext as Encrypted for backward compatibility.
@@ -308,6 +313,10 @@ impl CredentialOpts {
     ///
     /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
     /// and passed through as explicit fields to support Bun.
+    ///
+    /// Wasm32 has no filesystem — the wasm binding will pass the client key
+    /// inline instead and skip the fallback path entirely.
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_key_provider(
         &self,
     ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
@@ -717,6 +726,7 @@ fn to_query_plaintext(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
@@ -750,6 +760,7 @@ pub async fn new_client(
 ///
 /// The grant step is best-effort: "already granted" errors are expected and ignored,
 /// but other grant failures are logged as warnings since they may indicate misconfiguration.
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn ensure_keyset(
     Json(opts): Json<EnsureKeysetOpts>,
@@ -790,6 +801,7 @@ pub async fn ensure_keyset(
     }))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt(
     Boxed(client): Boxed<Client>,
@@ -830,6 +842,7 @@ async fn encrypt(
     Ok(Json(eql_ciphertext))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
@@ -918,6 +931,7 @@ async fn encrypt_bulk(
     Ok(Json(final_results))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
@@ -973,6 +987,7 @@ async fn encrypt_query(
     Ok(Json(eql_output))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
@@ -1069,6 +1084,7 @@ async fn encrypt_query_bulk(
     Ok(Json(final_results))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
@@ -1095,6 +1111,7 @@ async fn decrypt(
         .map_err(From::from)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
@@ -1135,60 +1152,82 @@ async fn decrypt_bulk(
     Ok(Json(plaintexts))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
-    let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
+    // Decode each ciphertext independently so a single invalid payload turns
+    // into a per-item `DecryptResult::Error` rather than aborting the whole
+    // batch — matches the `*Fallible` contract.
+    let parsed: Vec<Result<WithContext<'static>, Error>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
             let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            (payload.ciphertext, lock_context)
+            encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
         })
         .collect();
 
-    let encrypted_records: Vec<WithContext<'static>> = ciphertexts
-        .into_iter()
-        .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(ciphertext, encryption_context)
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
+    let mut results: Vec<Option<DecryptResult>> = (0..parsed.len()).map(|_| None).collect();
+    let mut valid_records: Vec<WithContext<'static>> = Vec::with_capacity(parsed.len());
+    let mut valid_indices: Vec<usize> = Vec::with_capacity(parsed.len());
+
+    for (idx, item) in parsed.into_iter().enumerate() {
+        match item {
+            Ok(record) => {
+                valid_records.push(record);
+                valid_indices.push(idx);
+            }
+            Err(e) => {
+                results[idx] = Some(DecryptResult::Error {
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
 
     let decrypted: Vec<Result<Vec<u8>, RecordDecryptError>> = client
         .zerokms
         .decrypt_fallible(
-            encrypted_records,
+            valid_records,
             opts.service_token.map(Cow::Owned),
             opts.unverified_context.map(Cow::Owned),
         )
         .await?;
 
-    let plaintexts: Vec<Result<JsPlaintext, Error>> = decrypted
+    for (item, idx) in decrypted.into_iter().zip(valid_indices) {
+        results[idx] = Some(match item {
+            Ok(bytes) => match Plaintext::from_slice(&bytes)
+                .map_err(Error::from)
+                .and_then(|p| JsPlaintext::try_from(p).map_err(Error::from))
+            {
+                Ok(data) => DecryptResult::Success { data },
+                Err(e) => DecryptResult::Error {
+                    error: e.to_string(),
+                },
+            },
+            Err(e) => DecryptResult::Error {
+                error: e.to_string(),
+            },
+        });
+    }
+
+    let results: Vec<DecryptResult> = results
         .into_iter()
-        .map(|item: Result<Vec<u8>, RecordDecryptError>| {
-            item.map_err(Error::from).and_then(|bytes| {
-                Plaintext::from_slice(&bytes)
-                    .map_err(Error::from)
-                    .and_then(|e| JsPlaintext::try_from(e).map_err(Error::from))
+        .enumerate()
+        .map(|(i, opt)| {
+            opt.ok_or_else(|| {
+                Error::InvariantViolation(format!("missing decrypt_fallible result at index {i}"))
             })
         })
-        .collect();
-
-    let results = plaintexts
-        .into_iter()
-        .map(|result| match result {
-            Ok(data) => DecryptResult::Success { data },
-            Err(err) => DecryptResult::Error {
-                error: err.to_string(),
-            },
-        })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(results))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
     let result: Result<EqlCiphertext, _> = serde_json::from_value(raw);
@@ -1236,8 +1275,10 @@ fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     let runtime = RUNTIME
