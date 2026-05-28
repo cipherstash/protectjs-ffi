@@ -53,10 +53,7 @@ const WASM_INLINE_PATH = resolve(
 // opaque ESM import error.
 describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
   type WasmModule = {
-    newClient: (
-      strategy: unknown,
-      opts: Record<string, unknown>,
-    ) => Promise<unknown>
+    newClient: (opts: Record<string, unknown>) => Promise<unknown>
     encrypt: (
       client: unknown,
       opts: Record<string, unknown>,
@@ -96,7 +93,8 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
 
     const strategy = AccessKeyStrategy.create(env.region, env.accessKey)
 
-    const client = await wasm.newClient(strategy, {
+    const client = await wasm.newClient({
+      strategy,
       encryptConfig: {
         v: 1,
         tables: {

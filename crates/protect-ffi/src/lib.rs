@@ -25,8 +25,15 @@ use js_plaintext::JsPlaintext;
 #[cfg(not(target_arch = "wasm32"))]
 use neon::{
     prelude::*,
-    types::extract::{Boxed, Json},
+    types::{
+        extract::{Boxed, Json},
+        JsFuture,
+    },
 };
+#[cfg(not(target_arch = "wasm32"))]
+use stack_auth::{AuthStrategy, SecretToken};
+#[cfg(not(target_arch = "wasm32"))]
+use std::future::Future;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,10 +50,11 @@ extern crate quickcheck;
 #[macro_use(quickcheck)]
 extern crate quickcheck_macros;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct Client {
     cipher: Arc<ScopedZeroKMS>,
-    zerokms: Arc<ZeroKMSWithClientKey<AutoStrategy>>,
+    zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
@@ -269,7 +277,135 @@ pub enum Error {
     Config(#[from] ConfigError),
 }
 
-type ScopedZeroKMS = ScopedCipher<AutoStrategy>;
+/// JS-backed [`AuthStrategy`] for the Neon build.
+///
+/// Holds the strategy object and its `getToken` callable as Neon [`Root`]s,
+/// plus a [`Channel`] for invoking them from tokio tasks. Mirrors
+/// `wasm::JsAuthStrategy` but uses Neon's cross-thread invocation model
+/// instead of wasm's single-threaded one.
+///
+/// `getToken()` is called on every ZeroKMS request — caching is the JS
+/// strategy's responsibility, matching the wasm path.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NeonJsAuthStrategy {
+    strategy: Arc<Root<JsObject>>,
+    get_token: Arc<Root<JsFunction>>,
+    channel: Channel,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NeonJsAuthStrategy {
+    /// Build from a JS strategy object. Looks up `getToken` on the object
+    /// via the shared [`JS_CHANNEL`] so the result is a stable [`Root`] we
+    /// can call from any tokio task.
+    async fn from_root(strategy: Root<JsObject>) -> Result<Self, Error> {
+        let channel = JS_CHANNEL
+            .get()
+            .ok_or_else(|| Error::Credentials("module not initialized".to_string()))?
+            .clone();
+        let strategy = Arc::new(strategy);
+        let strategy_for_lookup = Arc::clone(&strategy);
+        let get_token = channel
+            .send(move |mut cx| {
+                let obj = strategy_for_lookup.to_inner(&mut cx);
+                let func: Handle<JsFunction> = obj.prop(&mut cx, "getToken").get()?;
+                Ok(func.root(&mut cx))
+            })
+            .await
+            .map_err(|e| {
+                Error::Credentials(format!("strategy.getToken lookup failed: {e}"))
+            })?;
+        Ok(Self {
+            strategy,
+            get_token: Arc::new(get_token),
+            channel,
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AuthStrategy for &NeonJsAuthStrategy {
+    fn get_token(self) -> impl Future<Output = Result<stack_auth::ServiceToken, AuthError>> + Send {
+        let strategy = Arc::clone(&self.strategy);
+        let get_token = Arc::clone(&self.get_token);
+        let channel = self.channel.clone();
+        async move {
+            // Schedule the JS call on the JS thread. The closure returns a
+            // `JsFuture<Result<String, String>>`: outer Result distinguishes
+            // a resolved token (Ok) from a structurally-bad result or a
+            // rejection (Err); inner type carries the token string.
+            let js_future: JsFuture<Result<String, String>> = channel
+                .send(move |mut cx| {
+                    let strategy_h = strategy.to_inner(&mut cx);
+                    let func_h = get_token.to_inner(&mut cx);
+                    let args: [Handle<JsValue>; 0] = [];
+                    let result = func_h.call(&mut cx, strategy_h, args)?;
+                    let promise: Handle<JsPromise> = result.downcast_or_throw(&mut cx)?;
+                    promise.to_future(&mut cx, |mut cx, settled| match settled {
+                        Ok(v) => {
+                            let obj = match v.downcast::<JsObject, _>(&mut cx) {
+                                Ok(o) => o,
+                                Err(_) => {
+                                    return Ok(Err(
+                                        "strategy.getToken did not return an object".to_string(),
+                                    ))
+                                }
+                            };
+                            let token: Handle<JsString> =
+                                match obj.prop(&mut cx, "token").get() {
+                                    Ok(t) => t,
+                                    Err(_) => return Ok(Err("missing 'token' field".to_string())),
+                                };
+                            Ok(Ok(token.value(&mut cx)))
+                        }
+                        Err(err) => {
+                            let msg = err
+                                .to_string(&mut cx)
+                                .map(|s| s.value(&mut cx))
+                                .unwrap_or_else(|_| "strategy.getToken rejected".to_string());
+                            Ok(Err(msg))
+                        }
+                    })
+                })
+                .await
+                .map_err(|e| AuthError::Server(format!("strategy callback failed: {e}")))?;
+
+            let token_result = js_future
+                .await
+                .map_err(|e| AuthError::Server(format!("strategy promise await failed: {e}")))?;
+
+            match token_result {
+                Ok(s) => Ok(stack_auth::ServiceToken::new(SecretToken::new(s))),
+                Err(msg) => Err(AuthError::Server(msg)),
+            }
+        }
+    }
+}
+
+/// Auth strategy held by the Neon-side [`Client`]. Either the
+/// filesystem/env-backed [`AutoStrategy`] (built from credentials in opts
+/// or the profile store) or a [`NeonJsAuthStrategy`] supplied by the
+/// caller via `opts.strategy`.
+#[cfg(not(target_arch = "wasm32"))]
+enum NodeAuthStrategy {
+    Auto(AutoStrategy),
+    JsBacked(NeonJsAuthStrategy),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AuthStrategy for &NodeAuthStrategy {
+    fn get_token(self) -> impl Future<Output = Result<stack_auth::ServiceToken, AuthError>> + Send {
+        async move {
+            match self {
+                NodeAuthStrategy::Auto(s) => s.get_token().await,
+                NodeAuthStrategy::JsBacked(s) => s.get_token().await,
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 
 /// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
 #[derive(Deserialize, Default)]
@@ -730,11 +866,15 @@ fn to_query_plaintext(
 #[neon::export]
 pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
+    strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
 
-    let strategy = client_opts.creds.build_strategy()?;
-    let zerokms = ZeroKMSBuilder::new(strategy)
+    let auth = match strategy {
+        Some(s) => NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s).await?),
+        None => NodeAuthStrategy::Auto(client_opts.creds.build_strategy()?),
+    };
+    let zerokms = ZeroKMSBuilder::new(auth)
         .with_key_provider(client_opts.creds.build_key_provider()?)
         .build()
         .await?;
@@ -1278,6 +1418,12 @@ fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
 #[cfg(not(target_arch = "wasm32"))]
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
+/// Channel captured at module init so [`NeonJsAuthStrategy`] can invoke
+/// JS callables from tokio tasks without threading a `Cx` through every
+/// call site.
+#[cfg(not(target_arch = "wasm32"))]
+static JS_CHANNEL: OnceCell<Channel> = OnceCell::new();
+
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
@@ -1286,6 +1432,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
         .or_else(|err| cx.throw_error(err.to_string()))?;
 
     let _ = neon::set_global_executor(&mut cx, runtime);
+    let _ = JS_CHANNEL.set(cx.channel());
 
     neon::registered().export(&mut cx)?;
 

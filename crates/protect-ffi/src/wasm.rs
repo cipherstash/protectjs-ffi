@@ -180,20 +180,27 @@ struct NewClientOpts {
 
 /// Construct a [`WasmClient`].
 ///
-/// `strategy` must be an `@cipherstash/auth`-shaped object — anything with
-/// a `getToken(): Promise<{ token: string, ... }>` method works.
+/// `opts.strategy` must be an `@cipherstash/auth`-shaped object — anything
+/// with a `getToken(): Promise<{ token: string, ... }>` method works. It is
+/// required: wasm has no env / filesystem fallback path.
 #[wasm_bindgen(js_name = newClient)]
-pub async fn new_client(strategy: JsValue, opts: JsValue) -> Result<WasmClient, JsValue> {
-    let mut opts: NewClientOpts =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
-
-    // Pull `getToken` off the strategy object.
+pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
+    // Extract `strategy` before serde — the JS function on it can't survive
+    // serde_wasm_bindgen, and the rest of the opts has no JS-callable fields.
+    let strategy = js_sys::Reflect::get(&opts, &JsValue::from_str("strategy"))
+        .map_err(|e| js_error(&format!("opts.strategy lookup failed: {e:?}")))?;
+    if strategy.is_undefined() || strategy.is_null() {
+        return Err(js_error("opts.strategy is required"));
+    }
     let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
-        .map_err(|e| js_error(&format!("strategy.getToken not found: {e:?}")))?;
+        .map_err(|e| js_error(&format!("opts.strategy.getToken not found: {e:?}")))?;
     let get_token: js_sys::Function = get_token
         .dyn_into()
-        .map_err(|_| js_error("strategy.getToken is not a function"))?;
+        .map_err(|_| js_error("opts.strategy.getToken is not a function"))?;
     let auth = JsAuthStrategy::new(strategy.clone(), get_token);
+
+    let mut opts: NewClientOpts =
+        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
     // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
     // `from_hex` takes a `String` for the UUID, which would force an
