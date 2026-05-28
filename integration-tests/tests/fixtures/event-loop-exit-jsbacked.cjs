@@ -20,7 +20,6 @@ const encryptConfig = {
     },
   },
 }
-
 ;(async () => {
   // Use the wasm-inline build of @cipherstash/auth — it has no native
   // binary dep, works on any Node target, and lets us exercise the

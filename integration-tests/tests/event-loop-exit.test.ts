@@ -74,34 +74,39 @@ function runChild(scriptPath: string): Promise<ChildOutcome> {
 }
 
 describe.skipIf(missingCommonEnv.length > 0)('event loop exit', () => {
-  test('exits naturally after a JsBacked-strategy round trip', async () => {
-    const script = resolve(
-      __dirname,
-      'fixtures/event-loop-exit-jsbacked.cjs',
-    )
-    const outcome = await runChild(script)
-    expect(
-      outcome.timedOut,
-      `child hung; libuv still pinned\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
-    ).toBe(false)
-    expect(
-      outcome.code,
-      `child failed\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
-    ).toBe(0)
-    expect(outcome.stdout.trim()).toBe('ok')
-  }, EXIT_TIMEOUT_MS + 5_000)
+  test(
+    'exits naturally after a JsBacked-strategy round trip',
+    async () => {
+      const script = resolve(__dirname, 'fixtures/event-loop-exit-jsbacked.cjs')
+      const outcome = await runChild(script)
+      expect(
+        outcome.timedOut,
+        `child hung; libuv still pinned\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
+      ).toBe(false)
+      expect(
+        outcome.code,
+        `child failed\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
+      ).toBe(0)
+      expect(outcome.stdout.trim()).toBe('ok')
+    },
+    EXIT_TIMEOUT_MS + 5_000,
+  )
 
-  test('exits naturally with the AutoStrategy fallback', async () => {
-    const script = resolve(__dirname, 'fixtures/event-loop-exit-auto.cjs')
-    const outcome = await runChild(script)
-    expect(
-      outcome.timedOut,
-      `child hung; libuv still pinned\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
-    ).toBe(false)
-    expect(
-      outcome.code,
-      `child failed\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
-    ).toBe(0)
-    expect(outcome.stdout.trim()).toBe('ok')
-  }, EXIT_TIMEOUT_MS + 5_000)
+  test(
+    'exits naturally with the AutoStrategy fallback',
+    async () => {
+      const script = resolve(__dirname, 'fixtures/event-loop-exit-auto.cjs')
+      const outcome = await runChild(script)
+      expect(
+        outcome.timedOut,
+        `child hung; libuv still pinned\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
+      ).toBe(false)
+      expect(
+        outcome.code,
+        `child failed\nstdout: ${outcome.stdout}\nstderr: ${outcome.stderr}`,
+      ).toBe(0)
+      expect(outcome.stdout.trim()).toBe('ok')
+    },
+    EXIT_TIMEOUT_MS + 5_000,
+  )
 })

@@ -107,9 +107,7 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     // segment of a CRN like `crn:ap-southeast-2.aws:<workspace>`.
     const crnMatch = env.workspaceCrn.match(/^crn:([^:]+):/)
     if (!crnMatch) {
-      throw new Error(
-        `unexpected CS_WORKSPACE_CRN format: ${env.workspaceCrn}`,
-      )
+      throw new Error(`unexpected CS_WORKSPACE_CRN format: ${env.workspaceCrn}`)
     }
     const strategy = AccessKeyStrategy.create(crnMatch[1], env.accessKey)
 

@@ -21,7 +21,6 @@ const encryptConfig = {
     },
   },
 }
-
 ;(async () => {
   const client = await newClient({ encryptConfig })
 
