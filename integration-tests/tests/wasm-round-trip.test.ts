@@ -57,7 +57,12 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     encrypt: (
       client: unknown,
       opts: Record<string, unknown>,
-    ) => Promise<{ i: { t: string; c: string }; b?: { c: string } }>
+    ) => Promise<{
+      k: 'ct' | 'sv'
+      i: { t: string; c: string }
+      c?: string
+      hm?: string
+    }>
     decrypt: (client: unknown, opts: Record<string, unknown>) => Promise<string>
     isEncrypted: (raw: unknown) => boolean
   }
@@ -136,8 +141,12 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     })
 
     expect(wasm.isEncrypted(ciphertext)).toBe(true)
+    expect(ciphertext.k).toBe('ct')
     expect(ciphertext.i).toEqual({ t: 'users', c: 'email' })
-    expect(ciphertext.b?.c).toBeTruthy()
+    // unique-index HMAC lives at the top-level `hm` field in EQL v2.3.
+    expect(ciphertext.hm).toBeTruthy()
+    // MessagePack-Base85 ciphertext lives at top-level `c` for scalar payloads.
+    expect(ciphertext.c).toBeTruthy()
 
     const decrypted = await wasm.decrypt(client, { ciphertext })
     expect(decrypted).toBe(plaintext)
