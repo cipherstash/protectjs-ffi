@@ -312,16 +312,38 @@ impl NeonJsAuthStrategy {
         // into the JS-thread closure, unref it there (which requires a
         // `Cx`), and return it back to be stored on `self`.
         let sender = channel.clone();
-        let (get_token, channel) = sender
+        // Retrieve the property as a raw JsValue and do an explicit
+        // `is_a` + `downcast` check, so a missing or non-callable
+        // `getToken` becomes a clean `Result::Err` rather than a `Throw`
+        // bubbling through the channel callback (which surfaces as an
+        // unhandled rejection on the JS side even when the Rust caller
+        // catches the resulting JoinError).
+        let lookup: Result<(Root<JsFunction>, Channel), String> = sender
             .send(move |mut cx| {
                 let mut channel = channel;
                 let obj = strategy_for_lookup.to_inner(&mut cx);
-                let func: Handle<JsFunction> = obj.prop(&mut cx, "getToken").get()?;
+                let raw: Handle<JsValue> = obj.prop(&mut cx, "getToken").get()?;
+                if raw.is_a::<JsUndefined, _>(&mut cx) || raw.is_a::<JsNull, _>(&mut cx) {
+                    channel.unref(&mut cx);
+                    return Ok(Err(
+                        "opts.strategy.getToken is missing".to_string()
+                    ));
+                }
+                let func = match raw.downcast::<JsFunction, _>(&mut cx) {
+                    Ok(f) => f,
+                    Err(_) => {
+                        channel.unref(&mut cx);
+                        return Ok(Err(
+                            "opts.strategy.getToken is not a function".to_string()
+                        ));
+                    }
+                };
                 channel.unref(&mut cx);
-                Ok((func.root(&mut cx), channel))
+                Ok(Ok((func.root(&mut cx), channel)))
             })
             .await
             .map_err(|e| Error::Credentials(format!("strategy.getToken lookup failed: {e}")))?;
+        let (get_token, channel) = lookup.map_err(Error::Credentials)?;
         Ok(Self {
             strategy,
             get_token: Arc::new(get_token),
