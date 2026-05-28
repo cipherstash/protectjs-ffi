@@ -31,12 +31,6 @@ const COMMON_ENV = [
 ]
 const missingCommonEnv = COMMON_ENV.filter((k) => !process.env[k])
 
-// The JsBacked fixture builds an AccessKeyStrategy via @cipherstash/auth's
-// wasm-inline build, which needs an explicit region string.
-const missingJsBackedEnv = missingCommonEnv.concat(
-  process.env.CS_REGION ? [] : ['CS_REGION'],
-)
-
 // Generous: we expect the child to exit within ~1s of completing the
 // round trip; 15s gives the auth + ZeroKMS round trip plenty of slack
 // on slow CI without masking a real hang.
@@ -79,8 +73,8 @@ function runChild(scriptPath: string): Promise<ChildOutcome> {
   })
 }
 
-describe('event loop exit', () => {
-  test.skipIf(missingJsBackedEnv.length > 0)('exits naturally after a JsBacked-strategy round trip', async () => {
+describe.skipIf(missingCommonEnv.length > 0)('event loop exit', () => {
+  test('exits naturally after a JsBacked-strategy round trip', async () => {
     const script = resolve(
       __dirname,
       'fixtures/event-loop-exit-jsbacked.cjs',
@@ -97,7 +91,7 @@ describe('event loop exit', () => {
     expect(outcome.stdout.trim()).toBe('ok')
   }, EXIT_TIMEOUT_MS + 5_000)
 
-  test.skipIf(missingCommonEnv.length > 0)('exits naturally with the AutoStrategy fallback', async () => {
+  test('exits naturally with the AutoStrategy fallback', async () => {
     const script = resolve(__dirname, 'fixtures/event-loop-exit-auto.cjs')
     const outcome = await runChild(script)
     expect(

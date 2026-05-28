@@ -27,7 +27,7 @@ import { AccessKeyStrategy } from '@cipherstash/auth/wasm-inline'
 import { beforeAll, describe, expect, test } from 'vitest'
 
 const REQUIRED_ENV = [
-  'CS_REGION',
+  'CS_WORKSPACE_CRN',
   'CS_CLIENT_ACCESS_KEY',
   'CS_CLIENT_ID',
   'CS_CLIENT_KEY',
@@ -80,18 +80,33 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     // local consts so TS narrows away the `undefined` and the test body
     // doesn't need non-null assertions on every reference.
     const env = {
-      region: process.env.CS_REGION,
+      workspaceCrn: process.env.CS_WORKSPACE_CRN,
       accessKey: process.env.CS_CLIENT_ACCESS_KEY,
       clientId: process.env.CS_CLIENT_ID,
       clientKey: process.env.CS_CLIENT_KEY,
     }
-    if (!env.region || !env.accessKey || !env.clientId || !env.clientKey) {
+    if (
+      !env.workspaceCrn ||
+      !env.accessKey ||
+      !env.clientId ||
+      !env.clientKey
+    ) {
       throw new Error(
         'unreachable: describe.skipIf should have prevented this test from running without env vars',
       )
     }
 
-    const strategy = AccessKeyStrategy.create(env.region, env.accessKey)
+    // stack-auth 0.36 dropped CS_REGION in favour of CS_WORKSPACE_CRN.
+    // The wasm AccessKeyStrategy.create still takes a region string but
+    // it expects the `<region>.<provider>` form, which is the middle
+    // segment of a CRN like `crn:ap-southeast-2.aws:<workspace>`.
+    const crnMatch = env.workspaceCrn.match(/^crn:([^:]+):/)
+    if (!crnMatch) {
+      throw new Error(
+        `unexpected CS_WORKSPACE_CRN format: ${env.workspaceCrn}`,
+      )
+    }
+    const strategy = AccessKeyStrategy.create(crnMatch[1], env.accessKey)
 
     const client = await wasm.newClient({
       strategy,
@@ -100,7 +115,10 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
         tables: {
           users: {
             email: {
-              cast_as: 'string',
+              // The TS shim normalises 'string' → 'text' before handing the
+              // config to native; the wasm test bypasses that shim, so it
+              // must use the post-0.36 canonical vocabulary directly.
+              cast_as: 'text',
               indexes: { unique: {} },
             },
           },
