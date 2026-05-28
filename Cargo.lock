@@ -550,7 +550,8 @@ dependencies = [
 [[package]]
 name = "cipherstash-client"
 version = "0.36.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea6b9666c5397e1feeabe3f0212446ff362d27fc2062c9d12807c7400fb83f3c"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -610,7 +611,8 @@ dependencies = [
 [[package]]
 name = "cipherstash-config"
 version = "0.36.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b9f36a62fdb1abf225c1072d460d22fff4da4deebe0781ff1ecbee3261e0cff"
 dependencies = [
  "bitflags",
  "serde",
@@ -621,7 +623,8 @@ dependencies = [
 [[package]]
 name = "cipherstash-core"
 version = "0.36.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1a3f1483fd420059935764fea971869f39a6e025edf10cfb2a2ca7594ac2b8"
 dependencies = [
  "getrandom 0.2.17",
  "hmac",
@@ -636,7 +639,8 @@ dependencies = [
 [[package]]
 name = "cllw-ore"
 version = "0.4.2"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f73a23cbc15404d9b314c03b16a888f798dbc681bceeb2e18674f602f9da02d"
 dependencies = [
  "blake3",
  "chrono",
@@ -838,7 +842,8 @@ dependencies = [
 [[package]]
 name = "cts-common"
 version = "0.36.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d924055250a6dcd4a67a490e9bf9fe26dff9ab8b40ab5f4a60a3e6e03569b0e"
 dependencies = [
  "arrayvec",
  "base32",
@@ -2653,7 +2658,8 @@ dependencies = [
 [[package]]
 name = "recipher"
 version = "0.2.3"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9398dce78ddfce08f93e9d9a3ac64d9b0a4fed478c0a82003c6e4c90dc245125"
 dependencies = [
  "aes",
  "cmac",
@@ -3268,7 +3274,8 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "stack-auth"
 version = "0.36.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88c95d236e8c5e48d89ff181af6b0bcff2519d65f455563aff762c0ab80dbb63"
 dependencies = [
  "aquamarine",
  "base64",
@@ -3295,7 +3302,8 @@ dependencies = [
 [[package]]
 name = "stack-profile"
 version = "0.36.0"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd7384df859a75bf6b282fbd8ddad139abffa28a4d128dce402f8ee4130815f2"
 dependencies = [
  "dirs",
  "gethostname",
@@ -4869,7 +4877,8 @@ dependencies = [
 [[package]]
 name = "zerokms-protocol"
 version = "0.12.16"
-source = "git+https://github.com/cipherstash/cipherstash-suite?branch=release-plz-2026-05-25T06-51-46Z#8381d9e5f3dcabb8031ebc41ca30fa6f1647010b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f279d7e22849e3b5f3e3809a3b77ee36456e1bb35190eb494a564c2a94e4454"
 dependencies = [
  "base64",
  "cipherstash-config",
