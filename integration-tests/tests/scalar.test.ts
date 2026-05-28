@@ -60,7 +60,6 @@ describe.each(cases)('encrypt and decrypt', ({ identifier, plaintext }) => {
 
       const ciphertext = await encrypt(client, {
         plaintext,
-        serviceToken: undefined,
         lockContext: undefined,
         unverifiedContext: undefined,
         ...identifier,
@@ -69,7 +68,6 @@ describe.each(cases)('encrypt and decrypt', ({ identifier, plaintext }) => {
       const decrypted = await decrypt(client, {
         ciphertext,
         lockContext: undefined,
-        serviceToken: undefined,
         unverifiedContext: undefined,
       })
 

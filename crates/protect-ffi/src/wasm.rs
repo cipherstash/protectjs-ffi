@@ -336,7 +336,6 @@ async fn do_encrypt(client: &WasmClient, opts: EncryptOptions) -> Result<Encrypt
     let eql_opts = EqlEncryptOpts {
         keyset_id: None,
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
-        service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
         decryption_policy: None,
@@ -397,7 +396,6 @@ async fn do_encrypt_bulk(
         let eql_opts = EqlEncryptOpts {
             keyset_id: None,
             lock_context: Cow::Owned(lock_context),
-            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
             decryption_policy: None,
@@ -449,7 +447,6 @@ async fn do_encrypt_query(
     let eql_opts = EqlEncryptOpts {
         keyset_id: None,
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
-        service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
         decryption_policy: None,
@@ -516,7 +513,6 @@ async fn do_encrypt_query_bulk(
         let eql_opts = EqlEncryptOpts {
             keyset_id: None,
             lock_context: Cow::Owned(lock_context),
-            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
             decryption_policy: None,
@@ -543,12 +539,7 @@ async fn do_decrypt(client: &WasmClient, opts: DecryptOptions) -> Result<JsPlain
 
     let bytes = client
         .zerokms
-        .decrypt_single(
-            encrypted_record,
-            None,
-            opts.service_token.map(Cow::Owned),
-            opts.unverified_context.as_ref(),
-        )
+        .decrypt_single(encrypted_record, None, opts.unverified_context.as_ref())
         .await
         .map_err(Error::from)?;
     let plaintext = Plaintext::from_slice(bytes.as_slice()).map_err(Error::from)?;
@@ -571,12 +562,7 @@ async fn do_decrypt_bulk(
 
     let decrypted = client
         .zerokms
-        .decrypt(
-            encrypted_records,
-            None,
-            opts.service_token.map(Cow::Owned),
-            opts.unverified_context.as_ref(),
-        )
+        .decrypt(encrypted_records, None, opts.unverified_context.as_ref())
         .await?;
 
     decrypted
@@ -623,11 +609,7 @@ async fn do_decrypt_bulk_fallible(
 
     let decrypted = client
         .zerokms
-        .decrypt_fallible(
-            valid_records,
-            opts.service_token.map(Cow::Owned),
-            opts.unverified_context.map(Cow::Owned),
-        )
+        .decrypt_fallible(valid_records, opts.unverified_context.map(Cow::Owned))
         .await?;
 
     for (item, idx) in decrypted.into_iter().zip(valid_indices) {

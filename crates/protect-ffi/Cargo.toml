@@ -10,9 +10,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
-cipherstash-client = { version = "=0.35.0", features = ["tokio"] }
-cts-common = { version = "=0.35.0", default-features = false }
-stack-auth = { version = "=0.35.0" }
+cipherstash-client = { git = "https://github.com/cipherstash/cipherstash-suite", branch = "release-plz-2026-05-25T06-51-46Z", features = ["tokio"] }
+cts-common = { git = "https://github.com/cipherstash/cipherstash-suite", branch = "release-plz-2026-05-25T06-51-46Z", default-features = false }
+stack-auth = { git = "https://github.com/cipherstash/cipherstash-suite", branch = "release-plz-2026-05-25T06-51-46Z" }
 hex = "0.4.3"
 once_cell = "1.20.2"
 rust_decimal = "1.37"
@@ -25,7 +25,7 @@ zeroize = { version = "1.8", features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 neon = { version = "1", features = ["serde", "tokio"] }
-stack-profile = { version = "=0.35.0" }
+stack-profile = { git = "https://github.com/cipherstash/cipherstash-suite", branch = "release-plz-2026-05-25T06-51-46Z" }
 tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

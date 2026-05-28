@@ -54,7 +54,6 @@ describe('encryptBulk and decryptBulk', async () => {
 
     const ciphertexts = await encryptBulk(client, {
       plaintexts: payloads,
-      serviceToken: undefined,
       unverifiedContext: undefined,
     })
 
@@ -63,7 +62,6 @@ describe('encryptBulk and decryptBulk', async () => {
         ciphertext,
         lockContext: undefined,
       })),
-      serviceToken: undefined,
       unverifiedContext: undefined,
     })
 
