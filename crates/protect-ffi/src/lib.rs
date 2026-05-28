@@ -292,14 +292,13 @@ pub(crate) struct NeonJsAuthStrategy {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NeonJsAuthStrategy {
-    /// Build from a JS strategy object. Looks up `getToken` on the object
-    /// via the shared [`JS_CHANNEL`] so the result is a stable [`Root`] we
-    /// can call from any tokio task.
-    async fn from_root(strategy: Root<JsObject>) -> Result<Self, Error> {
-        let channel = JS_CHANNEL
-            .get()
-            .ok_or_else(|| Error::Credentials("module not initialized".to_string()))?
-            .clone();
+    /// Build from a JS strategy object plus the [`Channel`] for the isolate
+    /// that produced it. The channel must come from the calling JS context
+    /// (the `#[neon::export]` macro injects one for any async fn whose first
+    /// argument is `Channel`) — sharing a process-wide channel would route
+    /// callbacks to the wrong isolate when the addon is loaded from multiple
+    /// Node Worker threads, panicking inside `Root::to_inner`.
+    async fn from_root(strategy: Root<JsObject>, channel: Channel) -> Result<Self, Error> {
         let strategy = Arc::new(strategy);
         let strategy_for_lookup = Arc::clone(&strategy);
         let get_token = channel
@@ -856,13 +855,20 @@ fn to_query_plaintext(
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn new_client(
+    // First-arg `Channel` is captured per-call by the `#[neon::export]` macro
+    // from the calling isolate's `Cx`. Threading it into `NeonJsAuthStrategy`
+    // is what keeps JS callbacks pinned to the isolate that owns the
+    // strategy `Root` — see the rationale on `from_root`.
+    channel: Channel,
     Json(opts): Json<NewClientOptions>,
     strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
-        Some(s) => NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s).await?),
+        Some(s) => {
+            NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?)
+        }
         None => NodeAuthStrategy::Auto(Box::new(client_opts.creds.build_strategy()?)),
     };
     let zerokms = ZeroKMSBuilder::new(auth)
@@ -1399,12 +1405,6 @@ fn into_store_ciphertext(output: EqlOutput) -> Result<EqlCiphertext, Error> {
 #[cfg(not(target_arch = "wasm32"))]
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
-/// Channel captured at module init so [`NeonJsAuthStrategy`] can invoke
-/// JS callables from tokio tasks without threading a `Cx` through every
-/// call site.
-#[cfg(not(target_arch = "wasm32"))]
-static JS_CHANNEL: OnceCell<Channel> = OnceCell::new();
-
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
@@ -1413,7 +1413,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
         .or_else(|err| cx.throw_error(err.to_string()))?;
 
     let _ = neon::set_global_executor(&mut cx, runtime);
-    let _ = JS_CHANNEL.set(cx.channel());
 
     neon::registered().export(&mut cx)?;
 
