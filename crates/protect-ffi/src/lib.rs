@@ -298,19 +298,30 @@ impl NeonJsAuthStrategy {
     /// argument is `Channel`) — sharing a process-wide channel would route
     /// callbacks to the wrong isolate when the addon is loaded from multiple
     /// Node Worker threads, panicking inside `Root::to_inner`.
+    ///
+    /// The stored channel is unref'd so a `Client` holding a JS-backed
+    /// strategy doesn't pin libuv's event loop. The per-call promise
+    /// settlement channel that `#[neon::export]` async wraps each encrypt
+    /// / decrypt with is still referenced for the duration of that call,
+    /// so awaited operations complete normally; only the persistent auth
+    /// channel stops blocking process exit when idle.
     async fn from_root(strategy: Root<JsObject>, channel: Channel) -> Result<Self, Error> {
         let strategy = Arc::new(strategy);
         let strategy_for_lookup = Arc::clone(&strategy);
-        let get_token = channel
+        // Use a clone for the lookup `send` so we can move the original
+        // into the JS-thread closure, unref it there (which requires a
+        // `Cx`), and return it back to be stored on `self`.
+        let sender = channel.clone();
+        let (get_token, channel) = sender
             .send(move |mut cx| {
+                let mut channel = channel;
                 let obj = strategy_for_lookup.to_inner(&mut cx);
                 let func: Handle<JsFunction> = obj.prop(&mut cx, "getToken").get()?;
-                Ok(func.root(&mut cx))
+                channel.unref(&mut cx);
+                Ok((func.root(&mut cx), channel))
             })
             .await
-            .map_err(|e| {
-                Error::Credentials(format!("strategy.getToken lookup failed: {e}"))
-            })?;
+            .map_err(|e| Error::Credentials(format!("strategy.getToken lookup failed: {e}")))?;
         Ok(Self {
             strategy,
             get_token: Arc::new(get_token),
