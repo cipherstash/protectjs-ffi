@@ -352,6 +352,20 @@ impl NeonJsAuthStrategy {
     }
 }
 
+/// Best-effort conversion of a thrown JS value into a Rust string. Wrapped
+/// in `try_catch` because `to_string` itself can throw (e.g. a Proxy with
+/// a throwing trap, an object whose `toString` throws). Any failure falls
+/// back to a generic message — and crucially clears the pending N-API
+/// exception so the channel callback returns cleanly.
+#[cfg(not(target_arch = "wasm32"))]
+fn thrown_to_string<'cx, 'h, C: Context<'cx>>(
+    thrown: Handle<'h, JsValue>,
+    cx: &mut C,
+) -> String {
+    cx.try_catch(|cx| Ok(thrown.to_string(cx)?.value(cx)))
+        .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl AuthStrategy for &NeonJsAuthStrategy {
     async fn get_token(self) -> Result<stack_auth::ServiceToken, AuthError> {
@@ -359,53 +373,109 @@ impl AuthStrategy for &NeonJsAuthStrategy {
         let get_token = Arc::clone(&self.get_token);
         let channel = self.channel.clone();
 
-        // Schedule the JS call on the JS thread. The closure returns a
-        // `JsFuture<Result<String, String>>`: outer Result distinguishes
-        // a resolved token (Ok) from a structurally-bad result or a
-        // rejection (Err); inner type carries the token string.
-        let js_future: JsFuture<Result<String, String>> = channel
+        // The channel-callback body is wrapped in `cx.try_catch` so that
+        // *any* synchronous throw (a `getToken` that throws, a `.then`
+        // getter that throws, a downcast that needs to consult a Proxy
+        // trap, etc.) is caught and converted to a plain `Err(String)`.
+        // Without `try_catch`, a `Throw` propagated out of the closure
+        // leaves a pending N-API exception on the env that surfaces as an
+        // unhandled JS rejection even when the Rust caller maps the
+        // resulting `JoinError` into a clean error.
+        //
+        // The inner `Result<JsFuture<...>, String>` is the structural
+        // outcome (a future to await vs. a synthesised error message);
+        // the outer `try_catch` only fires on a real throw.
+        let outer: Result<JsFuture<Result<String, String>>, String> = channel
             .send(move |mut cx| {
-                let strategy_h = strategy.to_inner(&mut cx);
-                let func_h = get_token.to_inner(&mut cx);
-                let args: [Handle<JsValue>; 0] = [];
-                let result = func_h.call(&mut cx, strategy_h, args)?;
-                let promise: Handle<JsPromise> = result.downcast_or_throw(&mut cx)?;
-                promise.to_future(&mut cx, |mut cx, settled| match settled {
-                    Ok(v) => {
-                        let obj = match v.downcast::<JsObject, _>(&mut cx) {
-                            Ok(o) => o,
+                let outcome: Result<JsFuture<Result<String, String>>, String> = match cx
+                    .try_catch(|cx| -> NeonResult<
+                        Result<JsFuture<Result<String, String>>, String>,
+                    > {
+                        let strategy_h = strategy.to_inner(cx);
+                        let func_h = get_token.to_inner(cx);
+                        let args: [Handle<JsValue>; 0] = [];
+                        let result = func_h.call(cx, strategy_h, args)?;
+                        let promise = match result.downcast::<JsPromise, _>(cx) {
+                            Ok(p) => p,
                             Err(_) => {
                                 return Ok(Err(
-                                    "strategy.getToken did not return an object".to_string(),
+                                    "strategy.getToken did not return a Promise"
+                                        .to_string(),
                                 ))
                             }
                         };
-                        let token: Handle<JsString> = match obj.prop(&mut cx, "token").get() {
-                            Ok(t) => t,
-                            Err(_) => return Ok(Err("missing 'token' field".to_string())),
-                        };
-                        Ok(Ok(token.value(&mut cx)))
-                    }
-                    Err(err) => {
-                        let msg = err
-                            .to_string(&mut cx)
-                            .map(|s| s.value(&mut cx))
-                            .unwrap_or_else(|_| "strategy.getToken rejected".to_string());
-                        Ok(Err(msg))
-                    }
-                })
+                        // Inner `to_future` closure: structural mismatches
+                        // (wrong type for resolved value, missing/non-string
+                        // `token`) are returned as `Ok(Err(...))`. The
+                        // remaining Throw risk is a property getter on the
+                        // resolved object that throws — vanishingly rare in
+                        // practice, and the existing try_catch on the outer
+                        // closure body covers throws from this same channel
+                        // dispatch path.
+                        let fut = promise.to_future(cx, |mut cx, settled| {
+                            match settled {
+                                Ok(v) => {
+                                    let obj = match v.downcast::<JsObject, _>(&mut cx) {
+                                        Ok(o) => o,
+                                        Err(_) => {
+                                            return Ok(Err(
+                                                "strategy.getToken did not return an object"
+                                                    .to_string(),
+                                            ))
+                                        }
+                                    };
+                                    let raw: Handle<JsValue> =
+                                        match obj.prop(&mut cx, "token").get() {
+                                            Ok(v) => v,
+                                            Err(_) => {
+                                                return Ok(Err(
+                                                    "could not read 'token' field"
+                                                        .to_string(),
+                                                ))
+                                            }
+                                        };
+                                    if raw.is_a::<JsUndefined, _>(&mut cx)
+                                        || raw.is_a::<JsNull, _>(&mut cx)
+                                    {
+                                        return Ok(Err("missing 'token' field".to_string()));
+                                    }
+                                    let token = match raw.downcast::<JsString, _>(&mut cx) {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            return Ok(Err(
+                                                "'token' field is not a string"
+                                                    .to_string(),
+                                            ))
+                                        }
+                                    };
+                                    Ok(Ok(token.value(&mut cx)))
+                                }
+                                Err(err) => Ok(Err(format!(
+                                    "strategy.getToken rejected: {}",
+                                    thrown_to_string(err, &mut cx),
+                                ))),
+                            }
+                        })?;
+                        Ok(Ok(fut))
+                    }) {
+                    Ok(inner) => inner,
+                    Err(thrown) => Err(format!(
+                        "strategy.getToken threw synchronously: {}",
+                        thrown_to_string(thrown, &mut cx),
+                    )),
+                };
+                Ok(outcome)
             })
             .await
             .map_err(|e| AuthError::Server(format!("strategy callback failed: {e}")))?;
 
+        let js_future = outer.map_err(AuthError::Server)?;
         let token_result = js_future
             .await
             .map_err(|e| AuthError::Server(format!("strategy promise await failed: {e}")))?;
-
-        match token_result {
-            Ok(s) => Ok(stack_auth::ServiceToken::new(SecretToken::new(s))),
-            Err(msg) => Err(AuthError::Server(msg)),
-        }
+        token_result
+            .map(|s| stack_auth::ServiceToken::new(SecretToken::new(s)))
+            .map_err(AuthError::Server)
     }
 }
 

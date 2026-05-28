@@ -100,6 +100,62 @@ describe.skipIf(missingEnv.length > 0)('opts.strategy (JsBacked)', () => {
 
     await expect(
       newClient({ encryptConfig, clientOpts, strategy }),
-    ).rejects.toThrow()
+    ).rejects.toThrow(/getToken/)
+  })
+
+  test('rejects when getToken throws synchronously', async () => {
+    const strategy: AuthStrategy = {
+      getToken: (() => {
+        throw new Error('sync throw from getToken')
+      }) as AuthStrategy['getToken'],
+    }
+
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/threw synchronously|sync throw from getToken/)
+  })
+
+  test('rejects when getToken returns a non-Promise', async () => {
+    const strategy: AuthStrategy = {
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately mistyped
+      getToken: (() => ({ token: 'not-wrapped-in-a-promise' })) as any,
+    }
+
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/did not return a Promise/)
+  })
+
+  test('rejects when getToken resolves with a non-object', async () => {
+    const strategy: AuthStrategy = {
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately mistyped
+      getToken: (async () => 'just-a-string') as any,
+    }
+
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/did not return an object/)
+  })
+
+  test('rejects when getToken resolves without a token field', async () => {
+    const strategy: AuthStrategy = {
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately mistyped
+      getToken: (async () => ({ notToken: 'oops' })) as any,
+    }
+
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/missing 'token' field/)
+  })
+
+  test("rejects when the 'token' field is not a string", async () => {
+    const strategy: AuthStrategy = {
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately mistyped
+      getToken: (async () => ({ token: 12345 })) as any,
+    }
+
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/'token' field is not a string/)
   })
 })
