@@ -150,3 +150,33 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     expect(decrypted).toBe(plaintext)
   })
 })
+
+// The wasm `newClient` requires `opts.strategy` (no env/fs fallback). Both
+// guards run *before* serde and before any network call, so they need no
+// credentials — gate only on the wasm build existing, not on the env vars.
+describe.skipIf(!existsSync(WASM_INLINE_PATH))(
+  'wasm newClient validation',
+  () => {
+    type WasmModule = {
+      newClient: (opts: Record<string, unknown>) => Promise<unknown>
+    }
+    const minimalConfig = { v: 1, tables: {} }
+
+    test('rejects when opts.strategy is missing', async () => {
+      const wasm = (await import(WASM_INLINE_PATH)) as WasmModule
+      await expect(
+        wasm.newClient({ encryptConfig: minimalConfig }),
+      ).rejects.toThrow(/opts\.strategy is required/)
+    })
+
+    test('rejects a non-callable getToken', async () => {
+      const wasm = (await import(WASM_INLINE_PATH)) as WasmModule
+      await expect(
+        wasm.newClient({
+          strategy: { getToken: 42 },
+          encryptConfig: minimalConfig,
+        }),
+      ).rejects.toThrow(/getToken is not a function/)
+    })
+  },
+)

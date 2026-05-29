@@ -103,6 +103,16 @@ describe.skipIf(missingEnv.length > 0)('opts.strategy (JsBacked)', () => {
     ).rejects.toThrow(/getToken/)
   })
 
+  test('rejects a strategy whose getToken is not callable', async () => {
+    // present but not a function -> exercises the downcast-failure arm,
+    // distinct from the missing/undefined arm covered above.
+    const strategy = { getToken: 'not-a-function' } as unknown as AuthStrategy
+
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/getToken is not a function/)
+  })
+
   test('rejects when getToken throws synchronously', async () => {
     const strategy: AuthStrategy = {
       getToken: (() => {
