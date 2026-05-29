@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the project is pre-1.0, breaking changes are released as minor version bumps.
 
+Add notes for unreleased work under the `[Unreleased]` heading below. On
+release, the `version` npm lifecycle hook promotes that section to a dated
+release entry (see `scripts/changelog-release.mjs`), and the release workflow
+uses the promoted section as the GitHub release notes.
+
+## [Unreleased]
+
 ## [0.25.0] - 2026-05-29
 
 ### Breaking
@@ -81,6 +88,7 @@ While the project is pre-1.0, breaking changes are released as minor version bum
   changes).
 - Upgrade `cipherstash-client` to `0.35.0`.
 
+[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.25.0...HEAD
 [0.25.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.22.0...v0.23.0
