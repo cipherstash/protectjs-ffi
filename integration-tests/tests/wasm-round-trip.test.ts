@@ -27,7 +27,7 @@ import { AccessKeyStrategy } from '@cipherstash/auth/wasm-inline'
 import { beforeAll, describe, expect, test } from 'vitest'
 
 const REQUIRED_ENV = [
-  'CS_REGION',
+  'CS_WORKSPACE_CRN',
   'CS_CLIENT_ACCESS_KEY',
   'CS_CLIENT_ID',
   'CS_CLIENT_KEY',
@@ -53,14 +53,16 @@ const WASM_INLINE_PATH = resolve(
 // opaque ESM import error.
 describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
   type WasmModule = {
-    newClient: (
-      strategy: unknown,
-      opts: Record<string, unknown>,
-    ) => Promise<unknown>
+    newClient: (opts: Record<string, unknown>) => Promise<unknown>
     encrypt: (
       client: unknown,
       opts: Record<string, unknown>,
-    ) => Promise<{ i: { t: string; c: string }; b?: { c: string } }>
+    ) => Promise<{
+      k: 'ct' | 'sv'
+      i: { t: string; c: string }
+      c?: string
+      hm?: string
+    }>
     decrypt: (client: unknown, opts: Record<string, unknown>) => Promise<string>
     isEncrypted: (raw: unknown) => boolean
   }
@@ -83,26 +85,43 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     // local consts so TS narrows away the `undefined` and the test body
     // doesn't need non-null assertions on every reference.
     const env = {
-      region: process.env.CS_REGION,
+      workspaceCrn: process.env.CS_WORKSPACE_CRN,
       accessKey: process.env.CS_CLIENT_ACCESS_KEY,
       clientId: process.env.CS_CLIENT_ID,
       clientKey: process.env.CS_CLIENT_KEY,
     }
-    if (!env.region || !env.accessKey || !env.clientId || !env.clientKey) {
+    if (
+      !env.workspaceCrn ||
+      !env.accessKey ||
+      !env.clientId ||
+      !env.clientKey
+    ) {
       throw new Error(
         'unreachable: describe.skipIf should have prevented this test from running without env vars',
       )
     }
 
-    const strategy = AccessKeyStrategy.create(env.region, env.accessKey)
+    // stack-auth 0.36 dropped CS_REGION in favour of CS_WORKSPACE_CRN.
+    // The wasm AccessKeyStrategy.create still takes a region string but
+    // it expects the `<region>.<provider>` form, which is the middle
+    // segment of a CRN like `crn:ap-southeast-2.aws:<workspace>`.
+    const crnMatch = env.workspaceCrn.match(/^crn:([^:]+):/)
+    if (!crnMatch) {
+      throw new Error(`unexpected CS_WORKSPACE_CRN format: ${env.workspaceCrn}`)
+    }
+    const strategy = AccessKeyStrategy.create(crnMatch[1], env.accessKey)
 
-    const client = await wasm.newClient(strategy, {
+    const client = await wasm.newClient({
+      strategy,
       encryptConfig: {
         v: 1,
         tables: {
           users: {
             email: {
-              cast_as: 'string',
+              // The TS shim normalises 'string' → 'text' before handing the
+              // config to native; the wasm test bypasses that shim, so it
+              // must use the post-0.36 canonical vocabulary directly.
+              cast_as: 'text',
               indexes: { unique: {} },
             },
           },
@@ -120,10 +139,44 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
     })
 
     expect(wasm.isEncrypted(ciphertext)).toBe(true)
+    expect(ciphertext.k).toBe('ct')
     expect(ciphertext.i).toEqual({ t: 'users', c: 'email' })
-    expect(ciphertext.b?.c).toBeTruthy()
+    // unique-index HMAC lives at the top-level `hm` field in EQL v2.3.
+    expect(ciphertext.hm).toBeTruthy()
+    // MessagePack-Base85 ciphertext lives at top-level `c` for scalar payloads.
+    expect(ciphertext.c).toBeTruthy()
 
     const decrypted = await wasm.decrypt(client, { ciphertext })
     expect(decrypted).toBe(plaintext)
   })
 })
+
+// The wasm `newClient` requires `opts.strategy` (no env/fs fallback). Both
+// guards run *before* serde and before any network call, so they need no
+// credentials — gate only on the wasm build existing, not on the env vars.
+describe.skipIf(!existsSync(WASM_INLINE_PATH))(
+  'wasm newClient validation',
+  () => {
+    type WasmModule = {
+      newClient: (opts: Record<string, unknown>) => Promise<unknown>
+    }
+    const minimalConfig = { v: 1, tables: {} }
+
+    test('rejects when opts.strategy is missing', async () => {
+      const wasm = (await import(WASM_INLINE_PATH)) as WasmModule
+      await expect(
+        wasm.newClient({ encryptConfig: minimalConfig }),
+      ).rejects.toThrow(/opts\.strategy is required/)
+    })
+
+    test('rejects a non-callable getToken', async () => {
+      const wasm = (await import(WASM_INLINE_PATH)) as WasmModule
+      await expect(
+        wasm.newClient({
+          strategy: { getToken: 42 },
+          encryptConfig: minimalConfig,
+        }),
+      ).rejects.toThrow(/getToken is not a function/)
+    })
+  },
+)

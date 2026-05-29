@@ -88,6 +88,16 @@ jobs:
         shell: bash
         run: cargo check --target wasm32-unknown-unknown -p protect-ffi
 
+      # The `mise run test:integration:all` step below builds wasm artifacts
+      # because `tests/wasm-round-trip.test.ts` loads
+      # `dist/wasm/protect_ffi_inline.js` at module-graph time. Pinned to
+      # the same version used by the build workflow.
+      - name: Install wasm-pack
+        uses: baptiste0928/cargo-install@c7dafcfd8a0035d58dfc65d0fbaf71a9ac347715 # v2
+        with:
+          crate: wasm-pack
+          version: '0.13.1'
+
       - name: Rust Lint
         run: mise lint:rust
 

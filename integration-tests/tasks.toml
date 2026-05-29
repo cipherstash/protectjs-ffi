@@ -37,8 +37,12 @@ run = [
 description = "Run the integration tests"
 dir = "{{ config_root }}/integration-tests"
 depends = ["start-db"]
+# The wasm-round-trip suite reads `dist/wasm/protect_ffi_inline.js`, so
+# the wasm artifacts must exist before vitest runs even though the rest
+# of the integration tests only need the Neon binding.
 run = [
     "mise run build:debug",
+    "npm run --prefix .. build:wasm",
     "npx vitest --exclude tests/lock-context.test.ts",
 ]
 
@@ -46,4 +50,8 @@ run = [
 description = "Run all integration tests (includes lock context tests)"
 dir = "{{ config_root }}/integration-tests"
 depends = ["start-db"]
-run = ["mise run build:debug", "npx vitest"]
+run = [
+    "mise run build:debug",
+    "npm run --prefix .. build:wasm",
+    "npx vitest",
+]

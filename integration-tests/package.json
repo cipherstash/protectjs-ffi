@@ -10,7 +10,7 @@
   "license": "MIT",
   "description": "",
   "dependencies": {
-    "@cipherstash/auth": "0.37.0-alpha.8",
+    "@cipherstash/auth": "^0.38.0",
     "@cipherstash/protect-ffi": "..",
     "pg": "^8.13.3"
   },

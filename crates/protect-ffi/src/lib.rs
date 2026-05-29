@@ -3,7 +3,6 @@ mod js_plaintext;
 mod wasm;
 
 use cipherstash_client::{
-    credentials::ServiceToken,
     encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation, EqlOutput,
@@ -25,8 +24,13 @@ use js_plaintext::JsPlaintext;
 #[cfg(not(target_arch = "wasm32"))]
 use neon::{
     prelude::*,
-    types::extract::{Boxed, Json},
+    types::{
+        extract::{Boxed, Json},
+        JsFuture,
+    },
 };
+#[cfg(not(target_arch = "wasm32"))]
+use stack_auth::{AuthStrategy, SecretToken};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,10 +47,11 @@ extern crate quickcheck;
 #[macro_use(quickcheck)]
 extern crate quickcheck_macros;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct Client {
     cipher: Arc<ScopedZeroKMS>,
-    zerokms: Arc<ZeroKMSWithClientKey<AutoStrategy>>,
+    zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
 }
 
@@ -269,7 +274,237 @@ pub enum Error {
     Config(#[from] ConfigError),
 }
 
-type ScopedZeroKMS = ScopedCipher<AutoStrategy>;
+/// JS-backed [`AuthStrategy`] for the Neon build.
+///
+/// Holds the strategy object and its `getToken` callable as Neon [`Root`]s,
+/// plus a [`Channel`] for invoking them from tokio tasks. Mirrors
+/// `wasm::JsAuthStrategy` but uses Neon's cross-thread invocation model
+/// instead of wasm's single-threaded one.
+///
+/// `getToken()` is called on every ZeroKMS request — caching is the JS
+/// strategy's responsibility, matching the wasm path.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NeonJsAuthStrategy {
+    strategy: Arc<Root<JsObject>>,
+    get_token: Arc<Root<JsFunction>>,
+    channel: Channel,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NeonJsAuthStrategy {
+    /// Build from a JS strategy object plus the [`Channel`] for the isolate
+    /// that produced it. The channel must come from the calling JS context
+    /// (the `#[neon::export]` macro injects one for any async fn whose first
+    /// argument is `Channel`) — sharing a process-wide channel would route
+    /// callbacks to the wrong isolate when the addon is loaded from multiple
+    /// Node Worker threads, panicking inside `Root::to_inner`.
+    ///
+    /// The stored channel is unref'd so a `Client` holding a JS-backed
+    /// strategy doesn't pin libuv's event loop. The per-call promise
+    /// settlement channel that `#[neon::export]` async wraps each encrypt
+    /// / decrypt with is still referenced for the duration of that call,
+    /// so awaited operations complete normally; only the persistent auth
+    /// channel stops blocking process exit when idle.
+    async fn from_root(strategy: Root<JsObject>, channel: Channel) -> Result<Self, Error> {
+        let strategy = Arc::new(strategy);
+        let strategy_for_lookup = Arc::clone(&strategy);
+        // Use a clone for the lookup `send` so we can move the original
+        // into the JS-thread closure, unref it there (which requires a
+        // `Cx`), and return it back to be stored on `self`.
+        let sender = channel.clone();
+        // Retrieve the property as a raw JsValue and do an explicit
+        // `is_a` + `downcast` check, so a missing or non-callable
+        // `getToken` becomes a clean `Result::Err` rather than a `Throw`
+        // bubbling through the channel callback (which surfaces as an
+        // unhandled rejection on the JS side even when the Rust caller
+        // catches the resulting JoinError).
+        let lookup: Result<(Root<JsFunction>, Channel), String> = sender
+            .send(move |mut cx| {
+                let mut channel = channel;
+                let obj = strategy_for_lookup.to_inner(&mut cx);
+                let raw: Handle<JsValue> = obj.prop(&mut cx, "getToken").get()?;
+                if raw.is_a::<JsUndefined, _>(&mut cx) || raw.is_a::<JsNull, _>(&mut cx) {
+                    channel.unref(&mut cx);
+                    return Ok(Err(
+                        "opts.strategy.getToken is missing".to_string()
+                    ));
+                }
+                let func = match raw.downcast::<JsFunction, _>(&mut cx) {
+                    Ok(f) => f,
+                    Err(_) => {
+                        channel.unref(&mut cx);
+                        return Ok(Err(
+                            "opts.strategy.getToken is not a function".to_string()
+                        ));
+                    }
+                };
+                channel.unref(&mut cx);
+                Ok(Ok((func.root(&mut cx), channel)))
+            })
+            .await
+            .map_err(|e| Error::Credentials(format!("strategy.getToken lookup failed: {e}")))?;
+        let (get_token, channel) = lookup.map_err(Error::Credentials)?;
+        Ok(Self {
+            strategy,
+            get_token: Arc::new(get_token),
+            channel,
+        })
+    }
+}
+
+/// Best-effort conversion of a thrown JS value into a Rust string. Wrapped
+/// in `try_catch` because `to_string` itself can throw (e.g. a Proxy with
+/// a throwing trap, an object whose `toString` throws). Any failure falls
+/// back to a generic message — and crucially clears the pending N-API
+/// exception so the channel callback returns cleanly.
+#[cfg(not(target_arch = "wasm32"))]
+fn thrown_to_string<'cx, 'h, C: Context<'cx>>(
+    thrown: Handle<'h, JsValue>,
+    cx: &mut C,
+) -> String {
+    cx.try_catch(|cx| Ok(thrown.to_string(cx)?.value(cx)))
+        .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AuthStrategy for &NeonJsAuthStrategy {
+    async fn get_token(self) -> Result<stack_auth::ServiceToken, AuthError> {
+        let strategy = Arc::clone(&self.strategy);
+        let get_token = Arc::clone(&self.get_token);
+        let channel = self.channel.clone();
+
+        // The channel-callback body is wrapped in `cx.try_catch` so that
+        // *any* synchronous throw (a `getToken` that throws, a `.then`
+        // getter that throws, a downcast that needs to consult a Proxy
+        // trap, etc.) is caught and converted to a plain `Err(String)`.
+        // Without `try_catch`, a `Throw` propagated out of the closure
+        // leaves a pending N-API exception on the env that surfaces as an
+        // unhandled JS rejection even when the Rust caller maps the
+        // resulting `JoinError` into a clean error.
+        //
+        // The inner `Result<JsFuture<...>, String>` is the structural
+        // outcome (a future to await vs. a synthesised error message);
+        // the outer `try_catch` only fires on a real throw.
+        let outer: Result<JsFuture<Result<String, String>>, String> = channel
+            .send(move |mut cx| {
+                let outcome: Result<JsFuture<Result<String, String>>, String> = match cx
+                    .try_catch(|cx| -> NeonResult<
+                        Result<JsFuture<Result<String, String>>, String>,
+                    > {
+                        let strategy_h = strategy.to_inner(cx);
+                        let func_h = get_token.to_inner(cx);
+                        let args: [Handle<JsValue>; 0] = [];
+                        let result = func_h.call(cx, strategy_h, args)?;
+                        let promise = match result.downcast::<JsPromise, _>(cx) {
+                            Ok(p) => p,
+                            Err(_) => {
+                                return Ok(Err(
+                                    "strategy.getToken did not return a Promise"
+                                        .to_string(),
+                                ))
+                            }
+                        };
+                        // Inner `to_future` closure: structural mismatches
+                        // (wrong type for resolved value, missing/non-string
+                        // `token`) are returned as `Ok(Err(...))`. The
+                        // remaining Throw risk is a property getter on the
+                        // resolved object that throws — vanishingly rare in
+                        // practice, and the existing try_catch on the outer
+                        // closure body covers throws from this same channel
+                        // dispatch path.
+                        let fut = promise.to_future(cx, |mut cx, settled| {
+                            match settled {
+                                Ok(v) => {
+                                    let obj = match v.downcast::<JsObject, _>(&mut cx) {
+                                        Ok(o) => o,
+                                        Err(_) => {
+                                            return Ok(Err(
+                                                "strategy.getToken did not return an object"
+                                                    .to_string(),
+                                            ))
+                                        }
+                                    };
+                                    let raw: Handle<JsValue> =
+                                        match obj.prop(&mut cx, "token").get() {
+                                            Ok(v) => v,
+                                            Err(_) => {
+                                                return Ok(Err(
+                                                    "could not read 'token' field"
+                                                        .to_string(),
+                                                ))
+                                            }
+                                        };
+                                    if raw.is_a::<JsUndefined, _>(&mut cx)
+                                        || raw.is_a::<JsNull, _>(&mut cx)
+                                    {
+                                        return Ok(Err("missing 'token' field".to_string()));
+                                    }
+                                    let token = match raw.downcast::<JsString, _>(&mut cx) {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            return Ok(Err(
+                                                "'token' field is not a string"
+                                                    .to_string(),
+                                            ))
+                                        }
+                                    };
+                                    Ok(Ok(token.value(&mut cx)))
+                                }
+                                Err(err) => Ok(Err(format!(
+                                    "strategy.getToken rejected: {}",
+                                    thrown_to_string(err, &mut cx),
+                                ))),
+                            }
+                        })?;
+                        Ok(Ok(fut))
+                    }) {
+                    Ok(inner) => inner,
+                    Err(thrown) => Err(format!(
+                        "strategy.getToken threw synchronously: {}",
+                        thrown_to_string(thrown, &mut cx),
+                    )),
+                };
+                Ok(outcome)
+            })
+            .await
+            .map_err(|e| AuthError::Server(format!("strategy callback failed: {e}")))?;
+
+        let js_future = outer.map_err(AuthError::Server)?;
+        let token_result = js_future
+            .await
+            .map_err(|e| AuthError::Server(format!("strategy promise await failed: {e}")))?;
+        token_result
+            .map(|s| stack_auth::ServiceToken::new(SecretToken::new(s)))
+            .map_err(AuthError::Server)
+    }
+}
+
+/// Auth strategy held by the Neon-side [`Client`]. Either the
+/// filesystem/env-backed [`AutoStrategy`] (built from credentials in opts
+/// or the profile store) or a [`NeonJsAuthStrategy`] supplied by the
+/// caller via `opts.strategy`.
+///
+/// `AutoStrategy` is boxed because it's substantially larger than the
+/// JS-backed variant — without indirection clippy flags the size
+/// imbalance as `large_enum_variant`.
+#[cfg(not(target_arch = "wasm32"))]
+enum NodeAuthStrategy {
+    Auto(Box<AutoStrategy>),
+    JsBacked(NeonJsAuthStrategy),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AuthStrategy for &NodeAuthStrategy {
+    async fn get_token(self) -> Result<stack_auth::ServiceToken, AuthError> {
+        match self {
+            NodeAuthStrategy::Auto(s) => (&**s).get_token().await,
+            NodeAuthStrategy::JsBacked(s) => s.get_token().await,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 
 /// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
 #[derive(Deserialize, Default)]
@@ -370,7 +605,6 @@ struct EncryptOptions {
     column: String,
     table: String,
     lock_context: Option<LockContext>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -378,7 +612,6 @@ struct EncryptOptions {
 #[serde(rename_all = "camelCase")]
 struct EncryptBulkOptions {
     plaintexts: Vec<PlaintextPayload>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -406,7 +639,6 @@ struct EncryptQueryOptions {
     #[serde(default = "default_query_op")]
     query_op: String,
     lock_context: Option<LockContext>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -419,7 +651,6 @@ fn default_query_op() -> String {
 #[serde(rename_all = "camelCase")]
 struct EncryptQueryBulkOptions {
     queries: Vec<QueryPayload>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -441,7 +672,6 @@ struct QueryPayload {
 struct DecryptOptions {
     ciphertext: Encrypted,
     lock_context: Option<LockContext>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -449,7 +679,6 @@ struct DecryptOptions {
 #[serde(rename_all = "camelCase")]
 struct DecryptBulkOptions {
     ciphertexts: Vec<BulkDecryptPayload>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -729,12 +958,23 @@ fn to_query_plaintext(
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn new_client(
+    // First-arg `Channel` is captured per-call by the `#[neon::export]` macro
+    // from the calling isolate's `Cx`. Threading it into `NeonJsAuthStrategy`
+    // is what keeps JS callbacks pinned to the isolate that owns the
+    // strategy `Root` — see the rationale on `from_root`.
+    channel: Channel,
     Json(opts): Json<NewClientOptions>,
+    strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
     let client_opts = opts.client_opts.unwrap_or_default();
 
-    let strategy = client_opts.creds.build_strategy()?;
-    let zerokms = ZeroKMSBuilder::new(strategy)
+    let auth = match strategy {
+        Some(s) => {
+            NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?)
+        }
+        None => NodeAuthStrategy::Auto(Box::new(client_opts.creds.build_strategy()?)),
+    };
+    let zerokms = ZeroKMSBuilder::new(auth)
         .with_key_provider(client_opts.creds.build_key_provider()?)
         .build()
         .await?;
@@ -830,7 +1070,6 @@ async fn encrypt(
     let eql_opts = EqlEncryptOpts {
         keyset_id: None, // Use cipher's default
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
-        service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
         decryption_policy: None,
@@ -903,7 +1142,6 @@ async fn encrypt_bulk(
         let eql_opts = EqlEncryptOpts {
             keyset_id: None,
             lock_context: Cow::Owned(lock_context),
-            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
             decryption_policy: None,
@@ -975,7 +1213,6 @@ async fn encrypt_query(
     let eql_opts = EqlEncryptOpts {
         keyset_id: None,
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
-        service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
         decryption_policy: None,
@@ -1058,7 +1295,6 @@ async fn encrypt_query_bulk(
         let eql_opts = EqlEncryptOpts {
             keyset_id: None,
             lock_context: Cow::Owned(lock_context),
-            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
             decryption_policy: None,
@@ -1099,7 +1335,6 @@ async fn decrypt(
             encrypted_record,
             // Specifying None here will result in the client using the keyset identifier from the client
             None,
-            opts.service_token.map(Cow::Owned),
             opts.unverified_context.as_ref(),
         )
         .await
@@ -1139,7 +1374,6 @@ async fn decrypt_bulk(
             encrypted_records,
             // Specifying None here will result in the client using the keyset identifier from the client
             None,
-            opts.service_token.map(Cow::Owned),
             opts.unverified_context.as_ref(),
         )
         .await?;
@@ -1190,11 +1424,7 @@ async fn decrypt_bulk_fallible(
 
     let decrypted: Vec<Result<Vec<u8>, RecordDecryptError>> = client
         .zerokms
-        .decrypt_fallible(
-            valid_records,
-            opts.service_token.map(Cow::Owned),
-            opts.unverified_context.map(Cow::Owned),
-        )
+        .decrypt_fallible(valid_records, opts.unverified_context.map(Cow::Owned))
         .await?;
 
     for (item, idx) in decrypted.into_iter().zip(valid_indices) {

@@ -20,7 +20,10 @@ export type Client = { readonly [sym]: unknown }
 // Use this declaration to assign types to the protect-ffi's exports,
 // which otherwise default to `any`.
 declare module './load.cjs' {
-  function newClient(opts: NativeNewClientOptions): Promise<Client>
+  function newClient(
+    opts: NativeNewClientOptions,
+    strategy?: AuthStrategy,
+  ): Promise<Client>
   function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
   function isEncrypted(encrypted: unknown): boolean
@@ -149,10 +152,13 @@ function wrapSync<T>(fn: () => T): T {
 
 export function newClient(opts: NewClientOptions): Promise<Client> {
   return wrapAsync(() =>
-    native.newClient({
-      encryptConfig: normalizeEncryptConfig(opts.encryptConfig),
-      clientOpts: withEnvCredentials(opts.clientOpts),
-    }),
+    native.newClient(
+      {
+        encryptConfig: normalizeEncryptConfig(opts.encryptConfig),
+        clientOpts: withEnvCredentials(opts.clientOpts),
+      },
+      opts.strategy,
+    ),
   )
 }
 
@@ -238,11 +244,6 @@ export type EncryptPayload = {
 export type BulkDecryptPayload = {
   ciphertext: Encrypted
   lockContext?: Context
-}
-
-export type CtsToken = {
-  accessToken: string
-  expiry: number
 }
 
 export type Context = {
@@ -441,6 +442,21 @@ export type TokenFilter = { kind: 'downcase' }
 export type NewClientOptions = {
   encryptConfig: EncryptConfig
   clientOpts?: ClientOpts
+  /**
+   * Caller-supplied auth strategy. When provided, `getToken()` is invoked on
+   * every ZeroKMS request and `clientOpts.creds` is ignored for auth (the
+   * client key is still required). Without this, the native side builds an
+   * AutoStrategy from env / profile / `clientOpts.creds`.
+   */
+  strategy?: AuthStrategy
+}
+
+/**
+ * Auth strategy shape compatible with `@cipherstash/auth` strategies (e.g.
+ * `AccessKeyStrategy`). Only `getToken` is required.
+ */
+export type AuthStrategy = {
+  getToken: () => Promise<{ token: string }>
 }
 
 /** Options passed to the native `newClient` after vocabulary normalization. */
@@ -476,26 +492,22 @@ export type EncryptOptions = {
   column: string
   table: string
   lockContext?: Context
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
 export type EncryptBulkOptions = {
   plaintexts: EncryptPayload[]
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
 export type DecryptOptions = {
   ciphertext: Encrypted
   lockContext?: Context
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
 export type DecryptBulkOptions = {
   ciphertexts: BulkDecryptPayload[]
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
@@ -511,7 +523,6 @@ export type EncryptQueryOptions = {
   indexType: IndexTypeName
   queryOp?: QueryOpName
   lockContext?: Context
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
@@ -526,6 +537,5 @@ export type QueryPayload = {
 
 export type EncryptQueryBulkOptions = {
   queries: QueryPayload[]
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
