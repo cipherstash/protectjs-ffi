@@ -1,6 +1,14 @@
 {
   "name": "@cipherstash/protect-ffi",
   "version": "0.25.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cipherstash/protectjs-ffi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cipherstash/protectjs-ffi/issues"
+  },
+  "homepage": "https://github.com/cipherstash/protectjs-ffi#readme",
   "description": "",
   "main": "./lib/index.cjs",
   "scripts": {
