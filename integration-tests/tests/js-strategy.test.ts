@@ -38,14 +38,10 @@ function buildAccessKeyStrategy(): AccessKeyStrategy {
   if (!crn || !accessKey) {
     throw new Error('unreachable: skipIf gates this')
   }
-  // stack-auth 0.36 dropped CS_REGION in favour of CS_WORKSPACE_CRN; the
-  // wasm AccessKeyStrategy.create still takes a region string but expects
-  // the `<region>.<provider>` middle segment of the CRN.
-  const match = crn.match(/^crn:([^:]+):/)
-  if (!match) {
-    throw new Error(`unexpected CS_WORKSPACE_CRN format: ${crn}`)
-  }
-  return AccessKeyStrategy.create(match[1], accessKey)
+  // @cipherstash/auth 0.39 takes the full workspace CRN and parses the
+  // region from it (earlier versions took only the `<region>.<provider>`
+  // segment, requiring callers to split the CRN themselves).
+  return AccessKeyStrategy.create(crn, accessKey)
 }
 
 const clientOpts: ClientOpts = {

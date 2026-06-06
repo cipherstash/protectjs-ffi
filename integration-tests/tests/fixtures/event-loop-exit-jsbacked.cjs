@@ -24,11 +24,9 @@ const encryptConfig = {
   // Use the wasm-inline build of @cipherstash/auth — it has no native
   // binary dep, works on any Node target, and lets us exercise the
   // `opts.strategy` (JsBacked) code path with a real getToken.
-  // Note: stack-auth 0.36 dropped CS_REGION in favour of CS_WORKSPACE_CRN;
-  // the wasm AccessKeyStrategy.create still takes a region string as its
-  // first argument (named that way in the .d.ts) but expects the
-  // <region>.<provider> form, which is the middle segment of a CRN like
-  // `crn:ap-southeast-2.aws:<workspace>`.
+  // @cipherstash/auth 0.39 takes the full workspace CRN and parses the
+  // region from it (earlier versions took only the `<region>.<provider>`
+  // segment, requiring callers to split the CRN themselves).
   const { AccessKeyStrategy } = await import('@cipherstash/auth/wasm-inline')
   const accessKey = process.env.CS_CLIENT_ACCESS_KEY
   const workspaceCrn = process.env.CS_WORKSPACE_CRN
@@ -37,12 +35,7 @@ const encryptConfig = {
       'event-loop-exit-jsbacked fixture needs CS_CLIENT_ACCESS_KEY and CS_WORKSPACE_CRN',
     )
   }
-  const match = workspaceCrn.match(/^crn:([^:]+):/)
-  if (!match) {
-    throw new Error(`unexpected CS_WORKSPACE_CRN format: ${workspaceCrn}`)
-  }
-  const region = match[1]
-  const strategy = AccessKeyStrategy.create(region, accessKey)
+  const strategy = AccessKeyStrategy.create(workspaceCrn, accessKey)
 
   const client = await newClient({ encryptConfig, strategy })
 
