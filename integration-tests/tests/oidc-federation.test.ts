@@ -78,10 +78,11 @@ describe('OidcFederation strategy contract', () => {
       () => 'third-party.oidc.jwt',
     )
 
-    expect(typeof strategy.getToken).toBe('function')
-    // It satisfies the FFI's structural `AuthStrategy` contract.
+    // Compile-time: the wasm strategy is structurally assignable to the FFI's
+    // `AuthStrategy`. Runtime: `getToken` — the only member the FFI calls — is
+    // callable on that contract-typed handle.
     const asStrategy: AuthStrategy = strategy
-    expect(asStrategy).toBeDefined()
+    expect(typeof asStrategy.getToken).toBe('function')
   })
 
   test('a rejected getToken propagates as a client error', async () => {
@@ -128,11 +129,17 @@ describe.skipIf(missingE2eEnv.length > 0)('OidcFederation end-to-end', () => {
 
     // `getJwt` is re-invoked on every (re-)federation; here it just returns the
     // pre-minted token from the environment.
-    const strategy = OidcFederationStrategy.create(
+    const federation = OidcFederationStrategy.create(
       region,
       workspaceId,
       () => jwt,
     )
+
+    // Hand the Neon `newClient` a plain `{ getToken }` object rather than the
+    // wasm-bindgen class instance directly. The JsBacked path is proven against
+    // this shape (js-strategy.test.ts); passing a wasm class straight through is
+    // untested. The arrow keeps `getToken` bound to its wasm `this`.
+    const strategy: AuthStrategy = { getToken: () => federation.getToken() }
 
     const client = await newClient({ encryptConfig, clientOpts, strategy })
 
