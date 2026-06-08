@@ -68,6 +68,9 @@ jobs:
         with:
           app-id: ${{ vars.PUBLISHER_APP_ID }}
           private-key: ${{ secrets.PUBLISHER_SECRET_KEY }}
+          # Least privilege: the token is only used to checkout and
+          # `git push --follow-tags` in the Tag Release step below.
+          permission-contents: write
       - name: Checkout Code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
