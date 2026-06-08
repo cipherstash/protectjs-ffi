@@ -63,13 +63,13 @@ jobs:
         # configured on npmjs.com for this repo + release.yml — no NPM_TOKEN
         # secret is required. See the publish job below.
         run: echo publish=true | tee -a $GITHUB_OUTPUT
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         id: app-token
         with:
           app-id: ${{ vars.PUBLISHER_APP_ID }}
           private-key: ${{ secrets.PUBLISHER_SECRET_KEY }}
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
@@ -111,20 +111,21 @@ jobs:
     # build matrix above stays on Blacksmith.
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write # Required for npm OIDC trusted publishing
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.setup.outputs.ref }}
+          persist-credentials: false
       # OIDC trusted publishing needs Node >= 22.14 and npm >= 11.5.1, and must
       # NOT have a token .npmrc. Use setup-node WITHOUT registry-url (the Neon
       # setup action sets registry-url, which writes a //registry/:_authToken
       # line that shadows OIDC) — this job only publishes prebuilt tarballs, so
       # it needs no Rust toolchain or npm install.
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Upgrade npm for OIDC trusted publishing
