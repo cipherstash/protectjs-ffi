@@ -59,29 +59,20 @@ jobs:
         name: Validate Publish Event
         if: ${{ !inputs.dryrun }}
         shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [[ -z $NPM_TOKEN ]]; then
-            echo "::error::Secret NPM_TOKEN is not defined for this GitHub repo."
-            echo "::error::To publish to npm, this action requires:"
-            echo "::error:: • an npm access token;"
-            echo "::error:: • with Read-Write access to this project's npm packages;"
-            echo "::error:: • stored as a repo secret named NPM_TOKEN."
-            echo "::error::See https://docs.npmjs.com/about-access-tokens for info about creating npm tokens."
-            echo "::error:: 💡 The simplest method is to create a Classic npm token of type Automation."
-            echo "::error:: 💡 For greater security, consider using a Granual access token."
-            echo "::error::See https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions for info about how to store GitHub repo secrets."
-            exit 1
-          fi
-          echo publish=true | tee -a $GITHUB_OUTPUT
-      - uses: actions/create-github-app-token@v1
+        # Publishing authenticates via npm OIDC trusted publishing, which is
+        # configured on npmjs.com for this repo + release.yml — no NPM_TOKEN
+        # secret is required. See the publish job below.
+        run: echo publish=true | tee -a $GITHUB_OUTPUT
+      - uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         id: app-token
         with:
           app-id: ${{ vars.PUBLISHER_APP_ID }}
           private-key: ${{ secrets.PUBLISHER_SECRET_KEY }}
+          # Least privilege: the token is only used to checkout and
+          # `git push --follow-tags` in the Tag Release step below.
+          permission-contents: write
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
@@ -117,18 +108,31 @@ jobs:
     name: Publish
     if: ${{ needs.setup.outputs.publish }}
     needs: [setup, build]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted (not Blacksmith): npm only accepts provenance attestations
+    # from github-hosted runners (self-hosted is rejected with E422). This job
+    # only publishes prebuilt tarballs, so it doesn't need Blacksmith — the
+    # build matrix above stays on Blacksmith.
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      id-token: write # Required for npm OIDC trusted publishing
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.setup.outputs.ref }}
-      - name: Setup Neon Environment
-        uses: ./.github/actions/setup
+          persist-credentials: false
+      # OIDC trusted publishing needs Node >= 22.14 and npm >= 11.5.1, and must
+      # NOT have a token .npmrc. Use setup-node WITHOUT registry-url (the Neon
+      # setup action sets registry-url, which writes a //registry/:_authToken
+      # line that shadows OIDC) — this job only publishes prebuilt tarballs, so
+      # it needs no Rust toolchain or npm install.
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          use-rust: false
+          node-version: 22
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@^11.5.1
       - name: Fetch
         uses: robinraju/release-downloader@c39a3b234af58f0cf85888573d361fb6fa281534 # v1.10
         with:
@@ -137,9 +141,10 @@ jobs:
           out-file-path: ./dist
       - name: Publish
         shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No NODE_AUTH_TOKEN — authenticate via OIDC trusted publishing.
+        # --provenance generates a signed provenance attestation; the repo is
+        # public and every package sets repository.url, which provenance needs.
         run: |
           for p in ./dist/*.tgz ; do
-            npm publish --access public $p
+            npm publish --access public --provenance "$p"
           done
