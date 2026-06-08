@@ -34,7 +34,7 @@
     "prepack": "tsc &&neon update",
     "version": "neon bump --binaries platforms && git add .",
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
-    "dryrun": "gh workflow run publish.yml -f dryrun=true",
+    "dryrun": "gh workflow run release.yml -f dryrun=true -f version=patch",
     "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack",
     "postbuild:wasm": "node scripts/inline-wasm.mjs"
   },
