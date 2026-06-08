@@ -101,15 +101,10 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
       )
     }
 
-    // stack-auth 0.36 dropped CS_REGION in favour of CS_WORKSPACE_CRN.
-    // The wasm AccessKeyStrategy.create still takes a region string but
-    // it expects the `<region>.<provider>` form, which is the middle
-    // segment of a CRN like `crn:ap-southeast-2.aws:<workspace>`.
-    const crnMatch = env.workspaceCrn.match(/^crn:([^:]+):/)
-    if (!crnMatch) {
-      throw new Error(`unexpected CS_WORKSPACE_CRN format: ${env.workspaceCrn}`)
-    }
-    const strategy = AccessKeyStrategy.create(crnMatch[1], env.accessKey)
+    // @cipherstash/auth 0.39 takes the full workspace CRN and parses the
+    // region from it (earlier versions took only the `<region>.<provider>`
+    // segment, requiring callers to split the CRN themselves).
+    const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
 
     const client = await wasm.newClient({
       strategy,
