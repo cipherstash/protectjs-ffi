@@ -476,26 +476,22 @@ export type EncryptOptions = {
   column: string
   table: string
   lockContext?: Context
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
 export type EncryptBulkOptions = {
   plaintexts: EncryptPayload[]
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
 export type DecryptOptions = {
   ciphertext: Encrypted
   lockContext?: Context
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
 export type DecryptBulkOptions = {
   ciphertexts: BulkDecryptPayload[]
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
@@ -511,7 +507,6 @@ export type EncryptQueryOptions = {
   indexType: IndexTypeName
   queryOp?: QueryOpName
   lockContext?: Context
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }
 
@@ -526,6 +521,5 @@ export type QueryPayload = {
 
 export type EncryptQueryBulkOptions = {
   queries: QueryPayload[]
-  serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>
 }

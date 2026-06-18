@@ -1,7 +1,6 @@
 mod js_plaintext;
 
 use cipherstash_client::{
-    credentials::ServiceToken,
     encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation, EqlOutput,
@@ -361,7 +360,6 @@ struct EncryptOptions {
     column: String,
     table: String,
     lock_context: Option<LockContext>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -369,7 +367,6 @@ struct EncryptOptions {
 #[serde(rename_all = "camelCase")]
 struct EncryptBulkOptions {
     plaintexts: Vec<PlaintextPayload>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -397,7 +394,6 @@ struct EncryptQueryOptions {
     #[serde(default = "default_query_op")]
     query_op: String,
     lock_context: Option<LockContext>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -410,7 +406,6 @@ fn default_query_op() -> String {
 #[serde(rename_all = "camelCase")]
 struct EncryptQueryBulkOptions {
     queries: Vec<QueryPayload>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -432,7 +427,6 @@ struct QueryPayload {
 struct DecryptOptions {
     ciphertext: Encrypted,
     lock_context: Option<LockContext>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -440,7 +434,6 @@ struct DecryptOptions {
 #[serde(rename_all = "camelCase")]
 struct DecryptBulkOptions {
     ciphertexts: Vec<BulkDecryptPayload>,
-    service_token: Option<ServiceToken>,
     unverified_context: Option<UnverifiedContext>,
 }
 
@@ -818,7 +811,6 @@ async fn encrypt(
     let eql_opts = EqlEncryptOpts {
         keyset_id: None, // Use cipher's default
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
-        service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
         decryption_policy: None,
@@ -890,7 +882,6 @@ async fn encrypt_bulk(
         let eql_opts = EqlEncryptOpts {
             keyset_id: None,
             lock_context: Cow::Owned(lock_context),
-            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
             decryption_policy: None,
@@ -961,7 +952,6 @@ async fn encrypt_query(
     let eql_opts = EqlEncryptOpts {
         keyset_id: None,
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
-        service_token: opts.service_token.map(Cow::Owned),
         unverified_context: opts.unverified_context.map(Cow::Owned),
         index_types: None,
         decryption_policy: None,
@@ -1043,7 +1033,6 @@ async fn encrypt_query_bulk(
         let eql_opts = EqlEncryptOpts {
             keyset_id: None,
             lock_context: Cow::Owned(lock_context),
-            service_token: opts.service_token.as_ref().map(Cow::Borrowed),
             unverified_context: opts.unverified_context.as_ref().map(Cow::Borrowed),
             index_types: None,
             decryption_policy: None,
@@ -1083,7 +1072,6 @@ async fn decrypt(
             encrypted_record,
             // Specifying None here will result in the client using the keyset identifier from the client
             None,
-            opts.service_token.map(Cow::Owned),
             opts.unverified_context.as_ref(),
         )
         .await
@@ -1122,7 +1110,6 @@ async fn decrypt_bulk(
             encrypted_records,
             // Specifying None here will result in the client using the keyset identifier from the client
             None,
-            opts.service_token.map(Cow::Owned),
             opts.unverified_context.as_ref(),
         )
         .await?;
@@ -1160,7 +1147,6 @@ async fn decrypt_bulk_fallible(
         .zerokms
         .decrypt_fallible(
             encrypted_records,
-            opts.service_token.map(Cow::Owned),
             opts.unverified_context.map(Cow::Owned),
         )
         .await?;
