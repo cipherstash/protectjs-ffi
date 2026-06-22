@@ -69,7 +69,8 @@ const prev = prevMatch ? prevMatch[1] : null
 // from being interpreted as `String.prototype.replace` patterns.
 text = text.replace(
   unreleasedRe,
-  () => `## [Unreleased]${NL}${NL}## [${version}] - ${today}${NL}${NL}${body}${NL}`,
+  () =>
+    `## [Unreleased]${NL}${NL}## [${version}] - ${today}${NL}${NL}${body}${NL}`,
 )
 
 const unreleasedLink = `[Unreleased]: ${REPO}/compare/v${version}...HEAD`
@@ -79,7 +80,10 @@ const newLink = `[${version}]: ${REPO}/compare/${prev ? `v${prev}` : `v${version
 // (which never spans line terminators) keep this working for LF or CRLF; the
 // function replacer avoids `$`-pattern interpretation.
 if (/^\[Unreleased\]:.*$/m.test(text)) {
-  text = text.replace(/^\[Unreleased\]:.*$/m, () => `${unreleasedLink}${NL}${newLink}`)
+  text = text.replace(
+    /^\[Unreleased\]:.*$/m,
+    () => `${unreleasedLink}${NL}${newLink}`,
+  )
 } else {
   // No link-reference block to anchor on — append one so the promoted entry
   // still ships with working compare links.
