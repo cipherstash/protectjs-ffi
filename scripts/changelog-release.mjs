@@ -27,7 +27,18 @@ if (!version) {
   process.exit(0)
 }
 
-let text = readFileSync(FILE, 'utf8')
+let text
+try {
+  text = readFileSync(FILE, 'utf8')
+} catch (err) {
+  console.warn(
+    `changelog-release: could not read ${FILE} (${err.message}) — skipping`,
+  )
+  process.exit(0)
+}
+
+// Preserve the file's existing line-ending style when writing new content.
+const NL = text.includes('\r\n') ? '\r\n' : '\n'
 
 if (text.includes(`## [${version}]`)) {
   console.log(`changelog-release: [${version}] already present — skipping`)
@@ -37,7 +48,7 @@ if (text.includes(`## [${version}]`)) {
 // Capture everything under `## [Unreleased]` up to the next `## [` section
 // heading or the link-reference block at the bottom.
 const unreleasedRe =
-  /## \[Unreleased\]\n([\s\S]*?)(?=\n## \[|\n\[Unreleased\]:|$)/
+  /## \[Unreleased\]\r?\n([\s\S]*?)(?=\r?\n## \[|\r?\n\[Unreleased\]:|$)/
 const match = text.match(unreleasedRe)
 if (!match) {
   console.warn('changelog-release: no [Unreleased] section — skipping')
@@ -47,27 +58,35 @@ if (!match) {
 const body = match[1].trim() || '- _No notable changes documented._'
 const today = new Date().toISOString().slice(0, 10)
 
-// Previous released version = first `## [x.y.z]` heading (the topmost release).
-const prevMatch = text.match(/## \[(\d+\.\d+\.\d+)\]/)
+// Previous released version = first version heading after `[Unreleased]` (the
+// topmost release). Capture the full version, including any pre-release/build
+// suffix (e.g. `0.26.0-rc.1`), so compare links stay correct for those tags.
+const prevMatch = text.match(/## \[(?!Unreleased\])([^\]]+)\]/)
 const prev = prevMatch ? prevMatch[1] : null
 
 // Reset `[Unreleased]` to empty and insert the promoted, dated section below it.
 text = text.replace(
   unreleasedRe,
-  `## [Unreleased]\n\n## [${version}] - ${today}\n\n${body}\n`,
+  `## [Unreleased]${NL}${NL}## [${version}] - ${today}${NL}${NL}${body}${NL}`,
 )
 
-// Point the `[Unreleased]` compare link at the new tag, and add a link for the
-// freshly promoted version directly beneath it.
 const newLink = `[${version}]: ${REPO}/compare/${prev ? `v${prev}` : `v${version}^`}...v${version}`
-text = text
-  .replace(
-    /\[Unreleased\]:.*/,
-    `[Unreleased]: ${REPO}/compare/v${version}...HEAD`,
-  )
-  .replace(/(\[Unreleased\]:.*\n)/, `$1${newLink}\n`)
+// Repoint the `[Unreleased]` compare link at the new tag and insert the link
+// for the freshly promoted version directly beneath it. The `m` flag plus
+// `.*` (which never spans line terminators) keep this working for LF or CRLF.
+text = text.replace(
+  /^\[Unreleased\]:.*$/m,
+  `[Unreleased]: ${REPO}/compare/v${version}...HEAD${NL}${newLink}`,
+)
 
-writeFileSync(FILE, text)
+try {
+  writeFileSync(FILE, text)
+} catch (err) {
+  console.warn(
+    `changelog-release: could not write ${FILE} (${err.message}) — skipping`,
+  )
+  process.exit(0)
+}
 console.log(
   `changelog-release: promoted [Unreleased] -> [${version}] - ${today}`,
 )

@@ -13,11 +13,13 @@ if (!version) {
 }
 
 const text = readFileSync('CHANGELOG.md', 'utf8')
-const escaped = version.replace(/\./g, '\\.')
+// Escape every regex metacharacter — semver pre-release/build tags can contain
+// `+`, `.` and other special chars — so the heading is matched literally.
+const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // Match the version heading, then capture until the next `## [` section or the
-// link-reference block (`[x]: ...`) at the bottom.
+// link-reference block (`[x]: ...`) at the bottom. `\r?\n` tolerates CRLF files.
 const re = new RegExp(
-  `## \\[${escaped}\\][^\\n]*\\n([\\s\\S]*?)(?=\\n## \\[|\\n\\[[^\\]]+\\]:|$)`,
+  `## \\[${escaped}\\][^\\r\\n]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n## \\[|\\r?\\n\\[[^\\]]+\\]:|$)`,
 )
 const match = text.match(re)
 if (!match) {
