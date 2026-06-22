@@ -64,20 +64,27 @@ const today = new Date().toISOString().slice(0, 10)
 const prevMatch = text.match(/## \[(?!Unreleased\])([^\]]+)\]/)
 const prev = prevMatch ? prevMatch[1] : null
 
-// Reset `[Unreleased]` to empty and insert the promoted, dated section below it.
+// Reset `[Unreleased]` to empty and insert the promoted, dated section below
+// it. A function replacer keeps `$`-sequences in the body (e.g. `$1`, `$&`)
+// from being interpreted as `String.prototype.replace` patterns.
 text = text.replace(
   unreleasedRe,
-  `## [Unreleased]${NL}${NL}## [${version}] - ${today}${NL}${NL}${body}${NL}`,
+  () => `## [Unreleased]${NL}${NL}## [${version}] - ${today}${NL}${NL}${body}${NL}`,
 )
 
+const unreleasedLink = `[Unreleased]: ${REPO}/compare/v${version}...HEAD`
 const newLink = `[${version}]: ${REPO}/compare/${prev ? `v${prev}` : `v${version}^`}...v${version}`
 // Repoint the `[Unreleased]` compare link at the new tag and insert the link
-// for the freshly promoted version directly beneath it. The `m` flag plus
-// `.*` (which never spans line terminators) keep this working for LF or CRLF.
-text = text.replace(
-  /^\[Unreleased\]:.*$/m,
-  `[Unreleased]: ${REPO}/compare/v${version}...HEAD${NL}${newLink}`,
-)
+// for the freshly promoted version directly beneath it. The `m` flag plus `.*`
+// (which never spans line terminators) keep this working for LF or CRLF; the
+// function replacer avoids `$`-pattern interpretation.
+if (/^\[Unreleased\]:.*$/m.test(text)) {
+  text = text.replace(/^\[Unreleased\]:.*$/m, () => `${unreleasedLink}${NL}${newLink}`)
+} else {
+  // No link-reference block to anchor on — append one so the promoted entry
+  // still ships with working compare links.
+  text = `${text.replace(/[\r\n]+$/, '')}${NL}${NL}${unreleasedLink}${NL}${newLink}${NL}`
+}
 
 try {
   writeFileSync(FILE, text)
