@@ -549,9 +549,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-client"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92b2a6d270736b771a4aa1b722056ccc37cd1702b8d7d02516b5a9db07fb6dff"
+checksum = "af42b947b1abab17a1aa23d194a1b0154b5c338453e93ac70e2ab644407b907c"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -610,9 +610,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-config"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1e92e955c0acbf6e3e756a086fe421e0cb0ebe95a4c17720e518fe5588e38f7"
+checksum = "e255a8d6c38e4954146a02d07a109907cef39150073c3be4180a19b22ea6cd6c"
 dependencies = [
  "bitflags",
  "serde",
@@ -622,9 +622,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-core"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17d8a0a132e93e6befd06f368653b53455fb8dda464c27619350cf7fbd422550"
+checksum = "a0fb5c5b630e7fc2c716f25558ca8976b48d91b5ffb136c44d0d59e04f26c14d"
 dependencies = [
  "getrandom 0.2.17",
  "hmac",
@@ -841,9 +841,9 @@ dependencies = [
 
 [[package]]
 name = "cts-common"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e06ab47689bcb9d81bc9b8c9ca4595b85a00b90b0e6086156f3ad569ecd6b6af"
+checksum = "4fb189dfbe0822d67563bae6ede04a8d4c8dcd5de960c3fd41c6f7d2c3de2720"
 dependencies = [
  "arrayvec",
  "base32",
@@ -1098,7 +1098,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2902,7 +2902,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2915,7 +2915,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2972,7 +2972,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3273,9 +3273,9 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stack-auth"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05b4a66d6258dad2af5bf2f12672d9de7f465cb8f503653ac55d9e3bc061815f"
+checksum = "677a79b9f48a194a8fc24870d27af6b7c62280ac5fcf85967e12165f16690d9d"
 dependencies = [
  "aquamarine",
  "base64",
@@ -3301,9 +3301,9 @@ dependencies = [
 
 [[package]]
 name = "stack-profile"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92cb195d25669b405f715afffc281596f2c9cf6da1a73ef4750513d4e57d77ab"
+checksum = "47f49a439a0bced8c2ff9b6e1e2cf448ec3e923fe9acdc6f40d80c796a208f21"
 dependencies = [
  "dirs",
  "gethostname",
@@ -4285,7 +4285,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -4376,15 +4376,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
@@ -4876,9 +4867,9 @@ dependencies = [
 
 [[package]]
 name = "zerokms-protocol"
-version = "0.12.17"
+version = "0.12.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b8279b143cf2a26648bc7b8a14725f4d78d2a41a3a95e50b10d6f90e71bb481"
+checksum = "3435005f9a76f20ba27158f49e8dde391d41b9557f12c6422a14e8e9ccda094d"
 dependencies = [
  "base64",
  "cipherstash-config",
