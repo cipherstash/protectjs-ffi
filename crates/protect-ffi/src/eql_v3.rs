@@ -190,11 +190,12 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
 /// `#[serde(untagged)]` makes the `V2` variant serialize exactly as the bare
 /// [`EqlCiphertext`] did before dual-format support (no `Value` round-trip,
 /// so v2 output is byte-identical), while `V3` carries the already-converted
-/// JSON value.
+/// JSON value. The v2 payload is boxed because it is substantially larger
+/// than a `Value` (clippy's `large_enum_variant`).
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum EncryptedOutput {
-    V2(EqlCiphertext),
+    V2(Box<EqlCiphertext>),
     V3(serde_json::Value),
 }
 
@@ -207,7 +208,7 @@ pub(crate) fn storage_output(
     column_config: &ColumnConfig,
 ) -> Result<EncryptedOutput, Error> {
     if eql_version != EQL_VERSION_V3 {
-        return Ok(EncryptedOutput::V2(ciphertext));
+        return Ok(EncryptedOutput::V2(Box::new(ciphertext)));
     }
     let target = v3_target_for_column(column_config)?;
     let v2_value = serde_json::to_value(&ciphertext)?;
@@ -215,11 +216,11 @@ pub(crate) fn storage_output(
 }
 
 /// A query payload in whichever wire format the client is configured for.
-/// Same untagged pass-through design as [`EncryptedOutput`].
+/// Same untagged pass-through (and boxing) design as [`EncryptedOutput`].
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum QueryOutput {
-    V2(EqlOutput),
+    V2(Box<EqlOutput>),
     V3(serde_json::Value),
 }
 
@@ -231,7 +232,7 @@ pub(crate) enum QueryOutput {
 /// selector payloads yet, so those fail closed with a typed error.
 pub(crate) fn query_output(output: EqlOutput, eql_version: u8) -> Result<QueryOutput, Error> {
     if eql_version != EQL_VERSION_V3 {
-        return Ok(QueryOutput::V2(output));
+        return Ok(QueryOutput::V2(Box::new(output)));
     }
     match output {
         // JSONB containment: Store mode always yields the sv document (that
@@ -898,8 +899,7 @@ mod tests {
 
         #[test]
         fn v2_containment_output_passes_through() {
-            let expected =
-                serde_json::to_string(&EqlOutput::Store(ste_vec_payload())).unwrap();
+            let expected = serde_json::to_string(&EqlOutput::Store(ste_vec_payload())).unwrap();
 
             let output = query_output(EqlOutput::Store(ste_vec_payload()), 2).unwrap();
 
@@ -971,8 +971,7 @@ mod tests {
                     token_filters: vec![],
                 })],
             );
-            let output =
-                storage_output(scalar_payload(Some("aa"), None, None), 3, &cfg).unwrap();
+            let output = storage_output(scalar_payload(Some("aa"), None, None), 3, &cfg).unwrap();
             serde_json::to_value(&output).unwrap()
         }
 

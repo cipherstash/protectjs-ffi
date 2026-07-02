@@ -21,6 +21,13 @@ use cipherstash_client::{
     AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
+// The wasm build imports these through `crate::eql_v3` in wasm.rs; only the
+// Neon exports below use them from this module.
+#[cfg(not(target_arch = "wasm32"))]
+use eql_v3::{
+    encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
+    validate_eql_version, EncryptedOutput, QueryOutput,
+};
 use js_plaintext::JsPlaintext;
 #[cfg(not(target_arch = "wasm32"))]
 use neon::{
@@ -30,10 +37,10 @@ use neon::{
         JsFuture,
     },
 };
-#[cfg(not(target_arch = "wasm32"))]
-use stack_auth::{AuthStrategy, SecretToken};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
+use stack_auth::{AuthStrategy, SecretToken};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -54,6 +61,9 @@ struct Client {
     cipher: Arc<ScopedZeroKMS>,
     zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// EQL wire version this client emits (2 or 3). Decryption accepts both
+    /// formats regardless of this setting.
+    eql_version: u8,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -342,17 +352,13 @@ impl NeonJsAuthStrategy {
                 let raw: Handle<JsValue> = obj.prop(&mut cx, "getToken").get()?;
                 if raw.is_a::<JsUndefined, _>(&mut cx) || raw.is_a::<JsNull, _>(&mut cx) {
                     channel.unref(&mut cx);
-                    return Ok(Err(
-                        "opts.strategy.getToken is missing".to_string()
-                    ));
+                    return Ok(Err("opts.strategy.getToken is missing".to_string()));
                 }
                 let func = match raw.downcast::<JsFunction, _>(&mut cx) {
                     Ok(f) => f,
                     Err(_) => {
                         channel.unref(&mut cx);
-                        return Ok(Err(
-                            "opts.strategy.getToken is not a function".to_string()
-                        ));
+                        return Ok(Err("opts.strategy.getToken is not a function".to_string()));
                     }
                 };
                 channel.unref(&mut cx);
@@ -375,10 +381,7 @@ impl NeonJsAuthStrategy {
 /// back to a generic message — and crucially clears the pending N-API
 /// exception so the channel callback returns cleanly.
 #[cfg(not(target_arch = "wasm32"))]
-fn thrown_to_string<'cx, 'h, C: Context<'cx>>(
-    thrown: Handle<'h, JsValue>,
-    cx: &mut C,
-) -> String {
+fn thrown_to_string<'cx, 'h, C: Context<'cx>>(thrown: Handle<'h, JsValue>, cx: &mut C) -> String {
     cx.try_catch(|cx| Ok(thrown.to_string(cx)?.value(cx)))
         .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
 }
@@ -404,10 +407,8 @@ impl AuthStrategy for &NeonJsAuthStrategy {
         // the outer `try_catch` only fires on a real throw.
         let outer: Result<JsFuture<Result<String, String>>, String> = channel
             .send(move |mut cx| {
-                let outcome: Result<JsFuture<Result<String, String>>, String> = match cx
-                    .try_catch(|cx| -> NeonResult<
-                        Result<JsFuture<Result<String, String>>, String>,
-                    > {
+                let outcome: Result<JsFuture<Result<String, String>>, String> = match cx.try_catch(
+                    |cx| -> NeonResult<Result<JsFuture<Result<String, String>>, String>> {
                         let strategy_h = strategy.to_inner(cx);
                         let func_h = get_token.to_inner(cx);
                         let args: [Handle<JsValue>; 0] = [];
@@ -416,8 +417,7 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                             Ok(p) => p,
                             Err(_) => {
                                 return Ok(Err(
-                                    "strategy.getToken did not return a Promise"
-                                        .to_string(),
+                                    "strategy.getToken did not return a Promise".to_string()
                                 ))
                             }
                         };
@@ -429,52 +429,44 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                         // practice, and the existing try_catch on the outer
                         // closure body covers throws from this same channel
                         // dispatch path.
-                        let fut = promise.to_future(cx, |mut cx, settled| {
-                            match settled {
-                                Ok(v) => {
-                                    let obj = match v.downcast::<JsObject, _>(&mut cx) {
-                                        Ok(o) => o,
-                                        Err(_) => {
-                                            return Ok(Err(
-                                                "strategy.getToken did not return an object"
-                                                    .to_string(),
-                                            ))
-                                        }
-                                    };
-                                    let raw: Handle<JsValue> =
-                                        match obj.prop(&mut cx, "token").get() {
-                                            Ok(v) => v,
-                                            Err(_) => {
-                                                return Ok(Err(
-                                                    "could not read 'token' field"
-                                                        .to_string(),
-                                                ))
-                                            }
-                                        };
-                                    if raw.is_a::<JsUndefined, _>(&mut cx)
-                                        || raw.is_a::<JsNull, _>(&mut cx)
-                                    {
-                                        return Ok(Err("missing 'token' field".to_string()));
+                        let fut = promise.to_future(cx, |mut cx, settled| match settled {
+                            Ok(v) => {
+                                let obj = match v.downcast::<JsObject, _>(&mut cx) {
+                                    Ok(o) => o,
+                                    Err(_) => {
+                                        return Ok(Err(
+                                            "strategy.getToken did not return an object"
+                                                .to_string(),
+                                        ))
                                     }
-                                    let token = match raw.downcast::<JsString, _>(&mut cx) {
-                                        Ok(s) => s,
-                                        Err(_) => {
-                                            return Ok(Err(
-                                                "'token' field is not a string"
-                                                    .to_string(),
-                                            ))
-                                        }
-                                    };
-                                    Ok(Ok(token.value(&mut cx)))
+                                };
+                                let raw: Handle<JsValue> = match obj.prop(&mut cx, "token").get() {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return Ok(Err("could not read 'token' field".to_string()))
+                                    }
+                                };
+                                if raw.is_a::<JsUndefined, _>(&mut cx)
+                                    || raw.is_a::<JsNull, _>(&mut cx)
+                                {
+                                    return Ok(Err("missing 'token' field".to_string()));
                                 }
-                                Err(err) => Ok(Err(format!(
-                                    "strategy.getToken rejected: {}",
-                                    thrown_to_string(err, &mut cx),
-                                ))),
+                                let token = match raw.downcast::<JsString, _>(&mut cx) {
+                                    Ok(s) => s,
+                                    Err(_) => {
+                                        return Ok(Err("'token' field is not a string".to_string()))
+                                    }
+                                };
+                                Ok(Ok(token.value(&mut cx)))
                             }
+                            Err(err) => Ok(Err(format!(
+                                "strategy.getToken rejected: {}",
+                                thrown_to_string(err, &mut cx),
+                            ))),
                         })?;
                         Ok(Ok(fut))
-                    }) {
+                    },
+                ) {
                     Ok(inner) => inner,
                     Err(thrown) => Err(format!(
                         "strategy.getToken threw synchronously: {}",
@@ -606,6 +598,10 @@ struct EnsureKeysetResult {
 struct NewClientOptions {
     encrypt_config: CanonicalEncryptionConfig,
     client_opts: Option<ClientOpts>,
+    /// EQL wire version to emit: 2 (default) or 3. Sits alongside
+    /// `encrypt_config` (not in `client_opts`, which carries credentials +
+    /// keyset) because it configures the encryption output format.
+    eql_version: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -687,7 +683,9 @@ struct QueryPayload {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecryptOptions {
-    ciphertext: Encrypted,
+    /// Raw JSON payload — parsed internally so decrypt accepts BOTH the v2
+    /// and v3 wire formats regardless of the client's `eqlVersion`.
+    ciphertext: serde_json::Value,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
 }
@@ -702,7 +700,8 @@ struct DecryptBulkOptions {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BulkDecryptPayload {
-    ciphertext: Encrypted,
+    /// Raw JSON payload — see [`DecryptOptions::ciphertext`].
+    ciphertext: serde_json::Value,
     lock_context: Option<LockContext>,
 }
 
@@ -986,9 +985,7 @@ pub async fn new_client(
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
-        Some(s) => {
-            NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?)
-        }
+        Some(s) => NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?),
         None => NodeAuthStrategy::Auto(Box::new(client_opts.creds.build_strategy()?)),
     };
     let zerokms = ZeroKMSBuilder::new(auth)
@@ -1003,6 +1000,7 @@ pub async fn new_client(
         cipher: Arc::new(cipher),
         zerokms,
         encrypt_config: Arc::new(opts.encrypt_config.into_config_map()?),
+        eql_version: validate_eql_version(opts.eql_version)?,
     };
 
     Ok(Boxed(client))
@@ -1063,7 +1061,7 @@ pub async fn ensure_keyset(
 async fn encrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptOptions>,
-) -> Result<Json<Encrypted>, neon::types::extract::Error> {
+) -> Result<Json<EncryptedOutput>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
@@ -1095,7 +1093,11 @@ async fn encrypt(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_ciphertext = into_store_ciphertext(encrypted.remove(0))?;
 
-    Ok(Json(eql_ciphertext))
+    Ok(Json(storage_output(
+        eql_ciphertext,
+        client.eql_version,
+        column_config,
+    )?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1103,7 +1105,7 @@ async fn encrypt(
 async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptBulkOptions>,
-) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<EncryptedOutput>>, neon::types::extract::Error> {
     // Group payloads by lock_context for batch processing
     // BTreeMap provides deterministic ordering of groups
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, PlaintextPayload)>> = BTreeMap::new();
@@ -1119,7 +1121,7 @@ async fn encrypt_bulk(
 
     // Pre-allocate results vector
     let total_count: usize = groups.values().map(|g| g.len()).sum();
-    let mut results: Vec<Option<EqlCiphertext>> = (0..total_count).map(|_| None).collect();
+    let mut results: Vec<Option<EncryptedOutput>> = (0..total_count).map(|_| None).collect();
 
     // Process each lock_context group
     for (lock_context_claims, payloads) in groups {
@@ -1167,13 +1169,21 @@ async fn encrypt_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_output, (original_idx, _ident)) in encrypted.into_iter().zip(payload_data) {
-            results[original_idx] = Some(into_store_ciphertext(eql_output)?);
+        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            results[original_idx] = Some(storage_output(
+                into_store_ciphertext(eql_output)?,
+                client.eql_version,
+                column_config,
+            )?);
         }
     }
 
     // Unwrap all results (all should be Some)
-    let final_results: Vec<EqlCiphertext> = results
+    let final_results: Vec<EncryptedOutput> = results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -1191,7 +1201,7 @@ async fn encrypt_bulk(
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryOptions>,
-) -> Result<Json<EqlOutput>, neon::types::extract::Error> {
+) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
@@ -1238,7 +1248,7 @@ async fn encrypt_query(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_output = encrypted.remove(0);
 
-    Ok(Json(eql_output))
+    Ok(Json(query_output(eql_output, client.eql_version)?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1246,7 +1256,7 @@ async fn encrypt_query(
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryBulkOptions>,
-) -> Result<Json<Vec<EqlOutput>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<QueryOutput>>, neon::types::extract::Error> {
     // Group payloads by lock_context (same pattern as encrypt_bulk)
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, QueryPayload)>> = BTreeMap::new();
 
@@ -1260,7 +1270,7 @@ async fn encrypt_query_bulk(
     }
 
     let total_count: usize = groups.values().map(|g| g.len()).sum();
-    let mut results: Vec<Option<EqlOutput>> = (0..total_count).map(|_| None).collect();
+    let mut results: Vec<Option<QueryOutput>> = (0..total_count).map(|_| None).collect();
 
     for (lock_context_claims, payloads) in groups {
         let lock_context: Vec<zerokms::Context> = lock_context_claims
@@ -1320,11 +1330,11 @@ async fn encrypt_query_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(eql_output);
+            results[original_idx] = Some(query_output(eql_output, client.eql_version)?);
         }
     }
 
-    let final_results: Vec<EqlOutput> = results
+    let final_results: Vec<QueryOutput> = results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -1344,7 +1354,7 @@ async fn decrypt(
     Json(opts): Json<DecryptOptions>,
 ) -> Result<Json<JsPlaintext>, neon::types::extract::Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    let encrypted_record = encrypted_record_from_mp_base85(opts.ciphertext, lock_context)?;
+    let encrypted_record = encrypted_record_from_value(opts.ciphertext, lock_context)?;
 
     let plaintext = client
         .zerokms
@@ -1369,19 +1379,12 @@ async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<Json<Vec<JsPlaintext>>, neon::types::extract::Error> {
-    let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
+    let encrypted_records: Vec<WithContext<'static>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
             let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            (payload.ciphertext, lock_context)
-        })
-        .collect();
-
-    let encrypted_records: Vec<WithContext<'static>> = ciphertexts
-        .into_iter()
-        .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(ciphertext, encryption_context)
+            encrypted_record_from_value(payload.ciphertext, lock_context)
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -1417,7 +1420,7 @@ async fn decrypt_bulk_fallible(
         .into_iter()
         .map(|payload| {
             let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
+            encrypted_record_from_value(payload.ciphertext, lock_context)
         })
         .collect();
 
@@ -1477,8 +1480,7 @@ async fn decrypt_bulk_fallible(
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
-    let result: Result<EqlCiphertext, _> = serde_json::from_value(raw);
-    result.is_ok()
+    is_encrypted_value(&raw)
 }
 
 fn encrypted_record_from_mp_base85(
