@@ -88,6 +88,13 @@ Notes:
 - `ope`-indexed columns map to `<family>_ord_ope` but cannot be produced
   end-to-end yet: the client does not emit the `op` term (CIP-3280).
 
+> [!NOTE]
+> **Breaking TypeScript change:** `encrypt`/`encryptBulk` now return
+> `EncryptedPayload` (`Encrypted | EncryptedV3`) instead of `Encrypted`.
+> Runtime output is unchanged for v2 clients, but code that accessed `.k`
+> or assigned the result to `Encrypted` must narrow first (e.g. check
+> `payload.k === 'ct'` / `payload.v === 3`).
+
 ## Errors
 
 Async API calls throw `ProtectError` with a stable `code` for programmatic handling.

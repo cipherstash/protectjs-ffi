@@ -209,6 +209,10 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     let mut opts: NewClientOpts =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
+    // Validate before any network I/O: a bad eqlVersion should fail fast,
+    // not after ZeroKMS setup.
+    let eql_version = validate_eql_version(opts.eql_version).map_err(error_to_js)?;
+
     // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
     // `from_hex` takes a `String` for the UUID, which would force an
     // `opts.client_id.to_string()` allocation that the round-trip parses back
@@ -239,7 +243,7 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
                 .into_config_map()
                 .map_err(|e| js_error(&e.to_string()))?,
         ),
-        eql_version: validate_eql_version(opts.eql_version).map_err(error_to_js)?,
+        eql_version,
     })
 }
 

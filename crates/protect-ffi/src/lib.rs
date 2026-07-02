@@ -291,7 +291,7 @@ pub enum Error {
         reason: String,
         hint: String,
     },
-    #[error(transparent)]
+    #[error("EQL v3 conversion failed: {0}")]
     FromV2(#[from] eql_bindings::from_v2::FromV2Error),
     #[error("EQL v3 scalar query encryption is not yet supported — encrypt_query requires eqlVersion 2 for scalar indexes")]
     V3ScalarQueryUnsupported,
@@ -982,6 +982,9 @@ pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
     strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
+    // Validate before any network I/O: a bad eqlVersion should fail fast,
+    // not after ZeroKMS setup.
+    let eql_version = validate_eql_version(opts.eql_version)?;
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
@@ -1000,7 +1003,7 @@ pub async fn new_client(
         cipher: Arc::new(cipher),
         zerokms,
         encrypt_config: Arc::new(opts.encrypt_config.into_config_map()?),
-        eql_version: validate_eql_version(opts.eql_version)?,
+        eql_version,
     };
 
     Ok(Boxed(client))

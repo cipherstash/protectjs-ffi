@@ -118,15 +118,15 @@ describe('eql v3 scalar round-trips', async () => {
     { column: 'name', plaintext: 'Ada', terms: ['hm'], absent: ['ob', 'bf'] },
     // non-text _ord_ore domains carry ob only
     { column: 'age', plaintext: 42, terms: ['ob'], absent: ['hm', 'bf'] },
-    { column: 'count', plaintext: 123456, terms: ['ob'], absent: ['hm'] },
+    { column: 'count', plaintext: 123456, terms: ['ob'], absent: ['hm', 'bf'] },
     {
       column: 'score',
       plaintext: 9007199254740,
       terms: ['hm'],
-      absent: ['ob'],
+      absent: ['ob', 'bf'],
     },
-    { column: 'weight', plaintext: 72.5, terms: ['ob'], absent: ['hm'] },
-    { column: 'price', plaintext: 19.99, terms: ['ob'], absent: ['hm'] },
+    { column: 'weight', plaintext: 72.5, terms: ['ob'], absent: ['hm', 'bf'] },
+    { column: 'price', plaintext: 19.99, terms: ['ob'], absent: ['hm', 'bf'] },
     // bool is storage-only
     {
       column: 'active',

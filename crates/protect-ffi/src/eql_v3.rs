@@ -154,6 +154,12 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
 
     // Scalar families, richest capability first. Text ordering domains carry
     // hm + ob/op; the non-text ordering domains carry only ob/op.
+    //
+    // The non-text arms rely on cipherstash-config rejecting `match` on
+    // non-text casts upstream (into_column_config): were a non-text column
+    // ever configured with `match` + `ore`, the `_ord_ore` arm below would
+    // silently drop bf. Only the all-terms-dropped case (no fitting domain
+    // at all) reaches the fail-closed error at the bottom.
     let is_text = family == "text";
     if is_text && terms.hm && terms.ob && terms.bf {
         return Ok(format!("{family}_search"));
@@ -857,6 +863,11 @@ mod tests {
 
             let err = result.unwrap_err().to_string();
             assert!(err.contains("bf"), "names the missing term: {err}");
+            // Stable prefix: the TS side maps it to EQL_V3_CONVERSION_FAILED.
+            assert!(
+                err.starts_with("EQL v3 conversion failed"),
+                "carries the conversion-failure prefix: {err}"
+            );
         }
     }
 

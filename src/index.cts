@@ -68,6 +68,7 @@ export type ProtectErrorCode =
   | 'INVALID_EQL_VERSION'
   | 'EQL_V3_QUERY_UNSUPPORTED'
   | 'EQL_V3_UNSUPPORTED_COLUMN'
+  | 'EQL_V3_CONVERSION_FAILED'
   | 'UNKNOWN'
 
 export class ProtectError extends Error {
@@ -132,6 +133,9 @@ function inferErrorCode(message: string): ProtectErrorCode {
   }
   if (message.includes('cannot be represented in EQL v3')) {
     return 'EQL_V3_UNSUPPORTED_COLUMN'
+  }
+  if (message.startsWith('EQL v3 conversion failed')) {
+    return 'EQL_V3_CONVERSION_FAILED'
   }
   return 'UNKNOWN'
 }
