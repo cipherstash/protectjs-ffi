@@ -281,6 +281,14 @@ pub enum Error {
         reason: String,
         hint: String,
     },
+    #[error(transparent)]
+    FromV2(#[from] eql_bindings::from_v2::FromV2Error),
+    #[error("EQL v3 scalar query encryption is not yet supported — encrypt_query requires eqlVersion 2 for scalar indexes")]
+    V3ScalarQueryUnsupported,
+    #[error("EQL v3 selector query encryption is not yet supported — encrypt_query with queryOp 'ste_vec_selector' requires eqlVersion 2. EQL v3 path queries pass the plain tokenized selector as text (see eql_v3.\"->\").")]
+    V3SelectorQueryUnsupported,
+    #[error("Invalid EQL ciphertext: {0}")]
+    InvalidCiphertext(#[from] zerokms::DecryptError),
 }
 
 /// JS-backed [`AuthStrategy`] for the Neon build.

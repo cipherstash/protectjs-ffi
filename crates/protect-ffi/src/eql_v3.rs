@@ -12,7 +12,13 @@
 //! formats regardless of the client's `eqlVersion` so data can be migrated
 //! incrementally.
 
+use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload};
 use cipherstash_client::schema::{column::ColumnType, column::IndexType, ColumnConfig};
+use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
+use eql_bindings::from_v2::{from_v2, from_v2_query, is_v3_payload, TargetDomain};
+use eql_bindings::v3::jsonb::SteVecDocument;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 use crate::Error;
 
@@ -179,9 +185,229 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
     Ok(family.to_string())
 }
 
+/// A stored payload in whichever wire format the client is configured for.
+///
+/// `#[serde(untagged)]` makes the `V2` variant serialize exactly as the bare
+/// [`EqlCiphertext`] did before dual-format support (no `Value` round-trip,
+/// so v2 output is byte-identical), while `V3` carries the already-converted
+/// JSON value.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum EncryptedOutput {
+    V2(EqlCiphertext),
+    V3(serde_json::Value),
+}
+
+/// Wrap a Store-mode ciphertext in the client's configured wire format:
+/// v2 passes through untouched; v3 converts via [`eql_bindings::from_v2`]
+/// against the domain selected from the column configuration.
+pub(crate) fn storage_output(
+    ciphertext: EqlCiphertext,
+    eql_version: u8,
+    column_config: &ColumnConfig,
+) -> Result<EncryptedOutput, Error> {
+    if eql_version != EQL_VERSION_V3 {
+        return Ok(EncryptedOutput::V2(ciphertext));
+    }
+    let target = v3_target_for_column(column_config)?;
+    let v2_value = serde_json::to_value(&ciphertext)?;
+    Ok(EncryptedOutput::V3(from_v2(&v2_value, target)?))
+}
+
+/// A query payload in whichever wire format the client is configured for.
+/// Same untagged pass-through design as [`EncryptedOutput`].
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum QueryOutput {
+    V2(EqlOutput),
+    V3(serde_json::Value),
+}
+
+/// Wrap an encrypt-query result in the client's configured wire format.
+///
+/// Under v3, only the JSONB containment path converts: Store-mode containment
+/// output (the `sv` document) becomes the `eql_v3.jsonb_query` needle via
+/// [`from_v2_query`]. No v3 wire shape exists for scalar query terms or
+/// selector payloads yet, so those fail closed with a typed error.
+pub(crate) fn query_output(output: EqlOutput, eql_version: u8) -> Result<QueryOutput, Error> {
+    if eql_version != EQL_VERSION_V3 {
+        return Ok(QueryOutput::V2(output));
+    }
+    match output {
+        // JSONB containment: Store mode always yields the sv document (that
+        // is the only plaintext shape to_query_plaintext maps to StoreMode);
+        // the needle strips the envelope and per-entry ciphertexts, exactly
+        // like the SQL cast eql_v3.to_ste_vec_query.
+        EqlOutput::Store(ciphertext @ EqlCiphertext::SteVec(_)) => {
+            let v2_value = serde_json::to_value(&ciphertext)?;
+            Ok(QueryOutput::V3(from_v2_query(
+                &v2_value,
+                TargetDomain::Json,
+            )?))
+        }
+        EqlOutput::Store(EqlCiphertext::Encrypted(_)) => Err(Error::InvariantViolation(
+            "store-mode query encryption produced a scalar payload".to_string(),
+        )),
+        // No v3 wire shape exists for these yet (pending the mapper
+        // redesign) — fail closed with an actionable error.
+        EqlOutput::Query(EqlQueryPayload::Encrypted(_)) => Err(Error::V3ScalarQueryUnsupported),
+        EqlOutput::Query(EqlQueryPayload::SteVec(_)) => Err(Error::V3SelectorQueryUnsupported),
+    }
+}
+
+/// Decode a stored ciphertext value in EITHER wire format into the record +
+/// lock context pair zerokms decrypts.
+///
+/// Tries the v2 [`EqlCiphertext`] parse first (the historical shape), then
+/// falls back to the v3 envelope. Decrypt is deliberately version-agnostic —
+/// it must keep working across data migrations regardless of the client's
+/// `eqlVersion` setting.
+pub(crate) fn encrypted_record_from_value(
+    value: serde_json::Value,
+    encryption_context: Vec<zerokms::Context>,
+) -> Result<WithContext<'static>, Error> {
+    match EqlCiphertext::deserialize(&value) {
+        Ok(ciphertext) => crate::encrypted_record_from_mp_base85(ciphertext, encryption_context),
+        Err(v2_error) => {
+            if is_v3_payload(&value) {
+                Ok(WithContext {
+                    record: v3_root_record(&value)?,
+                    context: Cow::Owned(encryption_context),
+                })
+            } else {
+                // Not v2, not v3 — report the v2 parse failure (the shape
+                // the overwhelming majority of stored data still has).
+                Err(Error::Parse(v2_error))
+            }
+        }
+    }
+}
+
+/// Extract the record ciphertext from a v3 stored payload.
+///
+/// Scalars keep the mp_base85 record at the top-level `c`; SteVec documents
+/// carry it on the FIRST `sv` entry (`sv[0].c`, the root-selector entry —
+/// same invariant as v2, see `encrypted_record_from_mp_base85`).
+///
+/// The scalar arm reads `c` directly instead of parsing one of the ~40
+/// generated domain structs: decrypt receives a bare ciphertext with no
+/// column configuration, so the specific domain cannot be known here, and
+/// the only field decryption needs is `c` (already shape-checked by
+/// [`is_v3_payload`]). The structured SteVec arm goes through the typed
+/// [`SteVecDocument`] so entry structure is validated before we trust
+/// `sv[0]`.
+fn v3_root_record(value: &serde_json::Value) -> Result<EncryptedRecord, Error> {
+    if let Some(c) = value.get("c").and_then(serde_json::Value::as_str) {
+        return EncryptedRecord::from_mp_base85(c).map_err(Error::from);
+    }
+    let document = SteVecDocument::deserialize(value).map_err(Error::Parse)?;
+    let root = document.sv.first().ok_or_else(|| {
+        Error::InvariantViolation("Missing root entry in v3 SteVec payload".to_string())
+    })?;
+    EncryptedRecord::from_mp_base85(&root.c.0).map_err(Error::from)
+}
+
+/// True when `value` is a stored EQL payload in either wire format.
+///
+/// v2 is the strict round-trip through [`EqlCiphertext`]; v3 is the lenient
+/// envelope probe [`is_v3_payload`] (`{v: 3, i, c|sv}`). Query payloads —
+/// including the v3 containment needle `{sv: […]}` — are not stored payloads
+/// and return false.
+pub(crate) fn is_encrypted_value(value: &serde_json::Value) -> bool {
+    EqlCiphertext::deserialize(value).is_ok() || is_v3_payload(value)
+}
+
+/// Resolve the column's v3 domain name against the eql-bindings inventory.
+///
+/// [`target_domain_for_column`] only ever emits inventory names (pinned by a
+/// unit test), so a parse failure here is a protect-ffi bug, not user error.
+fn v3_target_for_column(column_config: &ColumnConfig) -> Result<TargetDomain, Error> {
+    let domain = target_domain_for_column(column_config)?;
+    TargetDomain::parse(&domain).map_err(|e| {
+        Error::InvariantViolation(format!(
+            "selected v3 domain {domain:?} is not in the eql-bindings inventory: {e}"
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared payload builders for the conversion tests. These mirror the
+    /// real wire shapes cipherstash-client emits (dummy key material, valid
+    /// structure) — no mocking of the conversion path itself.
+    mod support {
+        use cipherstash_client::eql::{
+            EncryptedPayload, EqlCiphertext, Identifier as EqlIdentifier, SteVecEntry,
+            SteVecEntryTerm, SteVecPayload, EQL_SCHEMA_VERSION,
+        };
+        use cipherstash_client::schema::column::{ColumnMode, ColumnType, Index};
+        use cipherstash_client::schema::ColumnConfig;
+        use cipherstash_client::zerokms::EncryptedRecord;
+
+        pub(super) fn dummy_encrypted_record() -> EncryptedRecord {
+            EncryptedRecord {
+                iv: Default::default(),
+                ciphertext: vec![1; 16],
+                tag: vec![2; 16],
+                descriptor: "users/email".to_string(),
+                keyset_id: None,
+                decryption_policy: None,
+            }
+        }
+
+        pub(super) fn scalar_payload(
+            hm: Option<&str>,
+            bf: Option<Vec<u16>>,
+            ob: Option<Vec<&str>>,
+        ) -> EqlCiphertext {
+            EqlCiphertext::Encrypted(EncryptedPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: dummy_encrypted_record(),
+                hmac_256: hm.map(String::from),
+                bloom_filter: bf,
+                ore_block_u64_8_256: ob
+                    .map(|blocks| blocks.into_iter().map(String::from).collect()),
+            })
+        }
+
+        pub(super) fn ste_vec_payload() -> EqlCiphertext {
+            EqlCiphertext::SteVec(SteVecPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "profile"),
+                ste_vec: vec![
+                    SteVecEntry {
+                        selector: "root".into(),
+                        ciphertext: dummy_encrypted_record(),
+                        is_array: None,
+                        term: SteVecEntryTerm::Hmac {
+                            hmac_256: "feedface".into(),
+                        },
+                    },
+                    SteVecEntry {
+                        selector: "leaf".into(),
+                        ciphertext: dummy_encrypted_record(),
+                        is_array: Some(true),
+                        term: SteVecEntryTerm::OreCllw {
+                            ore_cllw_8: "deadbeef".into(),
+                        },
+                    },
+                ],
+            })
+        }
+
+        pub(super) fn column(cast_type: ColumnType, indexes: Vec<Index>) -> ColumnConfig {
+            ColumnConfig {
+                name: "test_column".to_string(),
+                cast_type,
+                indexes,
+                in_place: false,
+                mode: ColumnMode::Encrypted,
+            }
+        }
+    }
 
     mod validate_eql_version {
         use super::*;
@@ -491,6 +717,364 @@ mod tests {
                     TargetDomain::parse(&name).is_ok(),
                     "domain {name:?} must resolve in the eql-bindings inventory"
                 );
+            }
+        }
+    }
+
+    mod storage_output {
+        use super::support::{column, scalar_payload, ste_vec_payload};
+        use super::*;
+        use cipherstash_client::schema::column::{Index, IndexType, Tokenizer};
+
+        fn text_search_column() -> ColumnConfig {
+            column(
+                ColumnType::Text,
+                vec![
+                    Index::new(IndexType::Unique {
+                        token_filters: vec![],
+                    }),
+                    Index::new(IndexType::Ore),
+                    Index::new(IndexType::Match {
+                        tokenizer: Tokenizer::Standard,
+                        token_filters: vec![],
+                        k: 6,
+                        m: 2048,
+                        include_original: false,
+                    }),
+                ],
+            )
+        }
+
+        #[test]
+        fn v2_output_serializes_identically_to_the_bare_ciphertext() {
+            let ciphertext = scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]));
+            let expected = serde_json::to_string(&ciphertext).unwrap();
+
+            let output = storage_output(
+                scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
+                2,
+                &text_search_column(),
+            )
+            .unwrap();
+
+            assert_eq!(serde_json::to_string(&output).unwrap(), expected);
+        }
+
+        #[test]
+        fn v3_scalar_output_has_v3_envelope_and_required_terms() {
+            let output = storage_output(
+                scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
+                3,
+                &text_search_column(),
+            )
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["v"], 3);
+            assert!(value.get("k").is_none(), "v3 envelope carries no k");
+            assert_eq!(value["i"]["t"], "users");
+            assert_eq!(value["i"]["c"], "email");
+            assert!(value["c"].is_string(), "ciphertext is copied verbatim");
+            assert_eq!(value["hm"], "aa");
+            assert_eq!(value["ob"], serde_json::json!(["bb"]));
+            assert_eq!(value["bf"], serde_json::json!([1, 2]));
+        }
+
+        #[test]
+        fn v3_output_drops_terms_the_target_domain_does_not_carry() {
+            // unique + ore on int maps to int4_ord_ore, which carries only
+            // ob — hm is dropped (equality stays available via ORE).
+            let cfg = column(
+                ColumnType::Int,
+                vec![
+                    Index::new(IndexType::Unique {
+                        token_filters: vec![],
+                    }),
+                    Index::new(IndexType::Ore),
+                ],
+            );
+            let output =
+                storage_output(scalar_payload(Some("aa"), None, Some(vec!["bb"])), 3, &cfg)
+                    .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["ob"], serde_json::json!(["bb"]));
+            assert!(value.get("hm").is_none(), "hm dropped for int4_ord_ore");
+        }
+
+        #[test]
+        fn v3_bloom_filter_upper_half_wraps_to_signed() {
+            // v2 emits unsigned bit positions; the v3 smallint[] encoding
+            // reinterprets the upper half (32768..=65535) as negative i16.
+            let output = storage_output(
+                scalar_payload(Some("aa"), Some(vec![7, 40000]), Some(vec!["bb"])),
+                3,
+                &text_search_column(),
+            )
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["bf"], serde_json::json!([7, 40000u16 as i16]));
+        }
+
+        #[test]
+        fn v3_ste_vec_output_is_a_ste_vec_document_with_order_preserved() {
+            let cfg = column(
+                ColumnType::Json,
+                vec![Index::new(IndexType::SteVec {
+                    prefix: "users/profile".to_string(),
+                    term_filters: vec![],
+                    array_index_mode: Default::default(),
+                    mode: Default::default(),
+                })],
+            );
+            let output = storage_output(ste_vec_payload(), 3, &cfg).unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["v"], 3);
+            assert!(value.get("k").is_none(), "v3 envelope carries no k");
+            let sv = value["sv"].as_array().unwrap();
+            assert_eq!(sv.len(), 2);
+            // sv[0] is the decryption root — order must survive conversion.
+            assert_eq!(sv[0]["s"], "root");
+            assert_eq!(sv[0]["hm"], "feedface");
+            assert!(sv[0]["c"].is_string());
+            assert_eq!(sv[1]["s"], "leaf");
+            assert_eq!(sv[1]["oc"], "deadbeef");
+            assert_eq!(sv[1]["a"], true);
+        }
+
+        #[test]
+        fn v3_conversion_fails_closed_when_a_required_term_is_missing() {
+            // text_search requires hm + ob + bf; a payload missing bf must
+            // not silently degrade.
+            let result = storage_output(
+                scalar_payload(Some("aa"), None, Some(vec!["bb"])),
+                3,
+                &text_search_column(),
+            );
+
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("bf"), "names the missing term: {err}");
+        }
+    }
+
+    mod query_output {
+        use super::support::ste_vec_payload;
+        use super::*;
+        use cipherstash_client::eql::{
+            EncryptedQueryPayload, EqlOutput, EqlQueryPayload, Identifier as EqlIdentifier,
+            RootQueryTerm, SteVecQueryPayload, SteVecQueryTerm, EQL_SCHEMA_VERSION,
+        };
+
+        fn scalar_query() -> EqlOutput {
+            EqlOutput::Query(EqlQueryPayload::Encrypted(EncryptedQueryPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "email"),
+                term: RootQueryTerm::Hmac {
+                    hmac_256: "aa".into(),
+                },
+            }))
+        }
+
+        fn selector_query() -> EqlOutput {
+            EqlOutput::Query(EqlQueryPayload::SteVec(SteVecQueryPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "profile"),
+                term: SteVecQueryTerm::Selector {
+                    selector: "deadbeef".into(),
+                },
+            }))
+        }
+
+        #[test]
+        fn v2_output_serializes_identically_to_the_bare_eql_output() {
+            let expected = serde_json::to_string(&scalar_query()).unwrap();
+
+            let output = query_output(scalar_query(), 2).unwrap();
+
+            assert_eq!(serde_json::to_string(&output).unwrap(), expected);
+        }
+
+        #[test]
+        fn v2_containment_output_passes_through() {
+            let expected =
+                serde_json::to_string(&EqlOutput::Store(ste_vec_payload())).unwrap();
+
+            let output = query_output(EqlOutput::Store(ste_vec_payload()), 2).unwrap();
+
+            assert_eq!(serde_json::to_string(&output).unwrap(), expected);
+        }
+
+        #[test]
+        fn v3_containment_output_is_a_jsonb_query_needle() {
+            let output = query_output(EqlOutput::Store(ste_vec_payload()), 3).unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            // The eql_v3.jsonb_query needle: {sv: [{s, hm|oc}]} — no
+            // envelope, no per-entry ciphertext or array marker.
+            assert!(value.get("v").is_none(), "needle carries no envelope");
+            assert!(value.get("i").is_none(), "needle carries no identifier");
+            assert!(value.get("k").is_none(), "needle carries no k");
+            let sv = value["sv"].as_array().unwrap();
+            assert_eq!(sv.len(), 2);
+            assert_eq!(sv[0]["s"], "root");
+            assert_eq!(sv[0]["hm"], "feedface");
+            assert!(sv[0].get("c").is_none(), "c is stripped from entries");
+            assert_eq!(sv[1]["s"], "leaf");
+            assert_eq!(sv[1]["oc"], "deadbeef");
+            assert!(sv[1].get("a").is_none(), "a is stripped from entries");
+        }
+
+        #[test]
+        fn v3_scalar_query_returns_a_typed_error() {
+            let err = query_output(scalar_query(), 3).unwrap_err();
+
+            assert!(matches!(err, Error::V3ScalarQueryUnsupported));
+            assert_eq!(
+                err.to_string(),
+                "EQL v3 scalar query encryption is not yet supported — \
+                 encrypt_query requires eqlVersion 2 for scalar indexes"
+            );
+        }
+
+        #[test]
+        fn v3_selector_query_returns_a_typed_error() {
+            let err = query_output(selector_query(), 3).unwrap_err();
+
+            assert!(matches!(err, Error::V3SelectorQueryUnsupported));
+            assert!(
+                err.to_string().contains("eqlVersion 2"),
+                "hints at eqlVersion 2: {err}"
+            );
+        }
+    }
+
+    mod dual_format_decrypt {
+        use super::support::{column, scalar_payload, ste_vec_payload};
+        use super::*;
+        use cipherstash_client::schema::column::{Index, IndexType};
+        use serde_json::json;
+
+        fn v2_scalar_value() -> serde_json::Value {
+            serde_json::to_value(scalar_payload(Some("aa"), None, None)).unwrap()
+        }
+
+        fn v2_ste_vec_value() -> serde_json::Value {
+            serde_json::to_value(ste_vec_payload()).unwrap()
+        }
+
+        fn v3_scalar_value() -> serde_json::Value {
+            let cfg = column(
+                ColumnType::Text,
+                vec![Index::new(IndexType::Unique {
+                    token_filters: vec![],
+                })],
+            );
+            let output =
+                storage_output(scalar_payload(Some("aa"), None, None), 3, &cfg).unwrap();
+            serde_json::to_value(&output).unwrap()
+        }
+
+        fn v3_ste_vec_value() -> serde_json::Value {
+            let cfg = column(
+                ColumnType::Json,
+                vec![Index::new(IndexType::SteVec {
+                    prefix: "users/profile".to_string(),
+                    term_filters: vec![],
+                    array_index_mode: Default::default(),
+                    mode: Default::default(),
+                })],
+            );
+            let output = storage_output(ste_vec_payload(), 3, &cfg).unwrap();
+            serde_json::to_value(&output).unwrap()
+        }
+
+        mod encrypted_record_from_value {
+            use super::*;
+
+            #[test]
+            fn decodes_a_v2_scalar_payload() {
+                let record = encrypted_record_from_value(v2_scalar_value(), vec![]).unwrap();
+                assert_eq!(record.record.descriptor, "users/email");
+            }
+
+            #[test]
+            fn decodes_a_v2_ste_vec_payload_from_the_root_entry() {
+                let record = encrypted_record_from_value(v2_ste_vec_value(), vec![]).unwrap();
+                assert_eq!(record.record.descriptor, "users/email");
+            }
+
+            #[test]
+            fn decodes_a_v3_scalar_payload() {
+                let record = encrypted_record_from_value(v3_scalar_value(), vec![]).unwrap();
+                assert_eq!(record.record.descriptor, "users/email");
+            }
+
+            #[test]
+            fn decodes_a_v3_ste_vec_document_from_sv_0() {
+                let record = encrypted_record_from_value(v3_ste_vec_value(), vec![]).unwrap();
+                assert_eq!(record.record.descriptor, "users/email");
+            }
+
+            #[test]
+            fn preserves_the_lock_context() {
+                let context = vec![zerokms::Context::IdentityClaim("sub".to_string())];
+                let record =
+                    encrypted_record_from_value(v3_scalar_value(), context.clone()).unwrap();
+                assert_eq!(record.context.len(), 1);
+            }
+
+            #[test]
+            fn rejects_plain_json() {
+                let err = encrypted_record_from_value(json!({"random": "data"}), vec![]);
+                assert!(err.is_err());
+            }
+
+            #[test]
+            fn rejects_a_v3_document_with_an_empty_sv() {
+                let value = json!({
+                    "v": 3,
+                    "i": {"t": "users", "c": "profile"},
+                    "sv": []
+                });
+                let err = encrypted_record_from_value(value, vec![]).unwrap_err();
+                assert!(
+                    err.to_string().contains("root"),
+                    "mentions the missing root entry: {err}"
+                );
+            }
+        }
+
+        mod is_encrypted_value {
+            use super::*;
+
+            #[test]
+            fn accepts_both_wire_formats() {
+                for value in [
+                    v2_scalar_value(),
+                    v2_ste_vec_value(),
+                    v3_scalar_value(),
+                    v3_ste_vec_value(),
+                ] {
+                    assert!(is_encrypted_value(&value), "should accept: {value}");
+                }
+            }
+
+            #[test]
+            fn rejects_non_payload_values() {
+                for value in [
+                    json!({"random": "data"}),
+                    json!("plaintext"),
+                    json!(42),
+                    json!(null),
+                    // v2 envelope without the k discriminator
+                    json!({"v": 2, "i": {"t": "users", "c": "email"}}),
+                    // a v3 containment needle is a QUERY payload, not storage
+                    json!({"sv": [{"s": "aa", "hm": "bb"}]}),
+                ] {
+                    assert!(!is_encrypted_value(&value), "should reject: {value}");
+                }
             }
         }
     }
