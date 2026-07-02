@@ -1,23 +1,27 @@
 import type {
-  Encrypted,
   EncryptedScalar,
   EncryptedSteVec,
   EncryptConfig,
 } from '../../lib/index.cjs'
 
+// The payload parameter is `unknown` (not `Encrypted`) because encrypt /
+// encryptQuery return dual-format unions since EQL v3 support — these
+// helpers narrow to the v2 shapes.
 export function assertSteVec(
-  payload: Encrypted,
+  payload: unknown,
 ): asserts payload is EncryptedSteVec {
-  if (payload.k !== 'sv') {
-    throw new Error(`expected k:"sv" payload, got k:"${payload.k}"`)
+  const k = (payload as { k?: unknown } | null)?.k
+  if (k !== 'sv') {
+    throw new Error(`expected k:"sv" payload, got k:"${String(k)}"`)
   }
 }
 
 export function assertScalar(
-  payload: Encrypted,
+  payload: unknown,
 ): asserts payload is EncryptedScalar {
-  if (payload.k !== 'ct') {
-    throw new Error(`expected k:"ct" payload, got k:"${payload.k}"`)
+  const k = (payload as { k?: unknown } | null)?.k
+  if (k !== 'ct') {
+    throw new Error(`expected k:"ct" payload, got k:"${String(k)}"`)
   }
 }
 

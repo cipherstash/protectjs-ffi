@@ -23,6 +23,22 @@ description = "Install CipherStash encrypt SQL into the database"
 dir = "{{ config_root }}/integration-tests"
 run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
 
+# The eql_v3 schema has no release artifact yet — build it from a sibling
+# checkout of encrypt-query-language (`mise run build` there writes the
+# self-contained eql_v3 installer to release/cipherstash-encrypt.sql).
+["eql:v3:build"]
+description = "Build the EQL v3 SQL from a sibling encrypt-query-language checkout"
+dir = "{{ config_root }}/integration-tests"
+run = [
+    "sh -c 'cd ../../encrypt-query-language && mise run build'",
+    "cp ../../encrypt-query-language/release/cipherstash-encrypt.sql sql/cipherstash-encrypt-v3.sql",
+]
+
+["eql:v3:install"]
+description = "Install the EQL v3 SQL into the database"
+dir = "{{ config_root }}/integration-tests"
+run = "cat sql/cipherstash-encrypt-v3.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
+
 [setup]
 description = "Set up the integration test environment"
 dir = "{{ config_root }}/integration-tests"
@@ -31,6 +47,8 @@ run = [
     "mise run start-db",
     "mise run eql:download",
     "mise run eql:install",
+    "mise run eql:v3:build",
+    "mise run eql:v3:install",
 ]
 
 ["test:integration"]

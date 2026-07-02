@@ -170,7 +170,7 @@ describe('EQL v2.3 wire format', () => {
       column: 'email',
     })
 
-    expect(ciphertext.k).toBe('ct')
+    expect((ciphertext as { k?: string }).k).toBe('ct')
     expect(ciphertext).toHaveProperty('c')
     expect(ciphertext).toHaveProperty('i')
     expect(ciphertext).toHaveProperty('v')

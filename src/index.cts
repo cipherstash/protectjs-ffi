@@ -424,7 +424,10 @@ export type CastAs =
   | 'bigint'
   | 'boolean'
   | 'date'
+  | 'decimal'
+  | 'int'
   | 'number'
+  | 'small_int'
   | 'string' // deprecated, use text instead but keep for backwards compatibility
   | 'text'
   | 'timestamp'
