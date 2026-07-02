@@ -778,7 +778,7 @@ mod tests {
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
-            assert!(value.get("k").is_none(), "v3 envelope carries no k");
+            assert!(value.get("k").is_none(), "v3 scalar envelope carries no k");
             assert_eq!(value["i"]["t"], "users");
             assert_eq!(value["i"]["c"], "email");
             assert!(value["c"].is_string(), "ciphertext is copied verbatim");
@@ -1061,21 +1061,24 @@ mod tests {
                     "mentions the missing root entry via the v3 branch: {err}"
                 );
             }
+        }
 
-            #[test]
-            fn v2_parse_accepts_a_v3_document_so_v3_must_be_probed_first() {
-                // A v3 SteVec document carries BOTH `v: 3` and `k: "sv"`. The
-                // v2 EqlCiphertext parse is internally tagged on `k` and does
-                // not pin `v`, so it accepts the v3 document as a v2 SteVec
-                // payload. This canary pins why encrypted_record_from_value
-                // probes v3 BEFORE attempting the v2 parse — if it ever
-                // fails, cipherstash-client started rejecting `v: 3` and the
-                // v3-first ordering became belt-and-braces.
-                assert!(
-                    EqlCiphertext::deserialize(&v3_ste_vec_value()).is_ok(),
-                    "the v2 parse no longer accepts a v3 SteVec document"
-                );
-            }
+        #[test]
+        fn v2_parse_accepts_a_v3_document_so_v3_must_be_probed_first() {
+            // A v3 SteVec document carries BOTH `v: 3` and `k: "sv"`. The
+            // v2 EqlCiphertext parse is internally tagged on `k` and does
+            // not pin `v`, so it accepts the v3 document as a v2 SteVec
+            // payload. This canary pins why encrypted_record_from_value
+            // probes v3 BEFORE attempting the v2 parse — if it ever
+            // fails, cipherstash-client started rejecting `v: 3` and the
+            // v3-first ordering became belt-and-braces.
+            assert!(
+                EqlCiphertext::deserialize(&v3_ste_vec_value()).is_ok(),
+                "the v2 parse no longer accepts a v3 SteVec document — \
+                 cipherstash-client now pins `v`, so the v3-first probe in \
+                 encrypted_record_from_value is belt-and-braces and this \
+                 canary can be deleted"
+            );
         }
 
         mod is_encrypted_value {
