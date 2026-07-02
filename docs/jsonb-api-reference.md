@@ -275,14 +275,15 @@ Numeric and string values share the single `oc` orderable field — domain separ
 ### EQL v3 output (`eqlVersion: 3`)
 
 Clients created with `newClient({ ..., eqlVersion: 3 })` emit the `eql_v3`
-wire format instead. There is no `k` discriminator: the envelope is
-`{ v: 3, i, ... }` and the payload shape is determined by the column's
-`eql_v3` domain.
+wire format instead. Scalar payloads carry no `k` discriminator (the
+envelope is `{ v: 3, i, ... }` with the shape determined by the column's
+`eql_v3` domain); SteVec documents keep `k: "sv"`.
 
 **SteVec storage encryption (`eql_v3.json`):**
 ```json
 {
   "v": 3,
+  "k": "sv",
   "i": { "t": "users", "c": "profile" },
   "sv": [
     { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },

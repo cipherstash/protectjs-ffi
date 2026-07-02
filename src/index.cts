@@ -204,9 +204,9 @@ export function decrypt(
 /**
  * True when `encrypted` is a stored EQL payload in EITHER wire format:
  * an EQL v2.3 payload (`k: "ct"` / `k: "sv"`) or an EQL v3 payload
- * (`{v: 3, i, c}` scalar or `{v: 3, i, sv}` SteVec document). Query
- * payloads (including the v3 containment needle) are not stored payloads
- * and return false.
+ * (`{v: 3, i, c}` scalar or `{v: 3, k: "sv", i, sv}` SteVec document).
+ * Query payloads (including the v3 containment needle) are not stored
+ * payloads and return false.
  */
 export function isEncrypted(encrypted: unknown): boolean {
   return wrapSync(() => native.isEncrypted(encrypted))
