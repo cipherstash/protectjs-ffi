@@ -11,6 +11,8 @@ export {
   type EnvReader,
   type CredentialOpts,
 } from './credentials.js'
+export * from './eql-v3.js'
+import type { EncryptedV3, EncryptedV3Query } from './eql-v3.js'
 
 declare const sym: unique symbol
 
@@ -24,13 +26,16 @@ declare module './load.cjs' {
     opts: NativeNewClientOptions,
     strategy?: AuthStrategy,
   ): Promise<Client>
-  function encrypt(client: Client, opts: EncryptOptions): Promise<Encrypted>
+  function encrypt(
+    client: Client,
+    opts: EncryptOptions,
+  ): Promise<EncryptedPayload>
   function decrypt(client: Client, opts: DecryptOptions): Promise<JsPlaintext>
   function isEncrypted(encrypted: unknown): boolean
   function encryptBulk(
     client: Client,
     opts: EncryptBulkOptions,
-  ): Promise<Encrypted[]>
+  ): Promise<EncryptedPayload[]>
   function decryptBulk(
     client: Client,
     opts: DecryptBulkOptions,
@@ -42,11 +47,11 @@ declare module './load.cjs' {
   function encryptQuery(
     client: Client,
     opts: EncryptQueryOptions,
-  ): Promise<Encrypted | EncryptedQuery>
+  ): Promise<Encrypted | EncryptedQuery | EncryptedV3Query>
   function encryptQueryBulk(
     client: Client,
     opts: EncryptQueryBulkOptions,
-  ): Promise<(Encrypted | EncryptedQuery)[]>
+  ): Promise<(Encrypted | EncryptedQuery | EncryptedV3Query)[]>
   function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
@@ -60,6 +65,9 @@ export type ProtectErrorCode =
   | 'STE_VEC_REQUIRES_JSON_CAST_AS'
   | 'MATCH_REQUIRES_TEXT'
   | 'UNSUPPORTED_CONFIG_VERSION'
+  | 'INVALID_EQL_VERSION'
+  | 'EQL_V3_QUERY_UNSUPPORTED'
+  | 'EQL_V3_UNSUPPORTED_COLUMN'
   | 'UNKNOWN'
 
 export class ProtectError extends Error {
@@ -113,6 +121,18 @@ function inferErrorCode(message: string): ProtectErrorCode {
   if (message.includes('unsupported config version')) {
     return 'UNSUPPORTED_CONFIG_VERSION'
   }
+  if (message.startsWith('Invalid eqlVersion')) {
+    return 'INVALID_EQL_VERSION'
+  }
+  if (
+    message.startsWith('EQL v3 scalar query') ||
+    message.startsWith('EQL v3 selector query')
+  ) {
+    return 'EQL_V3_QUERY_UNSUPPORTED'
+  }
+  if (message.includes('cannot be represented in EQL v3')) {
+    return 'EQL_V3_UNSUPPORTED_COLUMN'
+  }
   return 'UNKNOWN'
 }
 
@@ -156,6 +176,7 @@ export function newClient(opts: NewClientOptions): Promise<Client> {
       {
         encryptConfig: normalizeEncryptConfig(opts.encryptConfig),
         clientOpts: withEnvCredentials(opts.clientOpts),
+        eqlVersion: opts.eqlVersion,
       },
       opts.strategy,
     ),
@@ -165,7 +186,7 @@ export function newClient(opts: NewClientOptions): Promise<Client> {
 export function encrypt(
   client: Client,
   opts: EncryptOptions,
-): Promise<Encrypted> {
+): Promise<EncryptedPayload> {
   return wrapAsync(() => native.encrypt(client, opts))
 }
 
@@ -176,6 +197,13 @@ export function decrypt(
   return wrapAsync(() => native.decrypt(client, opts))
 }
 
+/**
+ * True when `encrypted` is a stored EQL payload in EITHER wire format:
+ * an EQL v2.3 payload (`k: "ct"` / `k: "sv"`) or an EQL v3 payload
+ * (`{v: 3, i, c}` scalar or `{v: 3, i, sv}` SteVec document). Query
+ * payloads (including the v3 containment needle) are not stored payloads
+ * and return false.
+ */
 export function isEncrypted(encrypted: unknown): boolean {
   return wrapSync(() => native.isEncrypted(encrypted))
 }
@@ -183,7 +211,7 @@ export function isEncrypted(encrypted: unknown): boolean {
 export function encryptBulk(
   client: Client,
   opts: EncryptBulkOptions,
-): Promise<Encrypted[]> {
+): Promise<EncryptedPayload[]> {
   return wrapAsync(() => native.encryptBulk(client, opts))
 }
 
@@ -209,17 +237,30 @@ export async function decryptBulkFallible(
   })
 }
 
+/**
+ * Encrypt a query term.
+ *
+ * Under `eqlVersion: 2` (default) this returns the v2 shapes ({@link
+ * Encrypted} for JSON containment, {@link EncryptedQuery} otherwise).
+ *
+ * Under `eqlVersion: 3` only JSON containment queries are supported and
+ * return the `eql_v3.jsonb_query` needle ({@link EncryptedV3Query}). Scalar
+ * index queries (`unique` / `ore` / `match`) and `ste_vec_selector` queries
+ * throw `EQL_V3_QUERY_UNSUPPORTED` — no EQL v3 scalar/selector query wire
+ * shape exists yet, so those queries require an `eqlVersion: 2` client.
+ */
 export function encryptQuery(
   client: Client,
   opts: EncryptQueryOptions,
-): Promise<Encrypted | EncryptedQuery> {
+): Promise<Encrypted | EncryptedQuery | EncryptedV3Query> {
   return wrapAsync(() => native.encryptQuery(client, opts))
 }
 
+/** Bulk variant of {@link encryptQuery} — same EQL v3 restrictions apply. */
 export function encryptQueryBulk(
   client: Client,
   opts: EncryptQueryBulkOptions,
-): Promise<(Encrypted | EncryptedQuery)[]> {
+): Promise<(Encrypted | EncryptedQuery | EncryptedV3Query)[]> {
   return wrapAsync(() => native.encryptQueryBulk(client, opts))
 }
 
@@ -242,7 +283,7 @@ export type EncryptPayload = {
 }
 
 export type BulkDecryptPayload = {
-  ciphertext: Encrypted
+  ciphertext: EncryptedPayload
   lockContext?: Context
 }
 
@@ -266,6 +307,14 @@ export type Context = {
  * ```
  */
 export type Encrypted = EncryptedScalar | EncryptedSteVec
+
+/**
+ * A stored payload in EITHER wire format: EQL v2.3 ({@link Encrypted}) or
+ * EQL v3 ({@link EncryptedV3}). {@link encrypt} / {@link encryptBulk} return
+ * the format selected by the client's `eqlVersion`; {@link decrypt} accepts
+ * both regardless of `eqlVersion` (data-migration scenarios).
+ */
+export type EncryptedPayload = Encrypted | EncryptedV3
 
 /** Scalar EQL v2.3 storage payload (`k: "ct"`). */
 export type EncryptedScalar = {
@@ -393,12 +442,15 @@ export type Identifier<C extends EncryptConfig> = {
 
 export type Indexes = {
   ore?: OreIndexOpts
+  ope?: OpeIndexOpts
   unique?: UniqueIndexOpts
   match?: MatchIndexOpts
   ste_vec?: SteVecIndexOpts
 }
 
 export type OreIndexOpts = Record<string, never>
+
+export type OpeIndexOpts = Record<string, never>
 
 export type UniqueIndexOpts = {
   token_filters?: TokenFilter[]
@@ -449,6 +501,21 @@ export type NewClientOptions = {
    * AutoStrategy from env / profile / `clientOpts.creds`.
    */
   strategy?: AuthStrategy
+  /**
+   * EQL wire version this client emits. Defaults to `2` (the
+   * `eql_v2_encrypted` payload format).
+   *
+   * With `3`, {@link encrypt} / {@link encryptBulk} return {@link
+   * EncryptedV3} payloads for the `eql_v3` per-capability domains
+   * (`eql_v3.text_eq`, `eql_v3.int4_ord_ore`, `eql_v3.json`, …), derived
+   * from each column's `cast_as` + indexes. {@link decrypt} accepts BOTH
+   * formats regardless of this setting.
+   *
+   * v3 limitation: {@link encryptQuery} supports only JSON containment
+   * queries — scalar-index and selector queries throw
+   * `EQL_V3_QUERY_UNSUPPORTED` until a v3 scalar query wire shape exists.
+   */
+  eqlVersion?: 2 | 3
 }
 
 /**
@@ -463,6 +530,7 @@ export type AuthStrategy = {
 type NativeNewClientOptions = {
   encryptConfig: NativeEncryptConfig
   clientOpts?: ClientOpts
+  eqlVersion?: 2 | 3
 }
 
 export type ClientOpts = CredentialOpts & {
@@ -501,7 +569,8 @@ export type EncryptBulkOptions = {
 }
 
 export type DecryptOptions = {
-  ciphertext: Encrypted
+  /** A stored payload in either wire format (EQL v2.3 or EQL v3). */
+  ciphertext: EncryptedPayload
   lockContext?: Context
   unverifiedContext?: Record<string, unknown>
 }
