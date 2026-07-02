@@ -1,3 +1,4 @@
+mod eql_v3;
 mod js_plaintext;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
@@ -272,6 +273,14 @@ pub enum Error {
     },
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error("Invalid eqlVersion {0}: expected 2 or 3")]
+    InvalidEqlVersion(u8),
+    #[error("Column '{column}' cannot be represented in EQL v3: {reason}. {hint}")]
+    NoV3Domain {
+        column: String,
+        reason: String,
+        hint: String,
+    },
 }
 
 /// JS-backed [`AuthStrategy`] for the Neon build.
