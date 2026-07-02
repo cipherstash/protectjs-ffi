@@ -68,6 +68,7 @@ export type { Selector } from './eql-v3-types/Selector.js'
 // SteVec (encrypted JSONB) shapes.
 export type { SteVecDocument } from './eql-v3-types/SteVecDocument.js'
 export type { SteVecEntry as EqlV3SteVecEntry } from './eql-v3-types/SteVecEntry.js'
+export type { SteVecForm } from './eql-v3-types/SteVecForm.js'
 export type { SteVecQuery } from './eql-v3-types/SteVecQuery.js'
 export type { SteVecQueryEntry } from './eql-v3-types/SteVecQueryEntry.js'
 export type { SteVecTerm } from './eql-v3-types/SteVecTerm.js'
@@ -182,9 +183,10 @@ export type EncryptedV3Scalar =
  * EQL v3 **storage** payload — returned by `encrypt` / `encryptBulk` when the
  * client was created with `eqlVersion: 3`.
  *
- * Unlike v2 there is no `k` discriminator: scalars are flat
- * (`{v: 3, i, c, <terms>}`, terms depending on the column's `eql_v3` domain)
- * and encrypted JSONB is a {@link SteVecDocument} (`{v: 3, i, sv: [...]}`).
+ * Scalars carry no `k` discriminator: they are flat
+ * (`{v: 3, i, c, <terms>}`, terms depending on the column's `eql_v3` domain).
+ * Encrypted JSONB is a {@link SteVecDocument}, which keeps the `k: "sv"`
+ * form discriminator (`{v: 3, k: "sv", i, sv: [...]}`).
  * The record ciphertext lives at `c` on scalars and at `sv[0].c` on SteVec
  * documents (`sv[0]` is always the decryption root).
  */
