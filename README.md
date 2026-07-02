@@ -44,6 +44,50 @@ $ node
 > console.log({ciphertext, plaintext});
 ```
 
+## EQL version selection
+
+`newClient` accepts an `eqlVersion` option selecting the wire format that
+`encrypt` / `encryptBulk` / `encryptQuery` emit:
+
+```js
+// EQL v2 (default) — the `eql_v2_encrypted` payload format
+const v2 = await addon.newClient({ encryptConfig })
+
+// EQL v3 — payloads for the per-capability `eql_v3` domains
+const v3 = await addon.newClient({ encryptConfig, eqlVersion: 3 })
+```
+
+With `eqlVersion: 3`, each column's payload targets the `eql_v3` domain
+derived from its `cast_as` and indexes:
+
+| `cast_as` | family | indexes | domain |
+|-----------|--------|---------|--------|
+| `text` | `text` | `unique` + `ore` + `match` | `text_search` |
+| `text` | `text` | `unique` + `ore` | `text_ord_ore` |
+| `text` | `text` | `match` | `text_match` |
+| `text` | `text` | `unique` | `text_eq` |
+| `int` / `small_int` / `bigint` | `int4` / `int2` / `int8` | `ore` (with or without `unique`) | `<family>_ord_ore` |
+| `int` / `small_int` / `bigint` | `int4` / `int2` / `int8` | `unique` | `<family>_eq` |
+| `number` / `decimal` / `date` / `timestamp` | `float8` / `numeric` / `date` / `timestamp` | as above | as above |
+| any scalar | — | none | storage-only domain (`text`, `int4`, …) |
+| `boolean` | `bool` | none only | `bool` (storage-only — any index errors) |
+| `json` | `json` | `ste_vec` (required) | `json` |
+
+Notes:
+
+- The domain preserving the most configured index terms wins. Non-text
+  ordering domains carry only `ob`, so `unique` + `ore` on a numeric column
+  drops `hm` (equality still works via the ORE operators).
+- Ordered text requires a `unique` index (`text_ord_ore`/`text_ord_ope`
+  carry `hm` + `ob`/`op`); `ore`-only text errors.
+- `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
+  v3 data can coexist during a migration.
+- v3 query encryption currently supports JSON containment only; scalar and
+  selector queries throw `EQL_V3_QUERY_UNSUPPORTED` and need an
+  `eqlVersion: 2` client.
+- `ope`-indexed columns map to `<family>_ord_ope` but cannot be produced
+  end-to-end yet: the client does not emit the `op` term (CIP-3280).
+
 ## Errors
 
 Async API calls throw `ProtectError` with a stable `code` for programmatic handling.

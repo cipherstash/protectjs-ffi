@@ -168,7 +168,7 @@ Error: Unsupported conversion from "String" to JsonB
 
 ### EqlCiphertext Format
 
-All encryption operations return an EQL v2.3 payload, a discriminated union keyed on `k`:
+By default (`eqlVersion: 2`) all encryption operations return an EQL v2.3 payload, a discriminated union keyed on `k`. Clients created with `eqlVersion: 3` return the EQL v3 shapes instead — see [EQL v3 output](#eql-v3-output-eqlversion-3) below.
 
 ```typescript
 type EqlCiphertext = EncryptedScalar | EncryptedSteVec
@@ -271,6 +271,50 @@ Numeric and string values share the single `oc` orderable field — domain separ
   ]
 }
 ```
+
+### EQL v3 output (`eqlVersion: 3`)
+
+Clients created with `newClient({ ..., eqlVersion: 3 })` emit the `eql_v3`
+wire format instead. There is no `k` discriminator: the envelope is
+`{ v: 3, i, ... }` and the payload shape is determined by the column's
+`eql_v3` domain.
+
+**SteVec storage encryption (`eql_v3.json`):**
+```json
+{
+  "v": 3,
+  "i": { "t": "users", "c": "profile" },
+  "sv": [
+    { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
+    { "s": "abc123", "oc": "ghi789", "c": "..." }
+  ]
+}
+```
+
+Entry order is preserved from v2 and `sv[0]` remains the **decryption
+root**: `sv[0].c` is the record ciphertext `decrypt` uses. Reordering `sv`
+entries breaks decryption.
+
+**Containment query (`eql_v3.jsonb_query` needle):**
+```json
+{
+  "sv": [
+    { "s": "abc123", "oc": "ghi789" }
+  ]
+}
+```
+
+The needle carries no envelope (`v`/`i`) and no per-entry ciphertexts —
+each entry is the selector plus exactly one of `hm`/`oc`, mirroring the SQL
+cast `eql_v3.to_ste_vec_query`. Use it with the `@>`/`<@` operators against
+an `eql_v3.json` column.
+
+**v3 query limitations:** only JSON containment queries are supported under
+`eqlVersion: 3`. Scalar-index queries (`unique`/`ore`/`match`) and
+`ste_vec_selector` queries throw `EQL_V3_QUERY_UNSUPPORTED` — no EQL v3
+scalar/selector query wire shape exists yet. Use an `eqlVersion: 2` client
+for those queries, or pass plain tokenized selectors to the `eql_v3` path
+functions (`->`, `eql_v3.jsonb_path_query`).
 
 ---
 
