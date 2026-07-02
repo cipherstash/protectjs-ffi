@@ -93,7 +93,8 @@ function expectV3Scalar(payload: unknown): Record<string, unknown> {
 function expectV3SteVec(payload: unknown): SteVecDocument {
   const p = payload as Record<string, unknown>
   expect(p.v).toBe(3)
-  expect(p.k).toBeUndefined()
+  // Unlike v3 scalars, SteVec documents keep the k form discriminator.
+  expect(p.k).toBe('sv')
   expect(p.i).toBeTypeOf('object')
   expect(Array.isArray(p.sv)).toBe(true)
   return payload as SteVecDocument

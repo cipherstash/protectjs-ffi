@@ -4,7 +4,8 @@
 //! …}`). The `eql_v3` PostgreSQL schema replaces the single
 //! `eql_v2_encrypted` column type with per-capability domains
 //! (`eql_v3.text_eq`, `eql_v3.int4_ord_ore`, `eql_v3.json`, …) and a new
-//! envelope (`{v: 3, i, c, <terms>}` — no `k` discriminator).
+//! envelope: scalars are `{v: 3, i, c, <terms>}` with no `k` discriminator;
+//! SteVec (encrypted JSONB) documents keep it (`{v: 3, k: "sv", i, sv}`).
 //!
 //! Payloads are converted, not re-encrypted: cipherstash-client still emits
 //! v2, and [`eql_bindings::from_v2`] rewrites the wire shape for the target
@@ -265,29 +266,28 @@ pub(crate) fn query_output(output: EqlOutput, eql_version: u8) -> Result<QueryOu
 /// Decode a stored ciphertext value in EITHER wire format into the record +
 /// lock context pair zerokms decrypts.
 ///
-/// Tries the v2 [`EqlCiphertext`] parse first (the historical shape), then
-/// falls back to the v3 envelope. Decrypt is deliberately version-agnostic —
-/// it must keep working across data migrations regardless of the client's
-/// `eqlVersion` setting.
+/// Probes the v3 envelope FIRST, then falls back to the typed v2
+/// [`EqlCiphertext`] parse (the historical shape). The order matters: a v3
+/// SteVec document carries both `v: 3` and `k: "sv"`, and the v2 parse is
+/// internally tagged on `k` without pinning `v`, so attempted first it would
+/// mis-accept the document as a v2 SteVec payload. [`is_v3_payload`] requires
+/// `v == 3` exactly, so no v2 payload can take the v3 branch. Decrypt is
+/// deliberately version-agnostic — it must keep working across data
+/// migrations regardless of the client's `eqlVersion` setting.
 pub(crate) fn encrypted_record_from_value(
     value: serde_json::Value,
     encryption_context: Vec<zerokms::Context>,
 ) -> Result<WithContext<'static>, Error> {
-    match EqlCiphertext::deserialize(&value) {
-        Ok(ciphertext) => crate::encrypted_record_from_mp_base85(ciphertext, encryption_context),
-        Err(v2_error) => {
-            if is_v3_payload(&value) {
-                Ok(WithContext {
-                    record: v3_root_record(&value)?,
-                    context: Cow::Owned(encryption_context),
-                })
-            } else {
-                // Not v2, not v3 — report the v2 parse failure (the shape
-                // the overwhelming majority of stored data still has).
-                Err(Error::Parse(v2_error))
-            }
-        }
+    if is_v3_payload(&value) {
+        return Ok(WithContext {
+            record: v3_root_record(&value)?,
+            context: Cow::Owned(encryption_context),
+        });
     }
+    // Not v3 — a parse failure here reports the v2 shape (the shape the
+    // overwhelming majority of stored data still has).
+    let ciphertext = EqlCiphertext::deserialize(&value).map_err(Error::Parse)?;
+    crate::encrypted_record_from_mp_base85(ciphertext, encryption_context)
 }
 
 /// Extract the record ciphertext from a v3 stored payload.
@@ -839,7 +839,10 @@ mod tests {
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
-            assert!(value.get("k").is_none(), "v3 envelope carries no k");
+            assert_eq!(
+                value["k"], "sv",
+                "SteVec documents keep the k form discriminator"
+            );
             let sv = value["sv"].as_array().unwrap();
             assert_eq!(sv.len(), 2);
             // sv[0] is the decryption root — order must survive conversion.
@@ -1045,13 +1048,32 @@ mod tests {
             fn rejects_a_v3_document_with_an_empty_sv() {
                 let value = json!({
                     "v": 3,
+                    "k": "sv",
                     "i": {"t": "users", "c": "profile"},
                     "sv": []
                 });
                 let err = encrypted_record_from_value(value, vec![]).unwrap_err();
+                // The v3-specific message also pins ROUTING: the error must
+                // come from v3_root_record, not the v2 SteVec arm (whose
+                // message reads "… in SteVec EQL payload").
                 assert!(
-                    err.to_string().contains("root"),
-                    "mentions the missing root entry: {err}"
+                    err.to_string().contains("root entry in v3 SteVec payload"),
+                    "mentions the missing root entry via the v3 branch: {err}"
+                );
+            }
+
+            #[test]
+            fn v2_parse_accepts_a_v3_document_so_v3_must_be_probed_first() {
+                // A v3 SteVec document carries BOTH `v: 3` and `k: "sv"`. The
+                // v2 EqlCiphertext parse is internally tagged on `k` and does
+                // not pin `v`, so it accepts the v3 document as a v2 SteVec
+                // payload. This canary pins why encrypted_record_from_value
+                // probes v3 BEFORE attempting the v2 parse — if it ever
+                // fails, cipherstash-client started rejecting `v: 3` and the
+                // v3-first ordering became belt-and-braces.
+                assert!(
+                    EqlCiphertext::deserialize(&v3_ste_vec_value()).is_ok(),
+                    "the v2 parse no longer accepts a v3 SteVec document"
                 );
             }
         }
