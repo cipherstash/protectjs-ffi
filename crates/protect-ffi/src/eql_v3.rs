@@ -3,7 +3,7 @@
 //! protect-ffi historically speaks the EQL v2.3 wire format (`{v: 2, k, i, c,
 //! …}`). The `eql_v3` PostgreSQL schema replaces the single
 //! `eql_v2_encrypted` column type with per-capability domains
-//! (`eql_v3.text_eq`, `eql_v3.int4_ord_ore`, `eql_v3.json`, …) and a new
+//! (`eql_v3.text_eq`, `eql_v3.integer_ord_ore`, `eql_v3.json`, …) and a new
 //! envelope: scalars are `{v: 3, i, c, <terms>}` with no `k` discriminator;
 //! SteVec (encrypted JSONB) documents keep it (`{v: 3, k: "sv", i, sv}`).
 //!
@@ -16,8 +16,9 @@
 use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload};
 use cipherstash_client::schema::{column::ColumnType, column::IndexType, ColumnConfig};
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
-use eql_bindings::from_v2::{from_v2, from_v2_query, is_v3_payload, TargetDomain};
+use eql_bindings::from_v2::{from_v2_query, from_v2_typed, is_v3_payload, TargetDomain};
 use eql_bindings::v3::jsonb::SteVecDocument;
+use eql_bindings::v3::DomainPayload;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -102,14 +103,14 @@ impl ConfiguredTerms {
 fn v3_family(cast_type: ColumnType) -> Option<&'static str> {
     match cast_type {
         ColumnType::Text => Some("text"),
-        ColumnType::SmallInt => Some("int2"),
-        ColumnType::Int => Some("int4"),
-        ColumnType::BigInt => Some("int8"),
-        ColumnType::Float => Some("float8"),
+        ColumnType::SmallInt => Some("smallint"),
+        ColumnType::Int => Some("integer"),
+        ColumnType::BigInt => Some("bigint"),
+        ColumnType::Float => Some("double"),
         ColumnType::Decimal => Some("numeric"),
         ColumnType::Date => Some("date"),
         ColumnType::Timestamp => Some("timestamp"),
-        ColumnType::Boolean => Some("bool"),
+        ColumnType::Boolean => Some("boolean"),
         ColumnType::Json => Some("json"),
         ColumnType::BigUInt => None,
     }
@@ -186,15 +187,15 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
         };
     }
 
-    if family == "bool" {
+    if family == "boolean" {
         return if terms.any() {
             Err(no_v3_domain(
                 column,
-                "eql_v3.bool is storage-only but indexes are configured",
+                "eql_v3.boolean is storage-only but indexes are configured",
                 "Remove the indexes or use eqlVersion 2.",
             ))
         } else {
-            Ok("bool".to_string())
+            Ok("boolean".to_string())
         };
     }
 
@@ -324,19 +325,27 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
 ///
 /// `#[serde(untagged)]` makes the `V2` variant serialize exactly as the bare
 /// [`EqlCiphertext`] did before dual-format support (no `Value` round-trip,
-/// so v2 output is byte-identical), while `V3` carries the already-converted
-/// JSON value. The v2 payload is boxed because it is substantially larger
-/// than a `Value` (clippy's `large_enum_variant`).
+/// so v2 output is byte-identical), while `V3` carries the typed
+/// [`DomainPayload`] for the column's target domain. `DomainPayload` is
+/// itself untagged and Serialize-only, so the v3 wire output carries exactly
+/// the keys and values the shape-erased [`eql_bindings::from_v2::from_v2`]
+/// `Value` did (pinned by
+/// `v3_typed_output_serializes_identically_to_the_from_v2_value`; only the
+/// meaningless JSON key order differs — schema wire order instead of a
+/// `Value`'s alphabetical order). The v2 payload is boxed because it is
+/// substantially larger than the other variant (clippy's
+/// `large_enum_variant`).
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum EncryptedOutput {
     V2(Box<EqlCiphertext>),
-    V3(serde_json::Value),
+    V3(DomainPayload),
 }
 
 /// Wrap a Store-mode ciphertext in the client's configured wire format:
-/// v2 passes through untouched; v3 converts via [`eql_bindings::from_v2`]
-/// against the domain selected from the column configuration.
+/// v2 passes through untouched; v3 converts via
+/// [`eql_bindings::from_v2::from_v2_typed`] against the domain selected from
+/// the column configuration, keeping the strictly parsed [`DomainPayload`].
 pub(crate) fn storage_output(
     ciphertext: EqlCiphertext,
     eql_version: EqlVersion,
@@ -347,13 +356,16 @@ pub(crate) fn storage_output(
         EqlVersion::V3 => {
             let target = v3_target_for_column(column_config)?;
             let v2_value = serde_json::to_value(&ciphertext)?;
-            Ok(EncryptedOutput::V3(from_v2(&v2_value, target)?))
+            Ok(EncryptedOutput::V3(from_v2_typed(&v2_value, target)?))
         }
     }
 }
 
 /// A query payload in whichever wire format the client is configured for.
 /// Same untagged pass-through (and boxing) design as [`EncryptedOutput`].
+/// `V3` stays a shape-erased `Value`: [`from_v2_query`] has no typed
+/// counterpart in eql-bindings 0.3.0 (query needles are not
+/// [`DomainPayload`] members), so there is nothing typed to carry yet.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum QueryOutput {
@@ -742,31 +754,31 @@ mod tests {
 
         #[test]
         fn int_without_indexes_is_storage_only() {
-            assert_eq!(domain(ColumnType::Int, vec![]), "int4");
+            assert_eq!(domain(ColumnType::Int, vec![]), "integer");
         }
 
         #[test]
         fn int_unique_is_eq() {
-            assert_eq!(domain(ColumnType::Int, vec![unique()]), "int4_eq");
+            assert_eq!(domain(ColumnType::Int, vec![unique()]), "integer_eq");
         }
 
         #[test]
         fn int_ore_is_ord_ore() {
-            assert_eq!(domain(ColumnType::Int, vec![ore()]), "int4_ord_ore");
+            assert_eq!(domain(ColumnType::Int, vec![ore()]), "integer_ord_ore");
         }
 
         #[test]
         fn int_ope_is_ord_ope() {
-            assert_eq!(domain(ColumnType::Int, vec![ope()]), "int4_ord_ope");
+            assert_eq!(domain(ColumnType::Int, vec![ope()]), "integer_ord_ope");
         }
 
         #[test]
         fn int_unique_and_ore_prefers_ord_ore_over_eq() {
-            // int4_ord_ore requires only ob; hm is dropped but equality
+            // integer_ord_ore requires only ob; hm is dropped but equality
             // remains available via the ORE operators (= <>).
             assert_eq!(
                 domain(ColumnType::Int, vec![unique(), ore()]),
-                "int4_ord_ore"
+                "integer_ord_ore"
             );
         }
 
@@ -774,28 +786,34 @@ mod tests {
         fn int_unique_and_ope_prefers_ord_ope_over_eq() {
             assert_eq!(
                 domain(ColumnType::Int, vec![unique(), ope()]),
-                "int4_ord_ope"
+                "integer_ord_ope"
             );
         }
 
         #[test]
         fn int_ore_and_ope_prefers_ord_ore() {
-            assert_eq!(domain(ColumnType::Int, vec![ore(), ope()]), "int4_ord_ore");
+            assert_eq!(
+                domain(ColumnType::Int, vec![ore(), ope()]),
+                "integer_ord_ore"
+            );
         }
 
         #[test]
-        fn small_int_maps_to_int2_family() {
-            assert_eq!(domain(ColumnType::SmallInt, vec![ore()]), "int2_ord_ore");
+        fn small_int_maps_to_smallint_family() {
+            assert_eq!(
+                domain(ColumnType::SmallInt, vec![ore()]),
+                "smallint_ord_ore"
+            );
         }
 
         #[test]
-        fn big_int_maps_to_int8_family() {
-            assert_eq!(domain(ColumnType::BigInt, vec![unique()]), "int8_eq");
+        fn big_int_maps_to_bigint_family() {
+            assert_eq!(domain(ColumnType::BigInt, vec![unique()]), "bigint_eq");
         }
 
         #[test]
-        fn float_maps_to_float8_family() {
-            assert_eq!(domain(ColumnType::Float, vec![ore()]), "float8_ord_ore");
+        fn float_maps_to_double_family() {
+            assert_eq!(domain(ColumnType::Float, vec![ore()]), "double_ord_ore");
         }
 
         #[test]
@@ -818,12 +836,12 @@ mod tests {
 
         #[test]
         fn boolean_without_indexes_is_storage_only() {
-            assert_eq!(domain(ColumnType::Boolean, vec![]), "bool");
+            assert_eq!(domain(ColumnType::Boolean, vec![]), "boolean");
         }
 
         #[test]
         fn boolean_with_unique_is_an_error() {
-            // eql_v3.bool is storage-only; any index term would be dropped.
+            // eql_v3.boolean is storage-only; any index term would be dropped.
             let err = domain_err(ColumnType::Boolean, vec![unique()]);
             assert!(err.contains("test_column"), "names the column: {err}");
             assert!(err.contains("storage-only"), "explains bool: {err}");
@@ -960,6 +978,48 @@ mod tests {
         }
 
         #[test]
+        fn v3_typed_output_serializes_identically_to_the_from_v2_value() {
+            // EncryptedOutput::V3 carries the typed DomainPayload
+            // (from_v2_typed) instead of the shape-erased Value (from_v2).
+            // Both are #[serde(untagged)], so the FFI wire output must carry
+            // exactly the from_v2 keys and values — for a scalar domain and
+            // for the SteVec document domain. (JSON object key ORDER is the
+            // one permitted difference: a Value serializes keys
+            // alphabetically, the typed structs in schema wire order
+            // `v, i, c, <terms>`. Key order carries no meaning in JSON and
+            // none of this crate's consumers observe it.)
+            use eql_bindings::from_v2::from_v2;
+
+            let scalar_cfg = text_search_column();
+            let scalar_ct = scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]));
+            let scalar_v2 = serde_json::to_value(&scalar_ct).unwrap();
+            let scalar_target = TargetDomain::parse("text_search").unwrap();
+
+            let output = storage_output(scalar_ct, EqlVersion::V3, &scalar_cfg).unwrap();
+            assert_eq!(
+                serde_json::to_value(&output).unwrap(),
+                from_v2(&scalar_v2, scalar_target).unwrap(),
+            );
+
+            let sv_cfg = column(
+                ColumnType::Json,
+                vec![Index::new(IndexType::SteVec {
+                    prefix: "users/profile".to_string(),
+                    term_filters: vec![],
+                    array_index_mode: Default::default(),
+                    mode: Default::default(),
+                })],
+            );
+            let sv_v2 = serde_json::to_value(ste_vec_payload()).unwrap();
+
+            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &sv_cfg).unwrap();
+            assert_eq!(
+                serde_json::to_value(&output).unwrap(),
+                from_v2(&sv_v2, TargetDomain::Json).unwrap(),
+            );
+        }
+
+        #[test]
         fn v3_scalar_output_has_v3_envelope_and_required_terms() {
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
@@ -981,7 +1041,7 @@ mod tests {
 
         #[test]
         fn v3_output_drops_terms_the_target_domain_does_not_carry() {
-            // unique + ore on int maps to int4_ord_ore, which carries only
+            // unique + ore on int maps to integer_ord_ore, which carries only
             // ob — hm is dropped (equality stays available via ORE).
             let cfg = column(
                 ColumnType::Int,
@@ -1001,7 +1061,7 @@ mod tests {
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["ob"], serde_json::json!(["bb"]));
-            assert!(value.get("hm").is_none(), "hm dropped for int4_ord_ore");
+            assert!(value.get("hm").is_none(), "hm dropped for integer_ord_ore");
         }
 
         #[test]
