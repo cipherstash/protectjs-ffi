@@ -423,6 +423,44 @@ describe('mixed-version decrypt (data migration)', async () => {
     const decrypted = await decrypt(v2Client, { ciphertext })
     expect(decrypted).toEqual(profile)
   })
+
+  test('decryptBulk round-trips a mixed v2 + v3 batch', async () => {
+    const v2Ciphertext = await encrypt(v2Client, {
+      plaintext: 'still-v2',
+      column: 'email',
+      table: 'v3users',
+    })
+    const v3Ciphertext = await encrypt(v3Client, {
+      plaintext: 'already-v3',
+      column: 'email',
+      table: 'v3users',
+    })
+    expect((v2Ciphertext as Record<string, unknown>).k).toBe('ct')
+    expect((v3Ciphertext as Record<string, unknown>).v).toBe(3)
+
+    const decrypted = await decryptBulk(v3Client, {
+      ciphertexts: [{ ciphertext: v2Ciphertext }, { ciphertext: v3Ciphertext }],
+    })
+    expect(decrypted).toEqual(['still-v2', 'already-v3'])
+  })
+
+  test('decryptBulkFallible round-trips a mixed v3 + v2 batch', async () => {
+    const v3Ciphertext = await encrypt(v3Client, {
+      plaintext: 'fallible-v3',
+      column: 'email',
+      table: 'v3users',
+    })
+    const v2Ciphertext = await encrypt(v2Client, {
+      plaintext: 'fallible-v2',
+      column: 'email',
+      table: 'v3users',
+    })
+
+    const results = await decryptBulkFallible(v2Client, {
+      ciphertexts: [{ ciphertext: v3Ciphertext }, { ciphertext: v2Ciphertext }],
+    })
+    expect(results).toEqual([{ data: 'fallible-v3' }, { data: 'fallible-v2' }])
+  })
 })
 
 describe('eql v3 configuration errors', () => {
