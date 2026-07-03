@@ -92,8 +92,11 @@ Notes:
 > **Breaking TypeScript change:** `encrypt`/`encryptBulk` now return
 > `EncryptedPayload` (`Encrypted | EncryptedV3`) instead of `Encrypted`.
 > Runtime output is unchanged for v2 clients, but code that accessed `.k`
-> or assigned the result to `Encrypted` must narrow first (e.g. check
-> `payload.k === 'ct'` / `payload.v === 3`).
+> or assigned the result to `Encrypted` must narrow first. v3 scalars carry
+> no `k`, so guard its presence before reading it:
+> `'k' in payload && payload.k === 'ct'` (a v2 scalar), or check
+> `payload.v === 3` to detect the v3 members. (A bare `payload.k === 'ct'`
+> does not compile against the union.)
 
 ## Errors
 
