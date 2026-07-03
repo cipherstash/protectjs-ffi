@@ -54,8 +54,8 @@ use crate::{
     encrypted_record_from_value, find_index_for_type, into_store_ciphertext, is_encrypted_value,
     parse_query_op, query_output, storage_output, to_query_plaintext, validate_eql_version,
     DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
-    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, Error, InferredQueryMode,
-    QueryOutput,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error,
+    InferredQueryMode, QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,9 +147,9 @@ pub struct WasmClient {
     cipher: Arc<ScopedCipher<JsAuthStrategy>>,
     zerokms: Arc<ZeroKMSWithClientKey<JsAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
-    /// EQL wire version this client emits (2 or 3). Decryption accepts both
-    /// formats regardless of this setting.
-    eql_version: u8,
+    /// EQL wire version this client emits. Decryption accepts both formats
+    /// regardless of this setting.
+    eql_version: EqlVersion,
 }
 
 /// Hex-encoded secret material that zeroizes its buffer on drop.
