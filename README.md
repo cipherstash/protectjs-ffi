@@ -75,9 +75,15 @@ derived from its `cast_as` and indexes:
 
 Notes:
 
-- The domain preserving the most configured index terms wins. Non-text
-  ordering domains carry only `ob`, so `unique` + `ore` on a numeric column
-  drops `hm` (equality still works via the ORE operators).
+- The richest matching domain wins, and it must cover every configured
+  capability — a combination that would silently drop a term errors instead
+  (e.g. `unique` + `match`, `unique` + `ope` + `match`, or `ore` + `match`
+  on text: no single domain carries those term sets, so add the missing
+  index to reach `text_search`, split the capabilities across columns, or
+  use `eqlVersion: 2`).
+- Exception: dropping a *term* is fine when the *capability* survives.
+  Non-text ordering domains carry only `ob`, so `unique` + `ore` on a
+  numeric column drops `hm` — equality still works via the ORE operators.
 - Ordered text requires a `unique` index (`text_ord_ore`/`text_ord_ope`
   carry `hm` + `ob`/`op`); `ore`-only text errors.
 - `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
