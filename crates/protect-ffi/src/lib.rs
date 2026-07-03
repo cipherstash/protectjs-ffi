@@ -21,10 +21,9 @@ use cipherstash_client::{
     AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
-// The wasm build imports these through `crate::eql_v3` in wasm.rs; only the
-// Neon exports below use them from this module.
-#[cfg(not(target_arch = "wasm32"))]
-use eql_v3::{
+// Shared by the Neon exports below and the wasm module (which imports these
+// via `crate::`), so both targets resolve them through this one re-export.
+pub(crate) use eql_v3::{
     encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
     validate_eql_version, EncryptedOutput, QueryOutput,
 };
