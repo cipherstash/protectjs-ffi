@@ -249,7 +249,8 @@ export async function decryptBulkFallible(
  *
  * Under `eqlVersion: 3` only JSON containment queries are supported and
  * return the `eql_v3.jsonb_query` needle ({@link EncryptedV3Query}). Scalar
- * index queries (`unique` / `ore` / `match`) and `ste_vec_selector` queries
+ * index queries (`unique` / `ore` / `ope` / `match`) and `ste_vec_selector`
+ * queries
  * throw `EQL_V3_QUERY_UNSUPPORTED` — no EQL v3 scalar/selector query wire
  * shape exists yet, so those queries require an `eqlVersion: 2` client.
  */
@@ -588,7 +589,7 @@ export type DecryptBulkOptions = {
 }
 
 // Query encryption types
-export type IndexTypeName = 'ste_vec' | 'match' | 'ore' | 'unique'
+export type IndexTypeName = 'ste_vec' | 'match' | 'ore' | 'ope' | 'unique'
 
 export type QueryOpName = 'default' | 'ste_vec_selector' | 'ste_vec_term'
 
