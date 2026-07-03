@@ -15,16 +15,22 @@ describe('normalizeEncryptConfig', () => {
     expect(normalizeEncryptConfig(config).tables.t.c.cast_as).toBe(expected)
   })
 
-  it.each(['text', 'json', 'boolean', 'date', 'timestamp'] as const)(
-    'leaves canonical cast_as %s unchanged',
-    (value) => {
-      const input: EncryptConfig = {
-        v: 1,
-        tables: { t: { c: { cast_as: value } } },
-      }
-      expect(normalizeEncryptConfig(input).tables.t.c.cast_as).toBe(value)
-    },
-  )
+  it.each([
+    'text',
+    'json',
+    'boolean',
+    'date',
+    'timestamp',
+    'decimal',
+    'int',
+    'small_int',
+  ] as const)('leaves canonical cast_as %s unchanged', (value) => {
+    const input: EncryptConfig = {
+      v: 1,
+      tables: { t: { c: { cast_as: value } } },
+    }
+    expect(normalizeEncryptConfig(input).tables.t.c.cast_as).toBe(value)
+  })
 
   it('leaves omitted cast_as omitted', () => {
     const input: EncryptConfig = { v: 1, tables: { t: { c: {} } } }

@@ -44,6 +44,66 @@ $ node
 > console.log({ciphertext, plaintext});
 ```
 
+## EQL version selection
+
+`newClient` accepts an `eqlVersion` option selecting the wire format that
+`encrypt` / `encryptBulk` / `encryptQuery` emit:
+
+```js
+// EQL v2 (default) — the `eql_v2_encrypted` payload format
+const v2 = await addon.newClient({ encryptConfig })
+
+// EQL v3 — payloads for the per-capability `eql_v3` domains
+const v3 = await addon.newClient({ encryptConfig, eqlVersion: 3 })
+```
+
+With `eqlVersion: 3`, each column's payload targets the `eql_v3` domain
+derived from its `cast_as` and indexes:
+
+| `cast_as` | family | indexes | domain |
+|-----------|--------|---------|--------|
+| `text` | `text` | `unique` + `ore` + `match` | `text_search` |
+| `text` | `text` | `unique` + `ore` | `text_ord_ore` |
+| `text` | `text` | `match` | `text_match` |
+| `text` | `text` | `unique` | `text_eq` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `ore` (with or without `unique`) | `<family>_ord_ore` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `unique` | `<family>_eq` |
+| `number` / `decimal` / `date` / `timestamp` | `double` / `numeric` / `date` / `timestamp` | as above | as above |
+| any scalar | — | none | storage-only domain (`text`, `integer`, …) |
+| `boolean` | `boolean` | none only | `boolean` (storage-only — any index errors) |
+| `json` | `json` | `ste_vec` (required) | `json` |
+
+Notes:
+
+- The richest matching domain wins, and it must cover every configured
+  capability — a combination that would silently drop a term errors instead
+  (e.g. `unique` + `match`, `unique` + `ope` + `match`, or `ore` + `match`
+  on text: no single domain carries those term sets, so add the missing
+  index to reach `text_search`, split the capabilities across columns, or
+  use `eqlVersion: 2`).
+- Exception: dropping a *term* is fine when the *capability* survives.
+  Non-text ordering domains carry only `ob`, so `unique` + `ore` on a
+  numeric column drops `hm` — equality still works via the ORE operators.
+- Ordered text requires a `unique` index (`text_ord_ore`/`text_ord_ope`
+  carry `hm` + `ob`/`op`); `ore`-only text errors.
+- `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
+  v3 data can coexist during a migration.
+- v3 query encryption currently supports JSON containment only; scalar and
+  selector queries throw `EQL_V3_QUERY_UNSUPPORTED` and need an
+  `eqlVersion: 2` client.
+- `ope`-indexed columns map to `<family>_ord_ope` but cannot be produced
+  end-to-end yet: the client does not emit the `op` term (CIP-3280).
+
+> [!NOTE]
+> **Breaking TypeScript change:** `encrypt`/`encryptBulk` now return
+> `EncryptedPayload` (`Encrypted | EncryptedV3`) instead of `Encrypted`.
+> Runtime output is unchanged for v2 clients, but code that accessed `.k`
+> or assigned the result to `Encrypted` must narrow first. v3 scalars carry
+> no `k`, so guard its presence before reading it:
+> `'k' in payload && payload.k === 'ct'` (a v2 scalar), or check
+> `payload.v === 3` to detect the v3 members. (A bare `payload.k === 'ct'`
+> does not compile against the union.)
+
 ## Errors
 
 Async API calls throw `ProtectError` with a stable `code` for programmatic handling.

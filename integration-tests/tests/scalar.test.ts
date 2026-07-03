@@ -77,20 +77,21 @@ describe.each(cases)('encrypt and decrypt', ({ identifier, plaintext }) => {
 })
 
 describe('coercion', () => {
-  test('encrypting a float as an integer will truncate the value', async () => {
+  test('encrypting a float as an integer errors instead of truncating', async () => {
+    // Truncation would silently corrupt the stored value AND the index
+    // terms derived from it, so any value with a fractional component is
+    // rejected rather than coerced (likewise NaN/Infinity/out-of-range).
     const client = await newClient({ encryptConfig })
 
     const floatValue = 123.987
-    const expectedTruncatedValue = 123
 
-    const ciphertext = await encrypt(client, {
-      plaintext: floatValue,
-      table: 'users',
-      column: 'score',
-    })
-
-    const decrypted = await decrypt(client, { ciphertext })
-    expect(decrypted).toBe(expectedTruncatedValue)
+    await expect(
+      encrypt(client, {
+        plaintext: floatValue,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrowError(/fractional component/)
   })
 
   test('encrypting an integer as a float will preserve the value', async () => {
@@ -170,7 +171,7 @@ describe('EQL v2.3 wire format', () => {
       column: 'email',
     })
 
-    expect(ciphertext.k).toBe('ct')
+    expect((ciphertext as { k?: string }).k).toBe('ct')
     expect(ciphertext).toHaveProperty('c')
     expect(ciphertext).toHaveProperty('i')
     expect(ciphertext).toHaveProperty('v')

@@ -35,8 +35,7 @@ use std::sync::Arc;
 
 use cipherstash_client::encryption::{Plaintext, ScopedCipher, TypeParseError};
 use cipherstash_client::eql::{
-    encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlOperation, EqlOutput,
-    Identifier as EqlIdentifier, PreparedPlaintext,
+    encrypt_eql, EqlEncryptOpts, EqlOperation, Identifier as EqlIdentifier, PreparedPlaintext,
 };
 use cipherstash_client::schema::{CanonicalEncryptionConfig, ColumnConfig, Identifier};
 use cipherstash_client::zerokms::{
@@ -52,10 +51,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::js_plaintext::JsPlaintext;
 use crate::{
-    encrypted_record_from_mp_base85, find_index_for_type, into_store_ciphertext, parse_query_op,
-    to_query_plaintext, DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions,
-    EncryptOptions, EncryptQueryBulkOptions, EncryptQueryOptions, Encrypted, Error,
-    InferredQueryMode,
+    encrypted_record_from_value, find_index_for_type, into_store_ciphertext, is_encrypted_value,
+    parse_query_op, query_output, storage_output, to_query_plaintext, validate_eql_version,
+    DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error,
+    InferredQueryMode, QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +147,9 @@ pub struct WasmClient {
     cipher: Arc<ScopedCipher<JsAuthStrategy>>,
     zerokms: Arc<ZeroKMSWithClientKey<JsAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// EQL wire version this client emits. Decryption accepts both formats
+    /// regardless of this setting.
+    eql_version: EqlVersion,
 }
 
 /// Hex-encoded secret material that zeroizes its buffer on drop.
@@ -176,6 +179,8 @@ struct NewClientOpts {
     /// Optional keyset identifier (id or name). `None` uses the default
     /// keyset granted to the client.
     keyset: Option<IdentifiedBy>,
+    /// EQL wire version to emit: 2 (default) or 3.
+    eql_version: Option<u8>,
 }
 
 /// Construct a [`WasmClient`].
@@ -201,6 +206,10 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
 
     let mut opts: NewClientOpts =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+
+    // Validate before any network I/O: a bad eqlVersion should fail fast,
+    // not after ZeroKMS setup.
+    let eql_version = validate_eql_version(opts.eql_version).map_err(error_to_js)?;
 
     // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
     // `from_hex` takes a `String` for the UUID, which would force an
@@ -232,6 +241,7 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
                 .into_config_map()
                 .map_err(|e| js_error(&e.to_string()))?,
         ),
+        eql_version,
     })
 }
 
@@ -310,14 +320,14 @@ pub fn is_encrypted(raw: JsValue) -> bool {
     let Ok(v) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw) else {
         return false;
     };
-    serde_json::from_value::<EqlCiphertext>(v).is_ok()
+    is_encrypted_value(&v)
 }
 
 // ---------------------------------------------------------------------------
 // Logic helpers — mirror the Neon `#[neon::export]` fn bodies in lib.rs.
 // ---------------------------------------------------------------------------
 
-async fn do_encrypt(client: &WasmClient, opts: EncryptOptions) -> Result<Encrypted, Error> {
+async fn do_encrypt(client: &WasmClient, opts: EncryptOptions) -> Result<EncryptedOutput, Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
     let column_config = client
         .encrypt_config
@@ -341,13 +351,17 @@ async fn do_encrypt(client: &WasmClient, opts: EncryptOptions) -> Result<Encrypt
         decryption_policy: None,
     };
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    into_store_ciphertext(encrypted.remove(0))
+    storage_output(
+        into_store_ciphertext(encrypted.remove(0))?,
+        client.eql_version,
+        column_config,
+    )
 }
 
 async fn do_encrypt_bulk(
     client: &WasmClient,
     opts: EncryptBulkOptions,
-) -> Result<Vec<Encrypted>, Error> {
+) -> Result<Vec<EncryptedOutput>, Error> {
     // Group payloads by lock_context identity_claim — same shape as native.
     // We move the LockContext (no Clone) and extract its identity_claim
     // (Vec<String>, which IS Clone) as the group key.
@@ -362,7 +376,7 @@ async fn do_encrypt_bulk(
     }
 
     let total: usize = groups.values().map(|v| v.len()).sum();
-    let mut results: Vec<Option<Encrypted>> = (0..total).map(|_| None).collect();
+    let mut results: Vec<Option<EncryptedOutput>> = (0..total).map(|_| None).collect();
 
     for (identity_claim, payloads) in groups {
         let lock_context: Vec<zerokms::Context> = identity_claim
@@ -371,7 +385,7 @@ async fn do_encrypt_bulk(
             .collect();
 
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut original_indices = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
 
         for (original_idx, payload) in payloads {
             let ident = Identifier::new(payload.table.clone(), payload.column.clone());
@@ -390,7 +404,7 @@ async fn do_encrypt_bulk(
                 EqlOperation::Store,
             );
             prepared_plaintexts.push(prepared);
-            original_indices.push(original_idx);
+            payload_data.push((original_idx, ident));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -402,8 +416,16 @@ async fn do_encrypt_bulk(
         };
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
-        for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(into_store_ciphertext(eql_output)?);
+        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            results[original_idx] = Some(storage_output(
+                into_store_ciphertext(eql_output)?,
+                client.eql_version,
+                column_config,
+            )?);
         }
     }
 
@@ -419,7 +441,7 @@ async fn do_encrypt_bulk(
 async fn do_encrypt_query(
     client: &WasmClient,
     opts: EncryptQueryOptions,
-) -> Result<EqlOutput, Error> {
+) -> Result<QueryOutput, Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
     let column_config = client
         .encrypt_config
@@ -452,13 +474,13 @@ async fn do_encrypt_query(
         decryption_policy: None,
     };
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    Ok(encrypted.remove(0))
+    query_output(encrypted.remove(0), client.eql_version)
 }
 
 async fn do_encrypt_query_bulk(
     client: &WasmClient,
     opts: EncryptQueryBulkOptions,
-) -> Result<Vec<EqlOutput>, Error> {
+) -> Result<Vec<QueryOutput>, Error> {
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, crate::QueryPayload)>> = BTreeMap::new();
     for (idx, payload) in opts.queries.into_iter().enumerate() {
         let key = payload
@@ -470,7 +492,7 @@ async fn do_encrypt_query_bulk(
     }
 
     let total: usize = groups.values().map(|v| v.len()).sum();
-    let mut results: Vec<Option<EqlOutput>> = (0..total).map(|_| None).collect();
+    let mut results: Vec<Option<QueryOutput>> = (0..total).map(|_| None).collect();
 
     for (identity_claim, payloads) in groups {
         let lock_context: Vec<zerokms::Context> = identity_claim
@@ -519,8 +541,8 @@ async fn do_encrypt_query_bulk(
         };
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
-        for (ciphertext, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(ciphertext);
+        for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
+            results[original_idx] = Some(query_output(eql_output, client.eql_version)?);
         }
     }
 
@@ -535,7 +557,7 @@ async fn do_encrypt_query_bulk(
 
 async fn do_decrypt(client: &WasmClient, opts: DecryptOptions) -> Result<JsPlaintext, Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    let encrypted_record = encrypted_record_from_mp_base85(opts.ciphertext, lock_context)?;
+    let encrypted_record = encrypted_record_from_value(opts.ciphertext, lock_context)?;
 
     let bytes = client
         .zerokms
@@ -556,7 +578,7 @@ async fn do_decrypt_bulk(
         .map(|payload| {
             let lock_context: Vec<zerokms::Context> =
                 payload.lock_context.map(Into::into).unwrap_or_default();
-            encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
+            encrypted_record_from_value(payload.ciphertext, lock_context)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -585,7 +607,7 @@ async fn do_decrypt_bulk_fallible(
         .map(|payload| {
             let lock_context: Vec<zerokms::Context> =
                 payload.lock_context.map(Into::into).unwrap_or_default();
-            encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
+            encrypted_record_from_value(payload.ciphertext, lock_context)
         })
         .collect();
 
