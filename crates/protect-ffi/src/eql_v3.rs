@@ -16,9 +16,9 @@
 use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload};
 use cipherstash_client::schema::{column::ColumnType, column::IndexType, ColumnConfig};
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
-use eql_bindings::from_v2::{from_v2_query, from_v2_typed, is_v3_payload, TargetDomain};
+use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
 use eql_bindings::v3::jsonb::SteVecDocument;
-use eql_bindings::v3::DomainPayload;
+use eql_bindings::v3::{DomainPayload, QueryPayload};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -363,21 +363,25 @@ pub(crate) fn storage_output(
 
 /// A query payload in whichever wire format the client is configured for.
 /// Same untagged pass-through (and boxing) design as [`EncryptedOutput`].
-/// `V3` stays a shape-erased `Value`: [`from_v2_query`] has no typed
-/// counterpart in eql-bindings 0.3.0 (query needles are not
-/// [`DomainPayload`] members), so there is nothing typed to carry yet.
+/// `V3` carries the typed [`QueryPayload`] (eql-bindings 0.4.1) — today only
+/// the `SteVec` containment needle exists; single-term scalar query variants
+/// (Ore / Ope / Bloom / Hm values) join the enum upstream when the v3
+/// scalar-query wire shape ships with the mapper redesign. `QueryPayload` is
+/// `#[serde(untagged)]` Serialize-only, so the wire output is exactly the
+/// needle's — value-identical to the former `Value` form (keys in schema
+/// wire order rather than alphabetical; meaningless for jsonb).
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum QueryOutput {
     V2(Box<EqlOutput>),
-    V3(serde_json::Value),
+    V3(QueryPayload),
 }
 
 /// Wrap an encrypt-query result in the client's configured wire format.
 ///
 /// Under v3, only the JSONB containment path converts: Store-mode containment
 /// output (the `sv` document) becomes the `eql_v3.jsonb_query` needle via
-/// [`from_v2_query`]. No v3 wire shape exists for scalar query terms or
+/// [`from_v2_query_typed`]. No v3 wire shape exists for scalar query terms or
 /// selector payloads yet, so those fail closed with a typed error.
 pub(crate) fn query_output(
     output: EqlOutput,
@@ -392,7 +396,7 @@ pub(crate) fn query_output(
             // ciphertexts, exactly like the SQL cast eql_v3.to_ste_vec_query.
             EqlOutput::Store(ciphertext @ EqlCiphertext::SteVec(_)) => {
                 let v2_value = serde_json::to_value(&ciphertext)?;
-                Ok(QueryOutput::V3(from_v2_query(
+                Ok(QueryOutput::V3(from_v2_query_typed(
                     &v2_value,
                     TargetDomain::Json,
                 )?))
@@ -1193,6 +1197,27 @@ mod tests {
             assert_eq!(sv[1]["s"], "leaf");
             assert_eq!(sv[1]["oc"], "deadbeef");
             assert!(sv[1].get("a").is_none(), "a is stripped from entries");
+        }
+
+        #[test]
+        fn v3_typed_query_output_serializes_identically_to_the_from_v2_query_value() {
+            // The QueryOutput::V3 wire form must be byte-identical to what
+            // the shape-erased from_v2_query Value produced — protect-ffi
+            // serializes it straight across the FFI boundary.
+            use eql_bindings::from_v2::from_v2_query;
+
+            let ciphertext = ste_vec_payload();
+            let v2_value = serde_json::to_value(&ciphertext).unwrap();
+            let erased = from_v2_query(&v2_value, TargetDomain::Json).unwrap();
+
+            let output = query_output(EqlOutput::Store(ciphertext), EqlVersion::V3).unwrap();
+            let typed = serde_json::to_value(&output).unwrap();
+
+            // Value equality: identical keys and values. Key ORDER differs
+            // (the typed struct serializes in schema wire order, the erased
+            // Value alphabetically) — semantically meaningless for jsonb,
+            // same caveat as the storage-path pin above.
+            assert_eq!(typed, erased);
         }
 
         #[test]
