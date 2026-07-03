@@ -66,11 +66,11 @@ derived from its `cast_as` and indexes:
 | `text` | `text` | `unique` + `ore` | `text_ord_ore` |
 | `text` | `text` | `match` | `text_match` |
 | `text` | `text` | `unique` | `text_eq` |
-| `int` / `small_int` / `bigint` | `int4` / `int2` / `int8` | `ore` (with or without `unique`) | `<family>_ord_ore` |
-| `int` / `small_int` / `bigint` | `int4` / `int2` / `int8` | `unique` | `<family>_eq` |
-| `number` / `decimal` / `date` / `timestamp` | `float8` / `numeric` / `date` / `timestamp` | as above | as above |
-| any scalar | — | none | storage-only domain (`text`, `int4`, …) |
-| `boolean` | `bool` | none only | `bool` (storage-only — any index errors) |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `ore` (with or without `unique`) | `<family>_ord_ore` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `unique` | `<family>_eq` |
+| `number` / `decimal` / `date` / `timestamp` | `double` / `numeric` / `date` / `timestamp` | as above | as above |
+| any scalar | — | none | storage-only domain (`text`, `integer`, …) |
+| `boolean` | `boolean` | none only | `boolean` (storage-only — any index errors) |
 | `json` | `json` | `ste_vec` (required) | `json` |
 
 Notes:

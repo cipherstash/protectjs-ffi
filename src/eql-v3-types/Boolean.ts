@@ -6,8 +6,8 @@ import type { Identifier } from "./Identifier";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.bool` — storage-only domain.
+ * `eql_v3.boolean` — storage-only domain.
  *
  * Operators: none. Required keys: `v` `i` `c`.
  */
-export type Bool = { v: SchemaVersion, i: Identifier, c: Ciphertext, };
+export type Boolean = { v: SchemaVersion, i: Identifier, c: Ciphertext, };

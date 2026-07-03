@@ -1,44 +1,44 @@
 // Hand-written barrel over the vendored (generated) EQL v3 payload types in
 // src/eql-v3-types/. Assembles the public unions and renames the few types
 // whose names would clash with the v2 exports in index.cts (`Identifier`,
-// `SteVecEntry`) or shadow a global (`Date`).
+// `SteVecEntry`) or shadow a global (`Boolean`, `Date`).
 
-import type { Bool } from './eql-v3-types/Bool.js'
+import type { Bigint } from './eql-v3-types/Bigint.js'
+import type { BigintEq } from './eql-v3-types/BigintEq.js'
+import type { BigintOrd } from './eql-v3-types/BigintOrd.js'
+import type { BigintOrdOpe } from './eql-v3-types/BigintOrdOpe.js'
+import type { BigintOrdOre } from './eql-v3-types/BigintOrdOre.js'
+import type { Boolean as EqlV3Boolean } from './eql-v3-types/Boolean.js'
 import type { Date as EqlV3Date } from './eql-v3-types/Date.js'
 import type { DateEq } from './eql-v3-types/DateEq.js'
 import type { DateOrd } from './eql-v3-types/DateOrd.js'
 import type { DateOrdOpe } from './eql-v3-types/DateOrdOpe.js'
 import type { DateOrdOre } from './eql-v3-types/DateOrdOre.js'
-import type { Float4 } from './eql-v3-types/Float4.js'
-import type { Float4Eq } from './eql-v3-types/Float4Eq.js'
-import type { Float4Ord } from './eql-v3-types/Float4Ord.js'
-import type { Float4OrdOpe } from './eql-v3-types/Float4OrdOpe.js'
-import type { Float4OrdOre } from './eql-v3-types/Float4OrdOre.js'
-import type { Float8 } from './eql-v3-types/Float8.js'
-import type { Float8Eq } from './eql-v3-types/Float8Eq.js'
-import type { Float8Ord } from './eql-v3-types/Float8Ord.js'
-import type { Float8OrdOpe } from './eql-v3-types/Float8OrdOpe.js'
-import type { Float8OrdOre } from './eql-v3-types/Float8OrdOre.js'
-import type { Int2 } from './eql-v3-types/Int2.js'
-import type { Int2Eq } from './eql-v3-types/Int2Eq.js'
-import type { Int2Ord } from './eql-v3-types/Int2Ord.js'
-import type { Int2OrdOpe } from './eql-v3-types/Int2OrdOpe.js'
-import type { Int2OrdOre } from './eql-v3-types/Int2OrdOre.js'
-import type { Int4 } from './eql-v3-types/Int4.js'
-import type { Int4Eq } from './eql-v3-types/Int4Eq.js'
-import type { Int4Ord } from './eql-v3-types/Int4Ord.js'
-import type { Int4OrdOpe } from './eql-v3-types/Int4OrdOpe.js'
-import type { Int4OrdOre } from './eql-v3-types/Int4OrdOre.js'
-import type { Int8 } from './eql-v3-types/Int8.js'
-import type { Int8Eq } from './eql-v3-types/Int8Eq.js'
-import type { Int8Ord } from './eql-v3-types/Int8Ord.js'
-import type { Int8OrdOpe } from './eql-v3-types/Int8OrdOpe.js'
-import type { Int8OrdOre } from './eql-v3-types/Int8OrdOre.js'
+import type { Double } from './eql-v3-types/Double.js'
+import type { DoubleEq } from './eql-v3-types/DoubleEq.js'
+import type { DoubleOrd } from './eql-v3-types/DoubleOrd.js'
+import type { DoubleOrdOpe } from './eql-v3-types/DoubleOrdOpe.js'
+import type { DoubleOrdOre } from './eql-v3-types/DoubleOrdOre.js'
+import type { Integer } from './eql-v3-types/Integer.js'
+import type { IntegerEq } from './eql-v3-types/IntegerEq.js'
+import type { IntegerOrd } from './eql-v3-types/IntegerOrd.js'
+import type { IntegerOrdOpe } from './eql-v3-types/IntegerOrdOpe.js'
+import type { IntegerOrdOre } from './eql-v3-types/IntegerOrdOre.js'
 import type { Numeric } from './eql-v3-types/Numeric.js'
 import type { NumericEq } from './eql-v3-types/NumericEq.js'
 import type { NumericOrd } from './eql-v3-types/NumericOrd.js'
 import type { NumericOrdOpe } from './eql-v3-types/NumericOrdOpe.js'
 import type { NumericOrdOre } from './eql-v3-types/NumericOrdOre.js'
+import type { Real } from './eql-v3-types/Real.js'
+import type { RealEq } from './eql-v3-types/RealEq.js'
+import type { RealOrd } from './eql-v3-types/RealOrd.js'
+import type { RealOrdOpe } from './eql-v3-types/RealOrdOpe.js'
+import type { RealOrdOre } from './eql-v3-types/RealOrdOre.js'
+import type { Smallint } from './eql-v3-types/Smallint.js'
+import type { SmallintEq } from './eql-v3-types/SmallintEq.js'
+import type { SmallintOrd } from './eql-v3-types/SmallintOrd.js'
+import type { SmallintOrdOpe } from './eql-v3-types/SmallintOrdOpe.js'
+import type { SmallintOrdOre } from './eql-v3-types/SmallintOrdOre.js'
 import type { SteVecDocument } from './eql-v3-types/SteVecDocument.js'
 import type { SteVecQuery } from './eql-v3-types/SteVecQuery.js'
 import type { Text } from './eql-v3-types/Text.js'
@@ -75,42 +75,42 @@ export type { SteVecTerm } from './eql-v3-types/SteVecTerm.js'
 
 // Scalar domain payloads.
 export type {
-  Bool,
+  Bigint,
+  BigintEq,
+  BigintOrd,
+  BigintOrdOpe,
+  BigintOrdOre,
+  EqlV3Boolean,
   EqlV3Date,
   DateEq,
   DateOrd,
   DateOrdOpe,
   DateOrdOre,
-  Float4,
-  Float4Eq,
-  Float4Ord,
-  Float4OrdOpe,
-  Float4OrdOre,
-  Float8,
-  Float8Eq,
-  Float8Ord,
-  Float8OrdOpe,
-  Float8OrdOre,
-  Int2,
-  Int2Eq,
-  Int2Ord,
-  Int2OrdOpe,
-  Int2OrdOre,
-  Int4,
-  Int4Eq,
-  Int4Ord,
-  Int4OrdOpe,
-  Int4OrdOre,
-  Int8,
-  Int8Eq,
-  Int8Ord,
-  Int8OrdOpe,
-  Int8OrdOre,
+  Double,
+  DoubleEq,
+  DoubleOrd,
+  DoubleOrdOpe,
+  DoubleOrdOre,
+  Integer,
+  IntegerEq,
+  IntegerOrd,
+  IntegerOrdOpe,
+  IntegerOrdOre,
   Numeric,
   NumericEq,
   NumericOrd,
   NumericOrdOpe,
   NumericOrdOre,
+  Real,
+  RealEq,
+  RealOrd,
+  RealOrdOpe,
+  RealOrdOre,
+  Smallint,
+  SmallintEq,
+  SmallintOrd,
+  SmallintOrdOpe,
+  SmallintOrdOre,
   Text,
   TextEq,
   TextMatch,
@@ -130,42 +130,42 @@ export type {
  * struct per `eql_v3` scalar domain).
  */
 export type EncryptedV3Scalar =
-  | Bool
+  | Bigint
+  | BigintEq
+  | BigintOrd
+  | BigintOrdOpe
+  | BigintOrdOre
+  | EqlV3Boolean
   | EqlV3Date
   | DateEq
   | DateOrd
   | DateOrdOpe
   | DateOrdOre
-  | Float4
-  | Float4Eq
-  | Float4Ord
-  | Float4OrdOpe
-  | Float4OrdOre
-  | Float8
-  | Float8Eq
-  | Float8Ord
-  | Float8OrdOpe
-  | Float8OrdOre
-  | Int2
-  | Int2Eq
-  | Int2Ord
-  | Int2OrdOpe
-  | Int2OrdOre
-  | Int4
-  | Int4Eq
-  | Int4Ord
-  | Int4OrdOpe
-  | Int4OrdOre
-  | Int8
-  | Int8Eq
-  | Int8Ord
-  | Int8OrdOpe
-  | Int8OrdOre
+  | Double
+  | DoubleEq
+  | DoubleOrd
+  | DoubleOrdOpe
+  | DoubleOrdOre
+  | Integer
+  | IntegerEq
+  | IntegerOrd
+  | IntegerOrdOpe
+  | IntegerOrdOre
   | Numeric
   | NumericEq
   | NumericOrd
   | NumericOrdOpe
   | NumericOrdOre
+  | Real
+  | RealEq
+  | RealOrd
+  | RealOrdOpe
+  | RealOrdOre
+  | Smallint
+  | SmallintEq
+  | SmallintOrd
+  | SmallintOrdOpe
+  | SmallintOrdOre
   | Text
   | TextEq
   | TextMatch

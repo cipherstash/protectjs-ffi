@@ -7,8 +7,8 @@ import type { OreBlock256 } from "./OreBlock256";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.int4_ord` — ordering domain.
+ * `eql_v3.double_ord_ore` — ordering domain.
  *
  * Operators: `=` `<>` `<` `<=` `>` `>=`. Required keys: `v` `i` `c` `ob`.
  */
-export type Int4Ord = { v: SchemaVersion, i: Identifier, c: Ciphertext, ob: OreBlock256, };
+export type DoubleOrdOre = { v: SchemaVersion, i: Identifier, c: Ciphertext, ob: OreBlock256, };

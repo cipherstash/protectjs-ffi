@@ -7,8 +7,8 @@ import type { OpeCllw } from "./OpeCllw";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.int2_ord_ope` — ordering domain.
+ * `eql_v3.smallint_ord_ope` — ordering domain.
  *
  * Operators: `=` `<>` `<` `<=` `>` `>=`. Required keys: `v` `i` `c` `op`.
  */
-export type Int2OrdOpe = { v: SchemaVersion, i: Identifier, c: Ciphertext, op: OpeCllw, };
+export type SmallintOrdOpe = { v: SchemaVersion, i: Identifier, c: Ciphertext, op: OpeCllw, };

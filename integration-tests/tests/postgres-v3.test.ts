@@ -8,7 +8,7 @@ import {
   newClient,
   type EncryptConfig,
   type EncryptedPayload,
-  type Int4OrdOre,
+  type IntegerOrdOre,
   type TextEq,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
@@ -23,6 +23,13 @@ import { v3WireKeys } from './common'
 // payload's exact key set is checked against the vendored domain type
 // before INSERT (below), and the live domain CHECK on the eql_v3.text_eq /
 // eql_v3.int4_ord_ore columns validates the required keys on INSERT.
+//
+// The committed snapshot predates the eql-bindings 0.3.0 rename to
+// SQL-standard family names (int4_ord_ore is now integer_ord_ore upstream),
+// so the DDL below keeps the snapshot's spelling. The wire shape is
+// identical either way — the vendored IntegerOrdOre type checks the same
+// key set. Rename the DDL when `mise run eql:v3:build` refreshes the
+// snapshot past encrypt-query-language PR #344.
 const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {
@@ -42,7 +49,7 @@ const encryptConfig: EncryptConfig = {
 // Exact wire key sets, compile-time-checked against the vendored eql_v3
 // domain types (see v3WireKeys).
 const textEqKeys = v3WireKeys<TextEq>()('v', 'i', 'c', 'hm')
-const int4OrdOreKeys = v3WireKeys<Int4OrdOre>()('v', 'i', 'c', 'ob')
+const integerOrdOreKeys = v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob')
 
 describe('postgres eql_v3', async () => {
   const protectClient = await newClient({ encryptConfig, eqlVersion: 3 })
@@ -90,7 +97,7 @@ describe('postgres eql_v3', async () => {
     // prove nothing extra was provisioned — a CHECK does not reject a
     // payload that selected a richer domain than the config asked for.
     expect(Object.keys(email).sort()).toEqual(textEqKeys)
-    expect(Object.keys(score).sort()).toEqual(int4OrdOreKeys)
+    expect(Object.keys(score).sort()).toEqual(integerOrdOreKeys)
 
     await pg.query(
       'INSERT INTO encrypted_v3 (email, score) VALUES ($1::jsonb, $2::jsonb)',
@@ -140,7 +147,7 @@ describe('postgres eql_v3', async () => {
     })
 
     for (const ciphertext of ciphertexts) {
-      expect(Object.keys(ciphertext).sort()).toEqual(int4OrdOreKeys)
+      expect(Object.keys(ciphertext).sort()).toEqual(integerOrdOreKeys)
     }
 
     await pg.query(

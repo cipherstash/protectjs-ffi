@@ -11,15 +11,15 @@ import {
   isEncrypted,
   newClient,
   ProtectError,
-  type Bool,
+  type BigintEq,
   type DateOrdOre,
+  type DoubleOrdOre,
   type EncryptConfig,
   type EncryptedV3,
-  type Float8OrdOre,
-  type Int2OrdOre,
-  type Int4OrdOre,
-  type Int8Eq,
+  type EqlV3Boolean,
+  type IntegerOrdOre,
   type NumericOrdOre,
+  type SmallintOrdOre,
   type SteVecDocument,
   type SteVecQuery,
   type TextEq,
@@ -29,7 +29,7 @@ import {
 import { v3WireKeys } from './common'
 
 // Every EQL v3 scalar family reachable from the JS cast_as vocabulary, plus
-// bool (storage-only) and json (SteVec). The eql_v3 domain each column must
+// boolean (storage-only) and json (SteVec). The eql_v3 domain each column must
 // map onto is not documented here — it is asserted: the test cases below
 // check every payload's exact top-level key set against the vendored
 // eql_v3 domain type, so drift in the config -> domain selection fails the
@@ -140,26 +140,26 @@ describe('eql v3 scalar round-trips', async () => {
     {
       column: 'age',
       plaintext: 42,
-      domain: 'int2_ord_ore',
-      keys: v3WireKeys<Int2OrdOre>()('v', 'i', 'c', 'ob'),
+      domain: 'smallint_ord_ore',
+      keys: v3WireKeys<SmallintOrdOre>()('v', 'i', 'c', 'ob'),
     },
     {
       column: 'count',
       plaintext: 123456,
-      domain: 'int4_ord_ore',
-      keys: v3WireKeys<Int4OrdOre>()('v', 'i', 'c', 'ob'),
+      domain: 'integer_ord_ore',
+      keys: v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob'),
     },
     {
       column: 'score',
       plaintext: 9007199254740,
-      domain: 'int8_eq',
-      keys: v3WireKeys<Int8Eq>()('v', 'i', 'c', 'hm'),
+      domain: 'bigint_eq',
+      keys: v3WireKeys<BigintEq>()('v', 'i', 'c', 'hm'),
     },
     {
       column: 'weight',
       plaintext: 72.5,
-      domain: 'float8_ord_ore',
-      keys: v3WireKeys<Float8OrdOre>()('v', 'i', 'c', 'ob'),
+      domain: 'double_ord_ore',
+      keys: v3WireKeys<DoubleOrdOre>()('v', 'i', 'c', 'ob'),
     },
     {
       column: 'price',
@@ -167,12 +167,12 @@ describe('eql v3 scalar round-trips', async () => {
       domain: 'numeric_ord_ore',
       keys: v3WireKeys<NumericOrdOre>()('v', 'i', 'c', 'ob'),
     },
-    // bool is storage-only: envelope keys and nothing else
+    // boolean is storage-only: envelope keys and nothing else
     {
       column: 'active',
       plaintext: true,
-      domain: 'bool',
-      keys: v3WireKeys<Bool>()('v', 'i', 'c'),
+      domain: 'boolean',
+      keys: v3WireKeys<EqlV3Boolean>()('v', 'i', 'c'),
     },
   ]
 

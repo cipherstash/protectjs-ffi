@@ -423,7 +423,7 @@ export type NewClientOptions = {
    *
    * With `3`, {@link encrypt} / {@link encryptBulk} return {@link
    * EncryptedV3} payloads for the `eql_v3` per-capability domains
-   * (`eql_v3.text_eq`, `eql_v3.int4_ord_ore`, `eql_v3.json`, …), derived
+   * (`eql_v3.text_eq`, `eql_v3.integer_ord_ore`, `eql_v3.json`, …), derived
    * from each column's `cast_as` + indexes. {@link decrypt} accepts BOTH
    * formats regardless of this setting.
    *

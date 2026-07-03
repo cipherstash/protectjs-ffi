@@ -7,8 +7,8 @@ import type { Identifier } from "./Identifier";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.int4_eq` — equality domain.
+ * `eql_v3.smallint_eq` — equality domain.
  *
  * Operators: `=` `<>`. Required keys: `v` `i` `c` `hm`.
  */
-export type Int4Eq = { v: SchemaVersion, i: Identifier, c: Ciphertext, hm: Hmac256, };
+export type SmallintEq = { v: SchemaVersion, i: Identifier, c: Ciphertext, hm: Hmac256, };

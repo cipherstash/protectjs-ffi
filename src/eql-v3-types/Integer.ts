@@ -6,8 +6,8 @@ import type { Identifier } from "./Identifier";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.int2` — storage-only domain.
+ * `eql_v3.integer` — storage-only domain.
  *
  * Operators: none. Required keys: `v` `i` `c`.
  */
-export type Int2 = { v: SchemaVersion, i: Identifier, c: Ciphertext, };
+export type Integer = { v: SchemaVersion, i: Identifier, c: Ciphertext, };
