@@ -5,18 +5,21 @@ run-name: |
    || format('Test: {0}', github.event.head_commit.message) }}
 
 on:
-  # Event: A maintainer has pushed commits or merged a PR to main.
+  # Event: A maintainer has pushed commits or merged a PR to main or the
+  # eql_v3 staging branch.
   push:
-    # Limiting push events to 'main' prevents duplicate runs of this workflow
-    # when maintainers push to internal PRs.
+    # Limiting push events to these branches prevents duplicate runs of this
+    # workflow when maintainers push to internal PRs.
     branches:
       - main
+      - eql_v3
 
   # Event: A contributor has created or updated a PR.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
     branches:
       - main
+      - eql_v3
 
   # Event: manual invocation of the workflow
   workflow_dispatch:
