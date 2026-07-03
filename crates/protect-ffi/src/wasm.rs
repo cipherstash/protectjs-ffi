@@ -49,15 +49,13 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::eql_v3::{
-    encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
-    validate_eql_version, EncryptedOutput, QueryOutput,
-};
 use crate::js_plaintext::JsPlaintext;
 use crate::{
-    find_index_for_type, into_store_ciphertext, parse_query_op, to_query_plaintext,
+    encrypted_record_from_value, find_index_for_type, into_store_ciphertext, is_encrypted_value,
+    parse_query_op, query_output, storage_output, to_query_plaintext, validate_eql_version,
     DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
-    EncryptQueryBulkOptions, EncryptQueryOptions, Error, InferredQueryMode,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, Error, InferredQueryMode,
+    QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
