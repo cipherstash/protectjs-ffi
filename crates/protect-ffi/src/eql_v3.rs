@@ -526,6 +526,7 @@ mod tests {
                 bloom_filter: bf,
                 ore_block_u64_8_256: ob
                     .map(|blocks| blocks.into_iter().map(String::from).collect()),
+                ope_cllw: None,
             })
         }
 
