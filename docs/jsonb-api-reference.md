@@ -535,7 +535,7 @@ type EncryptQueryOptions = {
   plaintext: JsPlaintext
   table: string
   column: string
-  indexType: 'ste_vec' | 'match' | 'ore' | 'unique'
+  indexType: 'ste_vec' | 'match' | 'ore' | 'ope' | 'unique'
   queryOp?: 'default' | 'ste_vec_selector' | 'ste_vec_term'
   lockContext?: { identityClaim: string[] }
   serviceToken?: CtsToken
