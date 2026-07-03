@@ -102,14 +102,22 @@ fn no_v3_domain(column: &str, reason: impl Into<String>, hint: impl Into<String>
 ///
 /// Every v2 index term is optional on the wire, so eql-bindings requires the
 /// caller to name the target domain — this derives it from the column
-/// configuration, choosing the domain that preserves the MOST configured
-/// terms. Candidates are tried richest-first (`search` > `ord_ore` >
-/// `ord_ope` > `match` > `eq` > storage-only), so ties break toward the
-/// richer operator set:
+/// configuration. Candidates are tried richest-first (`search` > `ord_ore` >
+/// `ord_ope` > `match` > `eq` > storage-only), and the winner must then cover
+/// every configured CAPABILITY or the column errors ([`Error::NoV3Domain`])
+/// rather than silently stripping a term from stored rows:
 ///
-/// - non-text `_ord_ore`/`_ord_ope` require only `ob`/`op` — a `unique` +
-///   `ore` column drops `hm`, but equality stays available through the ORE
-///   operators (`=`, `<>`);
+/// - equality (`unique`/`hm`) is covered by a domain carrying `hm`, `ob`, or
+///   `op` — the ORE/OPE operators include `=`/`<>`, which is why non-text
+///   `unique` + `ore` may select `<family>_ord_ore` and drop `hm` without
+///   losing anything;
+/// - ordering (`ore`/`ob`, `ope`/`op`) is covered by `ob` or `op`, so
+///   `unique` + `ore` + `ope` selects `_ord_ore` (ordering survives via
+///   `ob`);
+/// - match (`bf`) is covered only by a domain carrying `bf`, so text
+///   combinations no single domain spans (`unique` + `match`,
+///   `unique` + `ope` + `match`, `ore` + `match`, …) error instead of
+///   dropping a term;
 /// - text ordering domains require `hm` alongside `ob`/`op`, so ordered text
 ///   without a `unique` index cannot be represented and errors;
 /// - a column whose configured terms would ALL be dropped (bool with any
@@ -181,24 +189,54 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
              eqlVersion 2.",
         ));
     }
-    if is_text && terms.hm && terms.ob && terms.bf {
-        return Ok(format!("{family}_search"));
-    }
-    if terms.ob && (!is_text || terms.hm) {
-        return Ok(format!("{family}_ord_ore"));
-    }
-    if terms.op && (!is_text || terms.hm) {
-        return Ok(format!("{family}_ord_ope"));
-    }
-    if is_text && terms.bf {
-        return Ok(format!("{family}_match"));
-    }
-    if terms.hm {
-        return Ok(format!("{family}_eq"));
-    }
-    if terms.any() {
+    // The richest candidate domain and the terms it actually carries.
+    let (suffix, carried) = if is_text && terms.hm && terms.ob && terms.bf {
+        (
+            "_search",
+            ConfiguredTerms {
+                hm: true,
+                ob: true,
+                bf: true,
+                ..Default::default()
+            },
+        )
+    } else if terms.ob && (!is_text || terms.hm) {
+        (
+            "_ord_ore",
+            ConfiguredTerms {
+                hm: is_text,
+                ob: true,
+                ..Default::default()
+            },
+        )
+    } else if terms.op && (!is_text || terms.hm) {
+        (
+            "_ord_ope",
+            ConfiguredTerms {
+                hm: is_text,
+                op: true,
+                ..Default::default()
+            },
+        )
+    } else if is_text && terms.bf {
+        (
+            "_match",
+            ConfiguredTerms {
+                bf: true,
+                ..Default::default()
+            },
+        )
+    } else if terms.hm {
+        (
+            "_eq",
+            ConfiguredTerms {
+                hm: true,
+                ..Default::default()
+            },
+        )
+    } else if terms.any() {
         // Configured terms exist but none of the family's domains can carry
-        // them (ore/ope-only text, match on a non-text cast, …). Falling back
+        // them (ore/ope-only text, ste_vec on a scalar cast, …). Falling back
         // to storage-only would silently drop every configured capability.
         return Err(no_v3_domain(
             column,
@@ -207,8 +245,54 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
              (v3 text ordering domains carry hm + ob/op). Adjust the indexes \
              or use eqlVersion 2.",
         ));
+    } else {
+        return Ok(family.to_string());
+    };
+
+    // Fail closed if the candidate would DROP a configured capability.
+    // Coverage is per capability, not per term: equality survives through
+    // the ORE/OPE operators (so `hm` may drop when `ob`/`op` is carried —
+    // the documented non-text `unique` + `ore` case), and ordering survives
+    // when `op` drops in favour of `ob`. `bf` and `sv` have no substitute.
+    let mut dropped = Vec::new();
+    if terms.hm && !(carried.hm || carried.ob || carried.op) {
+        dropped.push("hm (unique)");
     }
-    Ok(family.to_string())
+    if (terms.ob || terms.op) && !(carried.ob || carried.op) {
+        if terms.ob {
+            dropped.push("ob (ore)");
+        }
+        if terms.op {
+            dropped.push("op (ope)");
+        }
+    }
+    if terms.bf && !carried.bf {
+        dropped.push("bf (match)");
+    }
+    if terms.sv {
+        // Scalar domains never carry sv (the config layer rejects ste_vec on
+        // non-json casts upstream; fail closed here too).
+        dropped.push("sv (ste_vec)");
+    }
+    if !dropped.is_empty() {
+        // Only text combinations can reach this today (non-text bf/sv are
+        // guarded above and non-text ordering domains cover hm), but keep
+        // the check generic so new arms stay fail-closed by default.
+        return Err(no_v3_domain(
+            column,
+            format!(
+                "eql_v3.{family}{suffix} is the closest domain but does not \
+                 carry the configured {} term(s); stored rows would lose that \
+                 capability",
+                dropped.join(", ")
+            ),
+            "No single eql_v3 domain covers this index combination — for \
+             text, 'unique' + 'ore' + 'match' reaches text_search (the \
+             richest domain). Adjust the indexes to fit one domain, split \
+             the capabilities across separate columns, or use eqlVersion 2.",
+        ));
+    }
+    Ok(format!("{family}{suffix}"))
 }
 
 /// A stored payload in whichever wire format the client is configured for.
@@ -563,21 +647,43 @@ mod tests {
         }
 
         #[test]
-        fn text_unique_and_match_prefers_match_over_eq() {
-            // Precedence for ties: search > ord_ore > ord_ope > match > eq.
+        fn text_unique_ore_and_ope_is_ord_ore() {
+            // text_ord_ore carries hm + ob. The op term is dropped, but the
+            // ordering capability survives through ob, so this is an allowed
+            // drop (mirrors the non-text ore-over-ope preference).
             assert_eq!(
-                domain(ColumnType::Text, vec![unique(), match_index()]),
-                "text_match"
+                domain(ColumnType::Text, vec![unique(), ore(), ope()]),
+                "text_ord_ore"
             );
         }
 
         #[test]
-        fn text_match_and_ore_without_unique_is_match() {
-            // text ordering domains need hm; bf is still representable.
-            assert_eq!(
-                domain(ColumnType::Text, vec![match_index(), ore()]),
-                "text_match"
-            );
+        fn text_unique_and_match_is_an_error() {
+            // The closest domain, text_match, carries only bf — selecting it
+            // would permanently strip the configured hm term from stored
+            // rows. Fail closed instead of silently dropping equality.
+            let err = domain_err(ColumnType::Text, vec![unique(), match_index()]);
+            assert!(err.contains("test_column"), "names the column: {err}");
+            assert!(err.contains("hm"), "names the dropped term: {err}");
+            assert!(err.contains("eqlVersion 2"), "offers a way out: {err}");
+        }
+
+        #[test]
+        fn text_unique_ope_and_match_is_an_error() {
+            // text_ord_ope carries hm + op but not bf — the configured match
+            // capability would be silently dropped.
+            let err = domain_err(ColumnType::Text, vec![unique(), ope(), match_index()]);
+            assert!(err.contains("test_column"), "names the column: {err}");
+            assert!(err.contains("bf"), "names the dropped term: {err}");
+        }
+
+        #[test]
+        fn text_ore_and_match_without_unique_is_an_error() {
+            // text_match carries only bf; the configured ordering capability
+            // (ob) would be silently dropped.
+            let err = domain_err(ColumnType::Text, vec![match_index(), ore()]);
+            assert!(err.contains("test_column"), "names the column: {err}");
+            assert!(err.contains("ob"), "names the dropped term: {err}");
         }
 
         #[test]
