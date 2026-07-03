@@ -423,12 +423,14 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                         };
                         // Inner `to_future` closure: structural mismatches
                         // (wrong type for resolved value, missing/non-string
-                        // `token`) are returned as `Ok(Err(...))`. The
-                        // remaining Throw risk is a property getter on the
-                        // resolved object that throws — vanishingly rare in
-                        // practice, and the existing try_catch on the outer
-                        // closure body covers throws from this same channel
-                        // dispatch path.
+                        // `token`) are returned as `Ok(Err(...))`. The one
+                        // fallible-by-throw operation is the `token` property
+                        // access — the resolved object is user code, so a
+                        // throwing getter is reachable — and it runs at
+                        // promise-settle time, outside the outer try_catch's
+                        // dynamic extent, so it needs its own try_catch:
+                        // converting a Throw to Ok(Err(..)) without one leaves
+                        // a pending JS exception in the callback context.
                         let fut = promise.to_future(cx, |mut cx, settled| match settled {
                             Ok(v) => {
                                 let obj = match v.downcast::<JsObject, _>(&mut cx) {
@@ -440,12 +442,16 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                         ))
                                     }
                                 };
-                                let raw: Handle<JsValue> = match obj.prop(&mut cx, "token").get() {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        return Ok(Err("could not read 'token' field".to_string()))
-                                    }
-                                };
+                                let raw: Handle<JsValue> =
+                                    match cx.try_catch(|cx| obj.prop(cx, "token").get()) {
+                                        Ok(v) => v,
+                                        Err(thrown) => {
+                                            return Ok(Err(format!(
+                                                "reading 'token' field threw: {}",
+                                                thrown_to_string(thrown, &mut cx),
+                                            )))
+                                        }
+                                    };
                                 if raw.is_a::<JsUndefined, _>(&mut cx)
                                     || raw.is_a::<JsNull, _>(&mut cx)
                                 {
