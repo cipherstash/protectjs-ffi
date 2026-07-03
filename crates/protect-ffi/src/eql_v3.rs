@@ -130,6 +130,18 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
     })?;
 
     if family == "json" {
+        // eql_v3.json carries only sv. Upstream config accepts unique/ore/ope
+        // alongside ste_vec on a JSON column, so selecting the domain anyway
+        // would silently drop those terms — fail closed instead.
+        if terms.hm || terms.ob || terms.op || terms.bf {
+            return Err(no_v3_domain(
+                column,
+                "eql_v3.json carries only ste_vec terms; the other configured \
+                 indexes would be silently dropped",
+                "Remove the non-ste_vec indexes from this JSON column or use \
+                 eqlVersion 2.",
+            ));
+        }
         return if terms.sv {
             Ok("json".to_string())
         } else {
@@ -155,13 +167,20 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
 
     // Scalar families, richest capability first. Text ordering domains carry
     // hm + ob/op; the non-text ordering domains carry only ob/op.
-    //
-    // The non-text arms rely on cipherstash-config rejecting `match` on
-    // non-text casts upstream (into_column_config): were a non-text column
-    // ever configured with `match` + `ore`, the `_ord_ore` arm below would
-    // silently drop bf. Only the all-terms-dropped case (no fitting domain
-    // at all) reaches the fail-closed error at the bottom.
     let is_text = family == "text";
+    // cipherstash-config rejects `match` on non-text casts and `ste_vec` on
+    // non-json casts upstream (into_column_config), but fail closed here too:
+    // without these guards a non-text `match` + `ore` column would select
+    // `_ord_ore` and silently drop bf (sv falls through to the fail-closed
+    // arm at the bottom on its own).
+    if !is_text && terms.bf {
+        return Err(no_v3_domain(
+            column,
+            format!("eql_v3.{family} domains cannot carry a match/bloom-filter term"),
+            "Remove the 'match' index (match requires a text cast) or use \
+             eqlVersion 2.",
+        ));
+    }
     if is_text && terms.hm && terms.ob && terms.bf {
         return Ok(format!("{family}_search"));
     }
@@ -683,6 +702,35 @@ mod tests {
             // has no scalar jsonb domain to hold it.
             let err = domain_err(ColumnType::Json, vec![]);
             assert!(err.contains("ste_vec"), "hints at ste_vec: {err}");
+        }
+
+        #[test]
+        fn json_with_ste_vec_and_unique_is_an_error() {
+            // Upstream config accepts unique/ore/ope alongside ste_vec on a
+            // JSON column; eql_v3.json carries only sv, so selecting it
+            // would silently drop the other configured terms. Fail closed.
+            let err = domain_err(ColumnType::Json, vec![ste_vec(), unique()]);
+            assert!(
+                err.contains("ste_vec"),
+                "explains the sv-only domain: {err}"
+            );
+        }
+
+        #[test]
+        fn ste_vec_on_a_non_json_cast_is_an_error() {
+            // The config layer rejects this before it reaches us; fail
+            // closed anyway rather than silently dropping sv.
+            let err = domain_err(ColumnType::Int, vec![ste_vec()]);
+            assert!(err.contains("test_column"), "names the column: {err}");
+        }
+
+        #[test]
+        fn match_mixed_with_ore_on_non_text_is_an_error() {
+            // Without this guard the _ord_ore arm would match first and
+            // silently drop bf (the config layer rejects match on non-text
+            // upstream; fail closed anyway).
+            let err = domain_err(ColumnType::Int, vec![ore(), match_index()]);
+            assert!(err.contains("test_column"), "names the column: {err}");
         }
 
         #[test]
