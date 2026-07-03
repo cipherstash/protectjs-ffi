@@ -22,14 +22,7 @@ import { v3WireKeys } from './common'
 // The config -> eql_v3 domain mapping is asserted, not assumed: each
 // payload's exact key set is checked against the vendored domain type
 // before INSERT (below), and the live domain CHECK on the eql_v3.text_eq /
-// eql_v3.int4_ord_ore columns validates the required keys on INSERT.
-//
-// The committed snapshot predates the eql-bindings 0.3.0 rename to
-// SQL-standard family names (int4_ord_ore is now integer_ord_ore upstream),
-// so the DDL below keeps the snapshot's spelling. The wire shape is
-// identical either way — the vendored IntegerOrdOre type checks the same
-// key set. Rename the DDL when `mise run eql:v3:build` refreshes the
-// snapshot past encrypt-query-language PR #344.
+// eql_v3.integer_ord_ore columns validates the required keys on INSERT.
 const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {
@@ -63,7 +56,7 @@ describe('postgres eql_v3', async () => {
       CREATE TABLE encrypted_v3 (
         id SERIAL PRIMARY KEY,
         email eql_v3.text_eq,
-        score eql_v3.int4_ord_ore
+        score eql_v3.integer_ord_ore
       )
     `)
 
