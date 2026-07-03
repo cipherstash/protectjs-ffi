@@ -26,7 +26,7 @@ use cts_common::Crn;
 #[cfg(not(target_arch = "wasm32"))]
 use eql_v3::{
     encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
-    validate_eql_version, EncryptedOutput, QueryOutput,
+    validate_eql_version, EncryptedOutput, EqlVersion, QueryOutput,
 };
 use js_plaintext::JsPlaintext;
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,9 +61,9 @@ struct Client {
     cipher: Arc<ScopedZeroKMS>,
     zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
-    /// EQL wire version this client emits (2 or 3). Decryption accepts both
-    /// formats regardless of this setting.
-    eql_version: u8,
+    /// EQL wire version this client emits. Decryption accepts both formats
+    /// regardless of this setting.
+    eql_version: EqlVersion,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

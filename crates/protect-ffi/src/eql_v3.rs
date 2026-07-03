@@ -23,21 +23,46 @@ use std::borrow::Cow;
 
 use crate::Error;
 
-/// The EQL wire version emitted when `eqlVersion` is omitted.
-pub(crate) const DEFAULT_EQL_VERSION: u8 = 2;
+/// An EQL wire version this crate can emit.
+///
+/// The version arrives as a raw `u8` from JavaScript (`newClient({
+/// eqlVersion })`) and is converted exactly once, at the FFI boundary, by
+/// [`validate_eql_version`]. Everything downstream carries this enum, so
+/// invalid versions are unrepresentable past that point and every
+/// version-dependent branch is an exhaustive `match` the compiler checks
+/// when a variant is added.
+///
+/// The discriminants are the on-the-wire `v` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum EqlVersion {
+    V2 = 2,
+    V3 = 3,
+}
 
-/// The v3 EQL wire version.
-pub(crate) const EQL_VERSION_V3: u8 = 3;
+impl EqlVersion {
+    /// The wire version emitted when `eqlVersion` is omitted — v2, for
+    /// backwards compatibility.
+    pub(crate) const DEFAULT: Self = Self::V2;
+}
 
-/// Validate the client-supplied `eqlVersion` option: only `2` and `3` are
-/// EQL wire versions this crate can emit. `None` defaults to v2 for
-/// backwards compatibility.
-pub(crate) fn validate_eql_version(version: Option<u8>) -> Result<u8, Error> {
-    match version {
-        None => Ok(DEFAULT_EQL_VERSION),
-        Some(v @ (DEFAULT_EQL_VERSION | EQL_VERSION_V3)) => Ok(v),
-        Some(other) => Err(Error::InvalidEqlVersion(other)),
+impl TryFrom<u8> for EqlVersion {
+    type Error = Error;
+
+    fn try_from(version: u8) -> Result<Self, Error> {
+        match version {
+            v if v == Self::V2 as u8 => Ok(Self::V2),
+            v if v == Self::V3 as u8 => Ok(Self::V3),
+            other => Err(Error::InvalidEqlVersion(other)),
+        }
     }
+}
+
+/// Validate the client-supplied `eqlVersion` option at the JS boundary:
+/// only `2` and `3` are EQL wire versions this crate can emit. `None`
+/// defaults to v2 for backwards compatibility.
+pub(crate) fn validate_eql_version(version: Option<u8>) -> Result<EqlVersion, Error> {
+    version.map_or(Ok(EqlVersion::DEFAULT), EqlVersion::try_from)
 }
 
 /// The v2 index terms a column's configuration will produce on a stored
@@ -230,15 +255,17 @@ pub(crate) enum EncryptedOutput {
 /// against the domain selected from the column configuration.
 pub(crate) fn storage_output(
     ciphertext: EqlCiphertext,
-    eql_version: u8,
+    eql_version: EqlVersion,
     column_config: &ColumnConfig,
 ) -> Result<EncryptedOutput, Error> {
-    if eql_version != EQL_VERSION_V3 {
-        return Ok(EncryptedOutput::V2(Box::new(ciphertext)));
+    match eql_version {
+        EqlVersion::V2 => Ok(EncryptedOutput::V2(Box::new(ciphertext))),
+        EqlVersion::V3 => {
+            let target = v3_target_for_column(column_config)?;
+            let v2_value = serde_json::to_value(&ciphertext)?;
+            Ok(EncryptedOutput::V3(from_v2(&v2_value, target)?))
+        }
     }
-    let target = v3_target_for_column(column_config)?;
-    let v2_value = serde_json::to_value(&ciphertext)?;
-    Ok(EncryptedOutput::V3(from_v2(&v2_value, target)?))
 }
 
 /// A query payload in whichever wire format the client is configured for.
@@ -256,29 +283,32 @@ pub(crate) enum QueryOutput {
 /// output (the `sv` document) becomes the `eql_v3.jsonb_query` needle via
 /// [`from_v2_query`]. No v3 wire shape exists for scalar query terms or
 /// selector payloads yet, so those fail closed with a typed error.
-pub(crate) fn query_output(output: EqlOutput, eql_version: u8) -> Result<QueryOutput, Error> {
-    if eql_version != EQL_VERSION_V3 {
-        return Ok(QueryOutput::V2(Box::new(output)));
-    }
-    match output {
-        // JSONB containment: Store mode always yields the sv document (that
-        // is the only plaintext shape to_query_plaintext maps to StoreMode);
-        // the needle strips the envelope and per-entry ciphertexts, exactly
-        // like the SQL cast eql_v3.to_ste_vec_query.
-        EqlOutput::Store(ciphertext @ EqlCiphertext::SteVec(_)) => {
-            let v2_value = serde_json::to_value(&ciphertext)?;
-            Ok(QueryOutput::V3(from_v2_query(
-                &v2_value,
-                TargetDomain::Json,
-            )?))
-        }
-        EqlOutput::Store(EqlCiphertext::Encrypted(_)) => Err(Error::InvariantViolation(
-            "store-mode query encryption produced a scalar payload".to_string(),
-        )),
-        // No v3 wire shape exists for these yet (pending the mapper
-        // redesign) — fail closed with an actionable error.
-        EqlOutput::Query(EqlQueryPayload::Encrypted(_)) => Err(Error::V3ScalarQueryUnsupported),
-        EqlOutput::Query(EqlQueryPayload::SteVec(_)) => Err(Error::V3SelectorQueryUnsupported),
+pub(crate) fn query_output(
+    output: EqlOutput,
+    eql_version: EqlVersion,
+) -> Result<QueryOutput, Error> {
+    match eql_version {
+        EqlVersion::V2 => Ok(QueryOutput::V2(Box::new(output))),
+        EqlVersion::V3 => match output {
+            // JSONB containment: Store mode always yields the sv document
+            // (that is the only plaintext shape to_query_plaintext maps to
+            // StoreMode); the needle strips the envelope and per-entry
+            // ciphertexts, exactly like the SQL cast eql_v3.to_ste_vec_query.
+            EqlOutput::Store(ciphertext @ EqlCiphertext::SteVec(_)) => {
+                let v2_value = serde_json::to_value(&ciphertext)?;
+                Ok(QueryOutput::V3(from_v2_query(
+                    &v2_value,
+                    TargetDomain::Json,
+                )?))
+            }
+            EqlOutput::Store(EqlCiphertext::Encrypted(_)) => Err(Error::InvariantViolation(
+                "store-mode query encryption produced a scalar payload".to_string(),
+            )),
+            // No v3 wire shape exists for these yet (pending the mapper
+            // redesign) — fail closed with an actionable error.
+            EqlOutput::Query(EqlQueryPayload::Encrypted(_)) => Err(Error::V3ScalarQueryUnsupported),
+            EqlOutput::Query(EqlQueryPayload::SteVec(_)) => Err(Error::V3SelectorQueryUnsupported),
+        },
     }
 }
 
@@ -439,18 +469,26 @@ mod tests {
         use super::*;
 
         #[test]
+        fn discriminants_are_the_wire_versions() {
+            // The enum discriminants double as the JS-facing `eqlVersion`
+            // values and the on-the-wire `v` — they must never drift.
+            assert_eq!(EqlVersion::V2 as u8, 2);
+            assert_eq!(EqlVersion::V3 as u8, 3);
+        }
+
+        #[test]
         fn defaults_to_v2_when_absent() {
-            assert_eq!(validate_eql_version(None).unwrap(), 2);
+            assert_eq!(validate_eql_version(None).unwrap(), EqlVersion::V2);
         }
 
         #[test]
         fn accepts_v2() {
-            assert_eq!(validate_eql_version(Some(2)).unwrap(), 2);
+            assert_eq!(validate_eql_version(Some(2)).unwrap(), EqlVersion::V2);
         }
 
         #[test]
         fn accepts_v3() {
-            assert_eq!(validate_eql_version(Some(3)).unwrap(), 3);
+            assert_eq!(validate_eql_version(Some(3)).unwrap(), EqlVersion::V3);
         }
 
         #[test]
@@ -807,7 +845,7 @@ mod tests {
 
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
-                2,
+                EqlVersion::V2,
                 &text_search_column(),
             )
             .unwrap();
@@ -819,7 +857,7 @@ mod tests {
         fn v3_scalar_output_has_v3_envelope_and_required_terms() {
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
-                3,
+                EqlVersion::V3,
                 &text_search_column(),
             )
             .unwrap();
@@ -848,9 +886,12 @@ mod tests {
                     Index::new(IndexType::Ore),
                 ],
             );
-            let output =
-                storage_output(scalar_payload(Some("aa"), None, Some(vec!["bb"])), 3, &cfg)
-                    .unwrap();
+            let output = storage_output(
+                scalar_payload(Some("aa"), None, Some(vec!["bb"])),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["ob"], serde_json::json!(["bb"]));
@@ -863,7 +904,7 @@ mod tests {
             // reinterprets the upper half (32768..=65535) as negative i16.
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![7, 40000]), Some(vec!["bb"])),
-                3,
+                EqlVersion::V3,
                 &text_search_column(),
             )
             .unwrap();
@@ -883,7 +924,7 @@ mod tests {
                     mode: Default::default(),
                 })],
             );
-            let output = storage_output(ste_vec_payload(), 3, &cfg).unwrap();
+            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
@@ -908,7 +949,7 @@ mod tests {
             // not silently degrade.
             let result = storage_output(
                 scalar_payload(Some("aa"), None, Some(vec!["bb"])),
-                3,
+                EqlVersion::V3,
                 &text_search_column(),
             );
 
@@ -954,7 +995,7 @@ mod tests {
         fn v2_output_serializes_identically_to_the_bare_eql_output() {
             let expected = serde_json::to_string(&scalar_query()).unwrap();
 
-            let output = query_output(scalar_query(), 2).unwrap();
+            let output = query_output(scalar_query(), EqlVersion::V2).unwrap();
 
             assert_eq!(serde_json::to_string(&output).unwrap(), expected);
         }
@@ -963,14 +1004,14 @@ mod tests {
         fn v2_containment_output_passes_through() {
             let expected = serde_json::to_string(&EqlOutput::Store(ste_vec_payload())).unwrap();
 
-            let output = query_output(EqlOutput::Store(ste_vec_payload()), 2).unwrap();
+            let output = query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V2).unwrap();
 
             assert_eq!(serde_json::to_string(&output).unwrap(), expected);
         }
 
         #[test]
         fn v3_containment_output_is_a_jsonb_query_needle() {
-            let output = query_output(EqlOutput::Store(ste_vec_payload()), 3).unwrap();
+            let output = query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V3).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             // The eql_v3.jsonb_query needle: {sv: [{s, hm|oc}]} — no
@@ -990,7 +1031,7 @@ mod tests {
 
         #[test]
         fn v3_scalar_query_returns_a_typed_error() {
-            let err = query_output(scalar_query(), 3).unwrap_err();
+            let err = query_output(scalar_query(), EqlVersion::V3).unwrap_err();
 
             assert!(matches!(err, Error::V3ScalarQueryUnsupported));
             assert_eq!(
@@ -1002,7 +1043,7 @@ mod tests {
 
         #[test]
         fn v3_selector_query_returns_a_typed_error() {
-            let err = query_output(selector_query(), 3).unwrap_err();
+            let err = query_output(selector_query(), EqlVersion::V3).unwrap_err();
 
             assert!(matches!(err, Error::V3SelectorQueryUnsupported));
             assert!(
@@ -1033,7 +1074,9 @@ mod tests {
                     token_filters: vec![],
                 })],
             );
-            let output = storage_output(scalar_payload(Some("aa"), None, None), 3, &cfg).unwrap();
+            let output =
+                storage_output(scalar_payload(Some("aa"), None, None), EqlVersion::V3, &cfg)
+                    .unwrap();
             serde_json::to_value(&output).unwrap()
         }
 
@@ -1047,7 +1090,7 @@ mod tests {
                     mode: Default::default(),
                 })],
             );
-            let output = storage_output(ste_vec_payload(), 3, &cfg).unwrap();
+            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
             serde_json::to_value(&output).unwrap()
         }
 

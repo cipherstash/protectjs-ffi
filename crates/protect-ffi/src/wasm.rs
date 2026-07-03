@@ -51,7 +51,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::eql_v3::{
     encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
-    validate_eql_version, EncryptedOutput, QueryOutput,
+    validate_eql_version, EncryptedOutput, EqlVersion, QueryOutput,
 };
 use crate::js_plaintext::JsPlaintext;
 use crate::{
@@ -149,9 +149,9 @@ pub struct WasmClient {
     cipher: Arc<ScopedCipher<JsAuthStrategy>>,
     zerokms: Arc<ZeroKMSWithClientKey<JsAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
-    /// EQL wire version this client emits (2 or 3). Decryption accepts both
-    /// formats regardless of this setting.
-    eql_version: u8,
+    /// EQL wire version this client emits. Decryption accepts both formats
+    /// regardless of this setting.
+    eql_version: EqlVersion,
 }
 
 /// Hex-encoded secret material that zeroizes its buffer on drop.
