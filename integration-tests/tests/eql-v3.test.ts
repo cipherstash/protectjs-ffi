@@ -11,68 +11,72 @@ import {
   isEncrypted,
   newClient,
   ProtectError,
+  type Bool,
+  type DateOrdOre,
   type EncryptConfig,
   type EncryptedV3,
+  type Float8OrdOre,
+  type Int2OrdOre,
+  type Int4OrdOre,
+  type Int8Eq,
+  type NumericOrdOre,
   type SteVecDocument,
   type SteVecQuery,
+  type TextEq,
+  type TextSearch,
+  type TimestampOrdOre,
 } from '@cipherstash/protect-ffi'
+import { v3WireKeys } from './common'
 
 // Every EQL v3 scalar family reachable from the JS cast_as vocabulary, plus
-// bool (storage-only) and json (SteVec).
+// bool (storage-only) and json (SteVec). The eql_v3 domain each column must
+// map onto is not documented here — it is asserted: the test cases below
+// check every payload's exact top-level key set against the vendored
+// eql_v3 domain type, so drift in the config -> domain selection fails the
+// suite instead of silently invalidating a comment.
 const v3Config: EncryptConfig = {
   v: 1,
   tables: {
     v3users: {
-      // text_search: unique + ore + match -> hm + ob + bf
       email: {
         cast_as: 'text',
         indexes: { unique: {}, ore: {}, match: {} },
       },
-      // text_eq: unique only -> hm
       name: {
         cast_as: 'text',
         indexes: { unique: {} },
       },
-      // int2_ord_ore
       age: {
         cast_as: 'small_int',
         indexes: { ore: {} },
       },
-      // int4_ord_ore
       count: {
         cast_as: 'int',
         indexes: { ore: {} },
       },
-      // int8_eq
       score: {
         cast_as: 'bigint',
         indexes: { unique: {} },
       },
-      // float8_ord_ore
       weight: {
         cast_as: 'number',
         indexes: { ore: {} },
       },
-      // numeric_ord_ore
       price: {
         cast_as: 'decimal',
         indexes: { ore: {} },
       },
-      // date_ord_ore
       dob: {
         cast_as: 'date',
         indexes: { ore: {} },
       },
-      // timestamp_ord_ore
       created_at: {
         cast_as: 'timestamp',
         indexes: { ore: {} },
       },
-      // bool (storage-only)
       active: {
         cast_as: 'boolean',
       },
-      // json (SteVec document)
       profile: {
         cast_as: 'json',
         indexes: { ste_vec: { prefix: 'v3users/profile' } },
@@ -106,40 +110,75 @@ describe('eql v3 scalar round-trips', async () => {
   type ScalarCase = {
     column: string
     plaintext: string | number | boolean
-    /** term keys the selected domain requires (beyond v/i/c) */
-    terms: string[]
-    /** keys that must NOT be present (dropped by the domain) */
-    absent?: string[]
+    /** the eql_v3 domain the config must select for this column */
+    domain: string
+    /**
+     * Exact top-level wire keys. Built with {@link v3WireKeys} against the
+     * vendored eql_v3 domain type, so the expectation itself is
+     * compile-time-checked; the runtime assertion below then compares the
+     * payload's key set with exact equality (no extra, no missing keys).
+     */
+    keys: readonly string[]
   }
 
   const cases: ScalarCase[] = [
-    // text_search carries all three terms
-    { column: 'email', plaintext: 'v3@example.com', terms: ['hm', 'ob', 'bf'] },
-    // text_eq carries hm only
-    { column: 'name', plaintext: 'Ada', terms: ['hm'], absent: ['ob', 'bf'] },
+    // text with unique + ore + match reaches the richest domain
+    {
+      column: 'email',
+      plaintext: 'v3@example.com',
+      domain: 'text_search',
+      keys: v3WireKeys<TextSearch>()('v', 'i', 'c', 'hm', 'ob', 'bf'),
+    },
+    // unique-only text carries hm only
+    {
+      column: 'name',
+      plaintext: 'Ada',
+      domain: 'text_eq',
+      keys: v3WireKeys<TextEq>()('v', 'i', 'c', 'hm'),
+    },
     // non-text _ord_ore domains carry ob only
-    { column: 'age', plaintext: 42, terms: ['ob'], absent: ['hm', 'bf'] },
-    { column: 'count', plaintext: 123456, terms: ['ob'], absent: ['hm', 'bf'] },
+    {
+      column: 'age',
+      plaintext: 42,
+      domain: 'int2_ord_ore',
+      keys: v3WireKeys<Int2OrdOre>()('v', 'i', 'c', 'ob'),
+    },
+    {
+      column: 'count',
+      plaintext: 123456,
+      domain: 'int4_ord_ore',
+      keys: v3WireKeys<Int4OrdOre>()('v', 'i', 'c', 'ob'),
+    },
     {
       column: 'score',
       plaintext: 9007199254740,
-      terms: ['hm'],
-      absent: ['ob', 'bf'],
+      domain: 'int8_eq',
+      keys: v3WireKeys<Int8Eq>()('v', 'i', 'c', 'hm'),
     },
-    { column: 'weight', plaintext: 72.5, terms: ['ob'], absent: ['hm', 'bf'] },
-    { column: 'price', plaintext: 19.99, terms: ['ob'], absent: ['hm', 'bf'] },
-    // bool is storage-only
+    {
+      column: 'weight',
+      plaintext: 72.5,
+      domain: 'float8_ord_ore',
+      keys: v3WireKeys<Float8OrdOre>()('v', 'i', 'c', 'ob'),
+    },
+    {
+      column: 'price',
+      plaintext: 19.99,
+      domain: 'numeric_ord_ore',
+      keys: v3WireKeys<NumericOrdOre>()('v', 'i', 'c', 'ob'),
+    },
+    // bool is storage-only: envelope keys and nothing else
     {
       column: 'active',
       plaintext: true,
-      terms: [],
-      absent: ['hm', 'ob', 'bf'],
+      domain: 'bool',
+      keys: v3WireKeys<Bool>()('v', 'i', 'c'),
     },
   ]
 
   test.each(cases)(
-    'round-trips $column with required terms',
-    async ({ column, plaintext, terms, absent }) => {
+    'round-trips $column as eql_v3.$domain',
+    async ({ column, plaintext, domain, keys }) => {
       const ciphertext = await encrypt(client, {
         plaintext,
         column,
@@ -147,12 +186,10 @@ describe('eql v3 scalar round-trips', async () => {
       })
 
       const payload = expectV3Scalar(ciphertext)
-      for (const term of terms) {
-        expect(payload[term], `term ${term} required`).toBeDefined()
-      }
-      for (const term of absent ?? []) {
-        expect(payload[term], `term ${term} must be dropped`).toBeUndefined()
-      }
+      expect(
+        Object.keys(payload).sort(),
+        `the config must map ${column} onto eql_v3.${domain}`,
+      ).toEqual(keys)
 
       const decrypted = await decrypt(client, { ciphertext })
       if (typeof plaintext === 'number' && !Number.isInteger(plaintext)) {
@@ -164,7 +201,7 @@ describe('eql v3 scalar round-trips', async () => {
     },
   )
 
-  test('round-trips a date column', async () => {
+  test('round-trips a date column as eql_v3.date_ord_ore', async () => {
     const d = new Date('2024-03-01T00:00:00.000Z')
     const ciphertext = await encrypt(client, {
       plaintext: d.toISOString(),
@@ -172,7 +209,9 @@ describe('eql v3 scalar round-trips', async () => {
       table: 'v3users',
     })
 
-    expect(expectV3Scalar(ciphertext).ob).toBeDefined()
+    expect(Object.keys(expectV3Scalar(ciphertext)).sort()).toEqual(
+      v3WireKeys<DateOrdOre>()('v', 'i', 'c', 'ob'),
+    )
 
     const decrypted = await decrypt(client, { ciphertext })
     expect(new Date(decrypted as string).toISOString().slice(0, 10)).toBe(
@@ -180,7 +219,7 @@ describe('eql v3 scalar round-trips', async () => {
     )
   })
 
-  test('round-trips a timestamp column', async () => {
+  test('round-trips a timestamp column as eql_v3.timestamp_ord_ore', async () => {
     const d = new Date('2024-03-01T12:34:56.000Z')
     const ciphertext = await encrypt(client, {
       plaintext: d.toISOString(),
@@ -188,7 +227,9 @@ describe('eql v3 scalar round-trips', async () => {
       table: 'v3users',
     })
 
-    expect(expectV3Scalar(ciphertext).ob).toBeDefined()
+    expect(Object.keys(expectV3Scalar(ciphertext)).sort()).toEqual(
+      v3WireKeys<TimestampOrdOre>()('v', 'i', 'c', 'ob'),
+    )
 
     const decrypted = await decrypt(client, { ciphertext })
     expect(new Date(decrypted as string).toISOString()).toBe(d.toISOString())
@@ -263,6 +304,9 @@ describe('eql v3 ste_vec round-trip', async () => {
     })
 
     const doc = expectV3SteVec(ciphertext)
+    expect(Object.keys(doc).sort()).toEqual(
+      v3WireKeys<SteVecDocument>()('v', 'k', 'i', 'sv'),
+    )
     expect(doc.sv.length).toBeGreaterThan(0)
     for (const entry of doc.sv) {
       expect(entry.s).toBeTypeOf('string')

@@ -8,23 +8,29 @@ import {
   newClient,
   type EncryptConfig,
   type EncryptedPayload,
+  type Int4OrdOre,
+  type TextEq,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
+import { v3WireKeys } from './common'
 
 // Requires the eql_v3 schema: `mise run eql:v3:install` (part of `mise
 // setup`) installs the committed snapshot sql/cipherstash-encrypt-v3.sql.
 // There is no v3 release artifact yet — refresh the snapshot from a sibling
 // encrypt-query-language checkout with `mise run eql:v3:build`.
+//
+// The config -> eql_v3 domain mapping is asserted, not assumed: each
+// payload's exact key set is checked against the vendored domain type
+// before INSERT (below), and the live domain CHECK on the eql_v3.text_eq /
+// eql_v3.int4_ord_ore columns validates the required keys on INSERT.
 const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {
     v3pg: {
-      // eql_v3.text_eq (hm)
       email: {
         cast_as: 'text',
         indexes: { unique: {} },
       },
-      // eql_v3.int4_ord_ore (ob)
       score: {
         cast_as: 'int',
         indexes: { ore: {} },
@@ -32,6 +38,11 @@ const encryptConfig: EncryptConfig = {
     },
   },
 }
+
+// Exact wire key sets, compile-time-checked against the vendored eql_v3
+// domain types (see v3WireKeys).
+const textEqKeys = v3WireKeys<TextEq>()('v', 'i', 'c', 'hm')
+const int4OrdOreKeys = v3WireKeys<Int4OrdOre>()('v', 'i', 'c', 'ob')
 
 describe('postgres eql_v3', async () => {
   const protectClient = await newClient({ encryptConfig, eqlVersion: 3 })
@@ -73,6 +84,13 @@ describe('postgres eql_v3', async () => {
       column: 'score',
       table: 'v3pg',
     })
+
+    // The INSERT below proves the domain CHECKs accept the payloads (the
+    // required keys are present); these exact-set assertions additionally
+    // prove nothing extra was provisioned — a CHECK does not reject a
+    // payload that selected a richer domain than the config asked for.
+    expect(Object.keys(email).sort()).toEqual(textEqKeys)
+    expect(Object.keys(score).sort()).toEqual(int4OrdOreKeys)
 
     await pg.query(
       'INSERT INTO encrypted_v3 (email, score) VALUES ($1::jsonb, $2::jsonb)',
@@ -121,6 +139,10 @@ describe('postgres eql_v3', async () => {
       ],
     })
 
+    for (const ciphertext of ciphertexts) {
+      expect(Object.keys(ciphertext).sort()).toEqual(int4OrdOreKeys)
+    }
+
     await pg.query(
       'INSERT INTO encrypted_v3 (score) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
       ciphertexts,
@@ -144,6 +166,10 @@ describe('postgres eql_v3', async () => {
         { plaintext: 'b@example.com', column: 'email', table: 'v3pg' },
       ],
     })
+
+    for (const ciphertext of ciphertexts) {
+      expect(Object.keys(ciphertext).sort()).toEqual(textEqKeys)
+    }
 
     await pg.query(
       'INSERT INTO encrypted_v3 (email) VALUES ($1::jsonb), ($2::jsonb)',

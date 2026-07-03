@@ -31,6 +31,28 @@ export function assertScalar(
   }
 }
 
+type WireKeys<T> = Extract<keyof T, string>
+
+/**
+ * Builds the exact top-level wire key set of an EQL v3 payload type, making
+ * the config -> eql_v3 domain mapping load-bearing in two legs:
+ *
+ * - Compile time: the key list must name every key of `T` (a missing key
+ *   collapses the parameter type into an error tuple) and may not name
+ *   anything that is not a key of `T` — so tsc fails if a test's expected
+ *   key set drifts from the vendored eql_v3 domain type.
+ * - Runtime: the returned sorted array is compared with exact equality
+ *   against `Object.keys(payload).sort()`, so a payload that selected a
+ *   richer domain (extra keys) or a poorer one (missing keys) both fail.
+ */
+export function v3WireKeys<T>() {
+  return <const K extends readonly WireKeys<T>[]>(
+    ...keys: WireKeys<T> extends K[number]
+      ? K
+      : [`missing wire key: ${Exclude<WireKeys<T>, K[number]>}`]
+  ): string[] => [...keys].sort()
+}
+
 export const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {
