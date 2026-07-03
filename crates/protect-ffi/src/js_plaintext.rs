@@ -91,15 +91,22 @@ impl JsPlaintext {
                 .map(|t| Plaintext::Timestamp(Some(t)))
                 .map_err(|e| TypeParseError(format!("Cannot parse Timestamp: {}", e))),
 
-            // Number conversions - allow to numeric types with potential truncation/coercion
+            // Number conversions. Float stores the f64 verbatim; every other
+            // numeric target must represent the value exactly or error — a
+            // lossy cast would silently corrupt the stored value and the
+            // index terms derived from it.
             (JsPlaintext::Number(n), ColumnType::Float) => Ok(Plaintext::Float(Some(*n))),
             (JsPlaintext::Number(n), ColumnType::Decimal) => Decimal::try_from(*n)
                 .map(|d| Plaintext::Decimal(Some(d)))
                 .map_err(|e| TypeParseError(format!("Cannot convert number to Decimal: {}", e))),
-            (JsPlaintext::Number(n), ColumnType::BigInt) => Ok(Plaintext::BigInt(Some(*n as i64))),
-            (JsPlaintext::Number(n), ColumnType::Int) => Ok(Plaintext::Int(Some(*n as i32))),
+            (JsPlaintext::Number(n), ColumnType::BigInt) => {
+                f64_to_exact_int(*n, ColumnType::BigInt).map(|v| Plaintext::BigInt(Some(v)))
+            }
+            (JsPlaintext::Number(n), ColumnType::Int) => {
+                f64_to_exact_int(*n, ColumnType::Int).map(|v| Plaintext::Int(Some(v)))
+            }
             (JsPlaintext::Number(n), ColumnType::SmallInt) => {
-                Ok(Plaintext::SmallInt(Some(*n as i16)))
+                f64_to_exact_int(*n, ColumnType::SmallInt).map(|v| Plaintext::SmallInt(Some(v)))
             }
             (JsPlaintext::Number(n), ColumnType::BigUInt) => {
                 if *n < 0.0 {
@@ -107,7 +114,7 @@ impl JsPlaintext {
                         "Cannot convert negative number to BigUInt".to_string(),
                     ))
                 } else {
-                    Ok(Plaintext::BigUInt(Some(*n as u64)))
+                    f64_to_exact_int(*n, ColumnType::BigUInt).map(|v| Plaintext::BigUInt(Some(v)))
                 }
             }
 
@@ -149,6 +156,47 @@ impl JsPlaintext {
             }
         }
     }
+}
+
+/// Convert a JS number (f64) into an integer type exactly, or error.
+///
+/// JS has a single number type, so integer columns receive `f64` values. A
+/// saturating `as` cast would silently corrupt out-of-range values (e.g.
+/// 5_000_000_000 → i32::MAX), map NaN to 0, and drop fractional parts
+/// (42.5 → 42) — and the hm/ob index terms would be computed over the
+/// corrupted value. Instead, error unless the value is finite, has no
+/// fractional component, and fits the target type. The error deliberately
+/// does not echo the value: it is plaintext being encrypted.
+fn f64_to_exact_int<T: TryFrom<i128>>(
+    n: f64,
+    column_type: ColumnType,
+) -> Result<T, TypeParseError> {
+    if !n.is_finite() {
+        return Err(TypeParseError(format!(
+            "Cannot convert number to {:?}: value must be finite (got NaN or Infinity)",
+            column_type
+        )));
+    }
+    if n.fract() != 0.0 {
+        return Err(TypeParseError(format!(
+            "Cannot convert number to {:?}: value has a fractional component",
+            column_type
+        )));
+    }
+    let out_of_range = || {
+        TypeParseError(format!(
+            "Cannot convert number to {:?}: value is out of range",
+            column_type
+        ))
+    };
+    // `n` is finite with no fractional part, so if it lies within i128's
+    // range the `as` cast below is exact (every integer-valued f64 with
+    // |n| < 2^127 is exactly representable in i128). Note `i128::MAX as f64`
+    // rounds up to 2^127, which does NOT fit in i128, hence `>=`.
+    if n < i128::MIN as f64 || n >= i128::MAX as f64 {
+        return Err(out_of_range());
+    }
+    T::try_from(n as i128).map_err(|_| out_of_range())
 }
 
 /// Parse a string into a `NaiveDate`. Accepts full RFC 3339 timestamps (the
@@ -379,29 +427,151 @@ mod tests {
             assert_eq!(result, Plaintext::Decimal(Some(expected_decimal)));
         }
 
-        #[test]
-        fn test_number_to_bigint_truncates() {
-            let js_number = JsPlaintext::Number(42.7);
-            let result = js_number
-                .to_plaintext_with_type(ColumnType::BigInt)
-                .unwrap();
-            assert_eq!(result, Plaintext::BigInt(Some(42)));
+        // A saturating `as` cast on the encrypt path silently corrupts the
+        // stored value AND the hm/ob index terms derived from it, so queries
+        // match wrong rows with no error. Policy: any JS number that cannot
+        // be represented exactly in the target integer type must Err —
+        // out-of-range, NaN, Infinity, and fractional values alike.
+
+        /// Assert the conversion fails and the error names the target column
+        /// type without echoing the offending value (which is plaintext being
+        /// encrypted — a possible secret leak).
+        fn assert_truncation_err(n: f64, column_type: ColumnType) {
+            let err = JsPlaintext::Number(n)
+                .to_plaintext_with_type(column_type)
+                .expect_err(&format!(
+                    "converting {} to {:?} must fail instead of truncating",
+                    n, column_type
+                ));
+            assert!(
+                err.0.contains(&format!("{:?}", column_type)),
+                "error should name the target column type {:?}, got: {}",
+                column_type,
+                err.0
+            );
         }
 
         #[test]
-        fn test_number_to_int_truncates() {
-            let js_number = JsPlaintext::Number(42.7);
-            let result = js_number.to_plaintext_with_type(ColumnType::Int).unwrap();
+        fn test_in_range_whole_number_to_int() {
+            let result = JsPlaintext::Number(42.0)
+                .to_plaintext_with_type(ColumnType::Int)
+                .unwrap();
             assert_eq!(result, Plaintext::Int(Some(42)));
         }
 
         #[test]
-        fn test_number_to_smallint_truncates() {
-            let js_number = JsPlaintext::Number(42.7);
-            let result = js_number
+        fn test_int_boundaries_pass() {
+            let max = JsPlaintext::Number(i32::MAX as f64)
+                .to_plaintext_with_type(ColumnType::Int)
+                .unwrap();
+            assert_eq!(max, Plaintext::Int(Some(i32::MAX)));
+            let min = JsPlaintext::Number(i32::MIN as f64)
+                .to_plaintext_with_type(ColumnType::Int)
+                .unwrap();
+            assert_eq!(min, Plaintext::Int(Some(i32::MIN)));
+        }
+
+        #[test]
+        fn test_out_of_range_number_to_int_fails() {
+            // The review-comment repro: 5_000_000_000 would silently saturate
+            // to i32::MAX (2147483647) with an `as` cast.
+            assert_truncation_err(5_000_000_000.0, ColumnType::Int);
+            assert_truncation_err((i32::MAX as f64) + 1.0, ColumnType::Int);
+            assert_truncation_err((i32::MIN as f64) - 1.0, ColumnType::Int);
+        }
+
+        #[test]
+        fn test_nan_to_int_fails() {
+            // `as` would turn NaN into 0.
+            assert_truncation_err(f64::NAN, ColumnType::Int);
+        }
+
+        #[test]
+        fn test_infinity_to_int_fails() {
+            assert_truncation_err(f64::INFINITY, ColumnType::Int);
+            assert_truncation_err(f64::NEG_INFINITY, ColumnType::Int);
+        }
+
+        #[test]
+        fn test_fractional_number_to_int_fails() {
+            // 42.5 as i32 == 42 — that is also silent truncation.
+            assert_truncation_err(42.5, ColumnType::Int);
+        }
+
+        #[test]
+        fn test_in_range_whole_number_to_smallint() {
+            let result = JsPlaintext::Number(42.0)
                 .to_plaintext_with_type(ColumnType::SmallInt)
                 .unwrap();
             assert_eq!(result, Plaintext::SmallInt(Some(42)));
+        }
+
+        #[test]
+        fn test_smallint_boundaries_pass() {
+            let max = JsPlaintext::Number(i16::MAX as f64)
+                .to_plaintext_with_type(ColumnType::SmallInt)
+                .unwrap();
+            assert_eq!(max, Plaintext::SmallInt(Some(i16::MAX)));
+            let min = JsPlaintext::Number(i16::MIN as f64)
+                .to_plaintext_with_type(ColumnType::SmallInt)
+                .unwrap();
+            assert_eq!(min, Plaintext::SmallInt(Some(i16::MIN)));
+        }
+
+        #[test]
+        fn test_out_of_range_number_to_smallint_fails() {
+            assert_truncation_err(40_000.0, ColumnType::SmallInt);
+            assert_truncation_err(-40_000.0, ColumnType::SmallInt);
+        }
+
+        #[test]
+        fn test_nan_to_smallint_fails() {
+            assert_truncation_err(f64::NAN, ColumnType::SmallInt);
+        }
+
+        #[test]
+        fn test_infinity_to_smallint_fails() {
+            assert_truncation_err(f64::INFINITY, ColumnType::SmallInt);
+            assert_truncation_err(f64::NEG_INFINITY, ColumnType::SmallInt);
+        }
+
+        #[test]
+        fn test_fractional_number_to_smallint_fails() {
+            assert_truncation_err(42.5, ColumnType::SmallInt);
+        }
+
+        #[test]
+        fn test_in_range_whole_number_to_bigint() {
+            // 2^53 — the largest f64 range where every integer is exact.
+            let result = JsPlaintext::Number(9_007_199_254_740_992.0)
+                .to_plaintext_with_type(ColumnType::BigInt)
+                .unwrap();
+            assert_eq!(result, Plaintext::BigInt(Some(9_007_199_254_740_992)));
+        }
+
+        #[test]
+        fn test_out_of_range_number_to_bigint_fails() {
+            // 2^63 is representable as f64 but exceeds i64::MAX; `as` would
+            // saturate to i64::MAX. Same for anything larger, e.g. 1e19.
+            assert_truncation_err(9_223_372_036_854_775_808.0, ColumnType::BigInt);
+            assert_truncation_err(1e19, ColumnType::BigInt);
+            assert_truncation_err(-1e19, ColumnType::BigInt);
+        }
+
+        #[test]
+        fn test_nan_to_bigint_fails() {
+            assert_truncation_err(f64::NAN, ColumnType::BigInt);
+        }
+
+        #[test]
+        fn test_infinity_to_bigint_fails() {
+            assert_truncation_err(f64::INFINITY, ColumnType::BigInt);
+            assert_truncation_err(f64::NEG_INFINITY, ColumnType::BigInt);
+        }
+
+        #[test]
+        fn test_fractional_number_to_bigint_fails() {
+            assert_truncation_err(42.5, ColumnType::BigInt);
         }
 
         #[test]
@@ -419,6 +589,75 @@ mod tests {
             let result = js_number.to_plaintext_with_type(ColumnType::BigUInt);
             assert!(result.is_err());
             assert!(result.unwrap_err().0.contains("negative"));
+        }
+
+        #[test]
+        fn test_out_of_range_number_to_biguint_fails() {
+            // 2^64 is representable as f64 but exceeds u64::MAX; `as` would
+            // saturate to u64::MAX.
+            assert_truncation_err(18_446_744_073_709_551_616.0, ColumnType::BigUInt);
+        }
+
+        #[test]
+        fn test_nan_to_biguint_fails() {
+            // NaN is not < 0.0, so it sails past the negative guard and `as`
+            // would turn it into 0.
+            assert_truncation_err(f64::NAN, ColumnType::BigUInt);
+        }
+
+        #[test]
+        fn test_infinity_to_biguint_fails() {
+            assert_truncation_err(f64::INFINITY, ColumnType::BigUInt);
+        }
+
+        #[test]
+        fn test_fractional_number_to_biguint_fails() {
+            assert_truncation_err(42.5, ColumnType::BigUInt);
+        }
+
+        #[test]
+        fn test_nan_and_infinity_pass_through_to_float() {
+            // Float stores the f64 verbatim — no truncation is possible, so
+            // the strict-integer policy does not apply.
+            let nan = JsPlaintext::Number(f64::NAN)
+                .to_plaintext_with_type(ColumnType::Float)
+                .unwrap();
+            assert!(matches!(nan, Plaintext::Float(Some(n)) if n.is_nan()));
+            let inf = JsPlaintext::Number(f64::INFINITY)
+                .to_plaintext_with_type(ColumnType::Float)
+                .unwrap();
+            assert_eq!(inf, Plaintext::Float(Some(f64::INFINITY)));
+        }
+
+        #[test]
+        fn test_nan_to_decimal_fails() {
+            // Decimal::try_from rejects non-finite values — verify rather
+            // than assume.
+            let result = JsPlaintext::Number(f64::NAN).to_plaintext_with_type(ColumnType::Decimal);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().0.contains("Decimal"));
+        }
+
+        #[test]
+        fn test_infinity_to_decimal_fails() {
+            let result =
+                JsPlaintext::Number(f64::INFINITY).to_plaintext_with_type(ColumnType::Decimal);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().0.contains("Decimal"));
+        }
+
+        #[test]
+        fn test_truncation_errors_do_not_echo_the_value() {
+            // Values on the encrypt path are plaintext secrets; errors must
+            // not leak them (same convention as the date parsing errors).
+            let err = JsPlaintext::Number(5_000_000_001.0)
+                .to_plaintext_with_type(ColumnType::Int)
+                .unwrap_err();
+            assert!(
+                !err.0.contains("5000000001") && !err.0.contains("5_000_000_001"),
+                "error must not echo the plaintext value, got: {}",
+                err.0
+            );
         }
 
         #[test]
