@@ -1,25 +1,31 @@
 import type {
+  EncryptConfig,
+  EncryptedPayload,
+  EncryptedQuery,
   EncryptedScalar,
   EncryptedSteVec,
-  EncryptConfig,
+  EncryptedV3Query,
 } from '../../lib/index.cjs'
 
-// The payload parameter is `unknown` (not `Encrypted`) because encrypt /
-// encryptQuery return dual-format unions since EQL v3 support — these
-// helpers narrow to the v2 shapes.
+// Everything encrypt / encryptBulk ({@link EncryptedPayload}) and
+// encryptQuery / encryptQueryBulk ({@link EncryptedQuery} /
+// {@link EncryptedV3Query}) can return — these helpers accept any of those
+// dual-format shapes and narrow to the v2 shapes the tests assert on.
+type AnyEncrypted = EncryptedPayload | EncryptedQuery | EncryptedV3Query
+
 export function assertSteVec(
-  payload: unknown,
+  payload: AnyEncrypted,
 ): asserts payload is EncryptedSteVec {
-  const k = (payload as { k?: unknown } | null)?.k
+  const k = 'k' in payload ? payload.k : undefined
   if (k !== 'sv') {
     throw new Error(`expected k:"sv" payload, got k:"${String(k)}"`)
   }
 }
 
 export function assertScalar(
-  payload: unknown,
+  payload: AnyEncrypted,
 ): asserts payload is EncryptedScalar {
-  const k = (payload as { k?: unknown } | null)?.k
+  const k = 'k' in payload ? payload.k : undefined
   if (k !== 'ct') {
     throw new Error(`expected k:"ct" payload, got k:"${String(k)}"`)
   }
