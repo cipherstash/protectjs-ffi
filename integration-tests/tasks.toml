@@ -26,22 +26,42 @@ run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psq
 # The eql_v3 schema has no release artifact yet, so the installer is a
 # COMMITTED snapshot (sql/cipherstash-encrypt-v3.sql — the one exception to
 # the cipherstash-*.sql gitignore rule) built from the EQL repo's `eql_v3`
-# branch. That is what CI and checkout-only contributors install. This task
-# REFRESHES the snapshot from a sibling encrypt-query-language checkout
-# (`mise run build` there writes the self-contained eql_v3 installer to
-# release/cipherstash-encrypt.sql); commit the diff when the eql_v3 branch
-# moves. Skips with a warning when the sibling checkout is absent — the
-# committed snapshot is used as-is.
+# branch. That is what CI, contributors, and `mise run setup` install — setup
+# uses the committed snapshot as-is and never rebuilds it. This task is the
+# OPT-IN refresh: run it explicitly when the eql_v3 branch moves, then commit
+# the diff. It builds from a sibling encrypt-query-language checkout
+# (`mise run build` there writes the installer to release/cipherstash-encrypt.sql),
+# but the sibling may be on any branch (e.g. `main`, which builds the v2
+# installer), so the output is built to a temp file and verified — it must
+# create the eql_v3 schema and must not create eql_v2 — before it is allowed
+# to overwrite the committed snapshot.
 ["eql:v3:build"]
-description = "Refresh the committed EQL v3 SQL snapshot from a sibling encrypt-query-language checkout"
+description = "Rebuild the committed EQL v3 SQL snapshot from a sibling encrypt-query-language checkout (opt-in; verifies the output is the eql_v3 installer before overwriting)"
 dir = "{{ config_root }}/integration-tests"
 run = """
+set -e
 if [ ! -d ../../encrypt-query-language ]; then
-    echo "warning: ../../encrypt-query-language not found — using the committed EQL v3 snapshot as-is"
-    exit 0
+    echo "error: ../../encrypt-query-language not found — clone it next to this repo (on the eql_v3 branch) to rebuild the snapshot" >&2
+    exit 1
 fi
+branch=$(git -C ../../encrypt-query-language branch --show-current)
 (cd ../../encrypt-query-language && mise run build)
-cp ../../encrypt-query-language/release/cipherstash-encrypt.sql sql/cipherstash-encrypt-v3.sql
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cp ../../encrypt-query-language/release/cipherstash-encrypt.sql "$tmp"
+if ! grep -q 'CREATE SCHEMA eql_v3;' "$tmp"; then
+    echo "error: the built installer does not create the eql_v3 schema." >&2
+    echo "The sibling encrypt-query-language checkout is on branch '${branch:-<detached>}' — check out the eql_v3 branch there and re-run. The committed snapshot was left untouched." >&2
+    exit 1
+fi
+if grep -Eq 'CREATE SCHEMA (IF NOT EXISTS )?eql_v2' "$tmp"; then
+    echo "error: the built installer creates the eql_v2 schema — this looks like the v2 installer, not eql_v3." >&2
+    echo "The sibling encrypt-query-language checkout is on branch '${branch:-<detached>}' — check out the eql_v3 branch there and re-run. The committed snapshot was left untouched." >&2
+    exit 1
+fi
+mv "$tmp" sql/cipherstash-encrypt-v3.sql
+trap - EXIT
+echo "sql/cipherstash-encrypt-v3.sql rebuilt from encrypt-query-language@${branch} — commit the diff if the snapshot changed"
 """
 
 ["eql:v3:install"]
@@ -55,15 +75,17 @@ fi
 cat sql/cipherstash-encrypt-v3.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-
 """
 
+# Installs the COMMITTED EQL v3 snapshot as-is. Rebuilding the snapshot from
+# a sibling encrypt-query-language checkout is deliberately NOT part of setup —
+# run `mise run eql:v3:build` explicitly when the eql_v3 branch moves.
 [setup]
-description = "Set up the integration test environment"
+description = "Set up the integration test environment (installs the committed EQL v3 snapshot; rebuild it explicitly with eql:v3:build)"
 dir = "{{ config_root }}/integration-tests"
 run = [
     "npm ci",
     "mise run start-db",
     "mise run eql:download",
     "mise run eql:install",
-    "mise run eql:v3:build",
     "mise run eql:v3:install",
 ]
 
