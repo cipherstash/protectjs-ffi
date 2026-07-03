@@ -11,9 +11,10 @@ import {
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
 
-// Requires the eql_v3 schema: `mise run eql:v3:build && mise run
-// eql:v3:install` (part of `mise setup`). Built from a sibling
-// encrypt-query-language checkout — there is no v3 release artifact yet.
+// Requires the eql_v3 schema: `mise run eql:v3:install` (part of `mise
+// setup`) installs the committed snapshot sql/cipherstash-encrypt-v3.sql.
+// There is no v3 release artifact yet — refresh the snapshot from a sibling
+// encrypt-query-language checkout with `mise run eql:v3:build`.
 const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {

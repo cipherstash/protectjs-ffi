@@ -23,18 +23,21 @@ description = "Install CipherStash encrypt SQL into the database"
 dir = "{{ config_root }}/integration-tests"
 run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
 
-# The eql_v3 schema has no release artifact yet — build it from a sibling
-# checkout of encrypt-query-language (`mise run build` there writes the
-# self-contained eql_v3 installer to release/cipherstash-encrypt.sql).
-# Skips with a warning when the sibling checkout is absent so `mise setup`
-# still works for contributors without it (postgres-v3.test.ts then needs
-# the schema installed separately).
+# The eql_v3 schema has no release artifact yet, so the installer is a
+# COMMITTED snapshot (sql/cipherstash-encrypt-v3.sql — the one exception to
+# the cipherstash-*.sql gitignore rule) built from the EQL repo's `eql_v3`
+# branch. That is what CI and checkout-only contributors install. This task
+# REFRESHES the snapshot from a sibling encrypt-query-language checkout
+# (`mise run build` there writes the self-contained eql_v3 installer to
+# release/cipherstash-encrypt.sql); commit the diff when the eql_v3 branch
+# moves. Skips with a warning when the sibling checkout is absent — the
+# committed snapshot is used as-is.
 ["eql:v3:build"]
-description = "Build the EQL v3 SQL from a sibling encrypt-query-language checkout"
+description = "Refresh the committed EQL v3 SQL snapshot from a sibling encrypt-query-language checkout"
 dir = "{{ config_root }}/integration-tests"
 run = """
 if [ ! -d ../../encrypt-query-language ]; then
-    echo "warning: ../../encrypt-query-language not found — skipping EQL v3 build (postgres-v3 tests need it)"
+    echo "warning: ../../encrypt-query-language not found — using the committed EQL v3 snapshot as-is"
     exit 0
 fi
 (cd ../../encrypt-query-language && mise run build)
@@ -46,7 +49,7 @@ description = "Install the EQL v3 SQL into the database"
 dir = "{{ config_root }}/integration-tests"
 run = """
 if [ ! -f sql/cipherstash-encrypt-v3.sql ]; then
-    echo "warning: sql/cipherstash-encrypt-v3.sql not found — skipping EQL v3 install (run eql:v3:build first)"
+    echo "warning: sql/cipherstash-encrypt-v3.sql not found — skipping EQL v3 install (the snapshot is committed; check the working tree)"
     exit 0
 fi
 cat sql/cipherstash-encrypt-v3.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-
