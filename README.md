@@ -91,8 +91,8 @@ Notes:
 - v3 query encryption currently supports JSON containment only; scalar and
   selector queries throw `EQL_V3_QUERY_UNSUPPORTED` and need an
   `eqlVersion: 2` client.
-- `ope`-indexed columns map to `<family>_ord_ope` but cannot be produced
-  end-to-end yet: the client does not emit the `op` term (CIP-3280).
+- `ope`-indexed columns map to `<family>_ord_ope` and carry the `op`
+  (CLLW-OPE) term (emitted since cipherstash-client 0.38.1).
 
 > [!NOTE]
 > **Breaking TypeScript change:** `encrypt`/`encryptBulk` now return

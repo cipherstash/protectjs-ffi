@@ -530,6 +530,20 @@ mod tests {
             })
         }
 
+        /// A scalar payload carrying only the `op` (CLLW-OPE) term, as
+        /// cipherstash-client 0.38.1 emits for an ope-indexed column.
+        pub(super) fn ope_scalar_payload(op: &str) -> EqlCiphertext {
+            EqlCiphertext::Encrypted(EncryptedPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: dummy_encrypted_record(),
+                hmac_256: None,
+                bloom_filter: None,
+                ore_block_u64_8_256: None,
+                ope_cllw: Some(op.to_string()),
+            })
+        }
+
         pub(super) fn ste_vec_payload() -> EqlCiphertext {
             EqlCiphertext::SteVec(SteVecPayload {
                 version: EQL_SCHEMA_VERSION,
@@ -944,7 +958,7 @@ mod tests {
     }
 
     mod storage_output {
-        use super::support::{column, scalar_payload, ste_vec_payload};
+        use super::support::{column, ope_scalar_payload, scalar_payload, ste_vec_payload};
         use super::*;
         use cipherstash_client::schema::column::{Index, IndexType, Tokenizer};
 
@@ -1067,6 +1081,23 @@ mod tests {
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["ob"], serde_json::json!(["bb"]));
             assert!(value.get("hm").is_none(), "hm dropped for integer_ord_ore");
+        }
+
+        #[test]
+        fn v3_ope_term_flows_through_to_the_ord_ope_domain() {
+            // cipherstash-client 0.38.1 emits the scalar `op` (CLLW-OPE)
+            // term (CIP-3348), so an ope-indexed column can reach its
+            // _ord_ope domain: v, i, c, op and nothing else.
+            let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ope)]);
+            let output = storage_output(ope_scalar_payload("cc"), EqlVersion::V3, &cfg).unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["v"], 3);
+            assert!(value["c"].is_string(), "ciphertext is copied verbatim");
+            assert_eq!(value["op"], "cc");
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().collect();
+            keys.sort();
+            assert_eq!(keys, ["c", "i", "op", "v"]);
         }
 
         #[test]

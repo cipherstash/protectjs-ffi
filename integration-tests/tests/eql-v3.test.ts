@@ -17,6 +17,7 @@ import {
   type EncryptConfig,
   type EncryptedV3,
   type EqlV3Boolean,
+  type IntegerOrdOpe,
   type IntegerOrdOre,
   type NumericOrdOre,
   type SmallintOrdOre,
@@ -53,6 +54,10 @@ const v3Config: EncryptConfig = {
       count: {
         cast_as: 'int',
         indexes: { ore: {} },
+      },
+      rank: {
+        cast_as: 'int',
+        indexes: { ope: {} },
       },
       score: {
         cast_as: 'bigint',
@@ -148,6 +153,14 @@ describe('eql v3 scalar round-trips', async () => {
       plaintext: 123456,
       domain: 'integer_ord_ore',
       keys: v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob'),
+    },
+    // ope maps onto the _ord_ope domains, carrying op (CLLW-OPE) — emitted
+    // since cipherstash-client 0.38.1 (CIP-3348)
+    {
+      column: 'rank',
+      plaintext: 7,
+      domain: 'integer_ord_ope',
+      keys: v3WireKeys<IntegerOrdOpe>()('v', 'i', 'c', 'op'),
     },
     {
       column: 'score',

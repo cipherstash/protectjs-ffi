@@ -8,6 +8,7 @@ import {
   newClient,
   type EncryptConfig,
   type EncryptedPayload,
+  type IntegerOrdOpe,
   type IntegerOrdOre,
   type TextEq,
 } from '@cipherstash/protect-ffi'
@@ -22,7 +23,8 @@ import { v3WireKeys } from './common'
 // The config -> eql_v3 domain mapping is asserted, not assumed: each
 // payload's exact key set is checked against the vendored domain type
 // before INSERT (below), and the live domain CHECK on the eql_v3.text_eq /
-// eql_v3.integer_ord_ore columns validates the required keys on INSERT.
+// eql_v3.integer_ord_ore / eql_v3.integer_ord_ope columns validates the
+// required keys on INSERT.
 const encryptConfig: EncryptConfig = {
   v: 1,
   tables: {
@@ -35,6 +37,10 @@ const encryptConfig: EncryptConfig = {
         cast_as: 'int',
         indexes: { ore: {} },
       },
+      rank: {
+        cast_as: 'int',
+        indexes: { ope: {} },
+      },
     },
   },
 }
@@ -43,6 +49,7 @@ const encryptConfig: EncryptConfig = {
 // domain types (see v3WireKeys).
 const textEqKeys = v3WireKeys<TextEq>()('v', 'i', 'c', 'hm')
 const integerOrdOreKeys = v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob')
+const integerOrdOpeKeys = v3WireKeys<IntegerOrdOpe>()('v', 'i', 'c', 'op')
 
 describe('postgres eql_v3', async () => {
   const protectClient = await newClient({ encryptConfig, eqlVersion: 3 })
@@ -56,7 +63,8 @@ describe('postgres eql_v3', async () => {
       CREATE TABLE encrypted_v3 (
         id SERIAL PRIMARY KEY,
         email eql_v3.text_eq,
-        score eql_v3.integer_ord_ore
+        score eql_v3.integer_ord_ore,
+        rank eql_v3.integer_ord_ope
       )
     `)
 
@@ -196,9 +204,35 @@ describe('postgres eql_v3', async () => {
     expect(decrypted).toEqual(['b@example.com'])
   })
 
-  // cipherstash-client 0.38.0 does not emit the `op` (CLLW-OPE) term —
-  // CIP-3280 is unreleased — so an `ope`-indexed column fails at encrypt
-  // time with a MissingTerm error and no _ord_ope payload can be produced
-  // end-to-end yet.
-  test.skip('ORDER BY on an eql_v3.int4_ord_ope column (blocked on CIP-3280: client 0.38.0 does not emit op)', () => {})
+  // Real-ciphertext _ord_ope coverage (CIP-3348): cipherstash-client 0.38.1
+  // emits the scalar `op` (CLLW-OPE) term, so an `ope`-indexed column can be
+  // produced end-to-end (0.38.0 dropped the term at encrypt time).
+  test('ORDER BY the ord_ope extractor sorts by plaintext order', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        { plaintext: 30, column: 'rank', table: 'v3pg' },
+        { plaintext: 10, column: 'rank', table: 'v3pg' },
+        { plaintext: 20, column: 'rank', table: 'v3pg' },
+      ],
+    })
+
+    for (const ciphertext of ciphertexts) {
+      expect(Object.keys(ciphertext).sort()).toEqual(integerOrdOpeKeys)
+    }
+
+    await pg.query(
+      'INSERT INTO encrypted_v3 (rank) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      ciphertexts,
+    )
+
+    const res: QueryResult<{ rank: EncryptedPayload }> = await pg.query(`
+      SELECT rank::jsonb FROM encrypted_v3
+      ORDER BY eql_v3.ord_ope_term(rank) ASC
+    `)
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.rank })),
+    })
+    expect(decrypted).toEqual([10, 20, 30])
+  })
 })
