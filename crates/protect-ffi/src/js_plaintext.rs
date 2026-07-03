@@ -48,6 +48,13 @@ impl TryFrom<Plaintext> for JsPlaintext {
             // JavaScript's Number.MAX_SAFE_INTEGER (2^53 - 1). Only values up to this threshold
             // can be safely represented as a Number in JavaScript without loss of precision.
             Plaintext::BigInt(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
+            Plaintext::Int(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
+            Plaintext::SmallInt(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
+            // Decimal → f64 carries the same caveat as BigInt above: values
+            // beyond f64's exact range lose precision as a JS number.
+            Plaintext::Decimal(Some(d)) => rust_decimal::prelude::ToPrimitive::to_f64(&d)
+                .map(JsPlaintext::Number)
+                .ok_or_else(|| TypeParseError("Decimal does not fit in an f64".to_string())),
             Plaintext::Float(Some(n)) => Ok(JsPlaintext::Number(n)),
             Plaintext::Boolean(Some(b)) => Ok(JsPlaintext::Boolean(b)),
             Plaintext::NaiveDate(Some(nd)) => {
@@ -306,11 +313,33 @@ mod tests {
         }
 
         #[test]
+        fn test_int_becomes_number() {
+            // cast_as: 'int' stores Plaintext::Int; decrypt must surface it
+            // as a JS number (the eql-v3 'count' round-trip).
+            let js: JsPlaintext = Plaintext::Int(Some(42)).try_into().unwrap();
+            assert_eq!(js, JsPlaintext::Number(42.0));
+        }
+
+        #[test]
+        fn test_small_int_becomes_number() {
+            let js: JsPlaintext = Plaintext::SmallInt(Some(7)).try_into().unwrap();
+            assert_eq!(js, JsPlaintext::Number(7.0));
+        }
+
+        #[test]
+        fn test_decimal_becomes_number() {
+            let d = Decimal::try_from(19.99).unwrap();
+            let js: JsPlaintext = Plaintext::Decimal(Some(d)).try_into().unwrap();
+            assert_eq!(js, JsPlaintext::Number(19.99));
+        }
+
+        #[test]
         fn test_unsupported_type() {
-            let result: Result<JsPlaintext, TypeParseError> = Plaintext::Int(Some(42)).try_into();
+            let result: Result<JsPlaintext, TypeParseError> =
+                Plaintext::BigUInt(Some(42)).try_into();
             assert!(
                 result.is_err(),
-                "Plaintext::Int has no JsPlaintext mapping and should fail"
+                "Plaintext::BigUInt has no JsPlaintext mapping and should fail"
             );
         }
     }
