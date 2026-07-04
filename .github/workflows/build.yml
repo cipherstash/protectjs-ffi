@@ -127,7 +127,9 @@ jobs:
             export RUSTFLAGS="-C target-feature=-crt-static"
             npm run ${{ matrix.cfg.script }}
           elif [[ $CARGO_BUILD_TARGET =~ gnu ]]; then
-            CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET}.2.28" npm run ${{ matrix.cfg.script }}
+            # Pass the glibc-versioned target as a flag: cargo-zigbuild >= 0.23.0
+            # no longer reads CARGO_BUILD_TARGET from the environment.
+            npm run ${{ matrix.cfg.script }} -- --target "${CARGO_BUILD_TARGET}.2.28"
           else
             npm run ${{ matrix.cfg.script }}
           fi
