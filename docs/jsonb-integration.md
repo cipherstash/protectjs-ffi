@@ -18,7 +18,7 @@ The JSONB encryption system consists of three layers:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      Application Layer                       │
-│                         (@cipherstash/stack)                          │
+│                     (@cipherstash/stack)                     │
 │  - Schema definition with .searchableJson()                  │
 │  - High-level query API (encryptQuery)                       │
 │  - Path utilities (toDollarPath, buildNestedObject)          │

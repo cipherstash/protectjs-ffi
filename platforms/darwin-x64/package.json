@@ -25,6 +25,6 @@
     "arch": "x64",
     "abi": null
   },
-  "author": "",
-  "license": "ISC"
+  "author": "CipherStash <humans@cipherstash.com>",
+  "license": "MIT"
 }
