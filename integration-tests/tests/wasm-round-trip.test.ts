@@ -11,7 +11,7 @@
 // 1. Build the wasm artifacts from the repo root: `npm run build:wasm`.
 //    Without `dist/wasm/protect_ffi_inline.js` the suite fails fast with
 //    a clear error rather than skipping silently.
-// 2. Set `CS_REGION`, `CS_CLIENT_ACCESS_KEY`, `CS_CLIENT_ID`, and
+// 2. Set `CS_WORKSPACE_CRN`, `CS_CLIENT_ACCESS_KEY`, `CS_CLIENT_ID`, and
 //    `CS_CLIENT_KEY` (the wasm path takes the dataset client key inline;
 //    there's no profile-store fallback).
 //

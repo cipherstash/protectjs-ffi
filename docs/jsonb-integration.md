@@ -18,7 +18,7 @@ The JSONB encryption system consists of three layers:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      Application Layer                       │
-│                         (protectjs)                          │
+│                         (@cipherstash/stack)                          │
 │  - Schema definition with .searchableJson()                  │
 │  - High-level query API (encryptQuery)                       │
 │  - Path utilities (toDollarPath, buildNestedObject)          │
@@ -268,11 +268,11 @@ WHERE profile @> $query::jsonb;
 
 ---
 
-## Protect.js Higher-Level API
+## @cipherstash/stack Higher-Level API
 
-If using the full Protect.js library (not just protectjs-ffi directly), you get additional convenience patterns:
+If using the full [`@cipherstash/stack`](https://github.com/cipherstash/stack) library (not just protect-ffi directly), you get additional convenience patterns:
 
-| Protect.js Pattern | Translates To | Output |
+| @cipherstash/stack Pattern | Translates To | Output |
 |-------------------|---------------|--------|
 | `{ path: "user.email" }` | `encryptQuery` with `$.user.email` selector | `{ s }` |
 | `{ path: "user.role", value: "admin" }` | `encryptQuery` with `{ user: { role: "admin" } }` term | `{ sv }` |
@@ -281,7 +281,7 @@ If using the full Protect.js library (not just protectjs-ffi directly), you get 
 
 **Note:** Path+value queries use containment semantics (not selector+value comparison). The path is used to build a nested object structure for the containment query.
 
-See the Protect.js source for implementation details.
+See the [@cipherstash/stack source](https://github.com/cipherstash/stack) for implementation details.
 
 ---
 
