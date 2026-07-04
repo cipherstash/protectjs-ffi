@@ -1,7 +1,7 @@
 {
   "name": "@cipherstash/protect-ffi-darwin-x64",
   "description": "Prebuilt binary package for `@cipherstash/protect-ffi` on `darwin-x64`.",
-  "version": "0.26.1-0",
+  "version": "0.27.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cipherstash/protectjs-ffi.git",
