@@ -15,33 +15,12 @@ This guide provides a comprehensive overview of JSONB encryption and querying in
 
 The JSONB encryption system consists of three layers:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Application Layer                       │
-│                         (protectjs)                          │
-│  - Schema definition with .searchableJson()                  │
-│  - High-level query API (encryptQuery)                       │
-│  - Path utilities (toDollarPath, buildNestedObject)          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                        FFI Layer                             │
-│                      (protectjs-ffi)                         │
-│  - JsPlaintext type conversion                               │
-│  - Query operation inference                                 │
-│  - Schema configuration (EncryptConfig)                      │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Encryption Layer                         │
-│                   (cipherstash-client)                       │
-│  - JsonbIndexer<T> for JSON processing                       │
-│  - SteVec<N> for flattened entry storage                     │
-│  - eJsonPath parser for path selectors                       │
-│  - Cryptographic operations (AES-GCM-SIV, ORE, Blake3)       │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    APP["<b>Application Layer</b><br/>(@cipherstash/stack)<br/>Schema definition with .searchableJson()<br/>High-level query API (encryptQuery)<br/>Path utilities (toDollarPath, buildNestedObject)"]
+    FFI["<b>FFI Layer</b><br/>(protectjs-ffi)<br/>JsPlaintext type conversion<br/>Query operation inference<br/>Schema configuration (EncryptConfig)"]
+    ENC["<b>Encryption Layer</b><br/>(cipherstash-client)<br/>JsonbIndexer&lt;T&gt; for JSON processing<br/>SteVec&lt;N&gt; for flattened entry storage<br/>eJsonPath parser for path selectors<br/>Cryptographic operations (AES-GCM-SIV, ORE, Blake3)"]
+    APP --> FFI --> ENC
 ```
 
 ### Key Components
@@ -62,21 +41,13 @@ The JSONB encryption system consists of three layers:
 
 When storing JSONB data, the flow is:
 
-```
-JSON Object                        EQL Ciphertext
-{ "user": { "role": "admin" } }    { i, v, c, sv: [...] }
-            │                                 ▲
-            ▼                                 │
-┌───────────────────┐              ┌──────────────────────┐
-│  JsPlaintext      │              │   EqlCiphertext      │
-│  (JsonB variant)  │──────────────│   (unified format)   │
-└───────────────────┘              └──────────────────────┘
-            │                                 ▲
-            ▼                                 │
-┌───────────────────┐              ┌──────────────────────┐
-│  Plaintext::JsonB │──────────────│   encrypt_eql()      │
-│                   │    flatten   │   with Store mode    │
-└───────────────────┘              └──────────────────────┘
+```mermaid
+flowchart LR
+    IN["JSON Object<br/>{ 'user': { 'role': 'admin' } }"] --> JP["JsPlaintext<br/>(JsonB variant)"]
+    JP --> PT["Plaintext::JsonB"]
+    PT -- "flatten" --> EE["encrypt_eql()<br/>Store mode"]
+    EE --> EC["EqlCiphertext<br/>(unified format)"]
+    EC --> OUT["EQL Ciphertext<br/>{ i, v, c, sv: [...] }"]
 ```
 
 **Key Points:**
@@ -96,42 +67,26 @@ Query encryption follows different paths based on query type:
 
 #### Path Selector Query (ste_vec_selector)
 
-```
-JSONPath String         Encrypted Selector
-"$.user.email"          { i, v, s: "..." }
-       │                        ▲
-       ▼                        │
-┌──────────────────┐   ┌──────────────────┐
-│ JsPlaintext      │   │ EqlCiphertext    │
-│ (String variant) │───│ (selector only)  │
-└──────────────────┘   └──────────────────┘
-       │                        ▲
-       ▼                        │
-┌──────────────────┐   ┌──────────────────┐
-│ Plaintext::      │───│ encrypt_eql()    │
-│ Utf8Str          │   │ Query mode       │
-└──────────────────┘   └──────────────────┘
+```mermaid
+flowchart LR
+    IN["JSONPath String<br/>'$.user.email'"] --> JP["JsPlaintext<br/>(String variant)"]
+    JP --> PT["Plaintext::Utf8Str"]
+    PT --> EE["encrypt_eql()<br/>Query mode"]
+    EE --> EC["EqlCiphertext<br/>(selector only)"]
+    EC --> OUT["Encrypted Selector<br/>{ i, v, s: '...' }"]
 ```
 
 **Output:** Only selector (`s`) field, no ciphertext (`c`)
 
 #### Containment Query (ste_vec_term)
 
-```
-JSON Fragment           Encrypted Query
-{ "role": "admin" }     { i, v, sv: [...] }
-       │                        ▲
-       ▼                        │
-┌──────────────────┐   ┌──────────────────┐
-│ JsPlaintext      │   │ EqlCiphertext    │
-│ (JsonB variant)  │───│ (with sv array)  │
-└──────────────────┘   └──────────────────┘
-       │                        ▲
-       ▼                        │
-┌──────────────────┐   ┌──────────────────┐
-│ Plaintext::JsonB │───│ encrypt_eql()    │
-│                  │   │ Store mode       │
-└──────────────────┘   └──────────────────┘
+```mermaid
+flowchart LR
+    IN["JSON Fragment<br/>{ 'role': 'admin' }"] --> JP["JsPlaintext<br/>(JsonB variant)"]
+    JP --> PT["Plaintext::JsonB"]
+    PT --> EE["encrypt_eql()<br/>Store mode"]
+    EE --> EC["EqlCiphertext<br/>(with sv array)"]
+    EC --> OUT["Encrypted Query<br/>{ i, v, sv: [...] }"]
 ```
 
 **Output:** SteVec entries (`sv`) array, typically with ciphertext (`c`)
@@ -268,11 +223,11 @@ WHERE profile @> $query::jsonb;
 
 ---
 
-## Protect.js Higher-Level API
+## @cipherstash/stack Higher-Level API
 
-If using the full Protect.js library (not just protectjs-ffi directly), you get additional convenience patterns:
+If using the full [`@cipherstash/stack`](https://github.com/cipherstash/stack) library (not just protect-ffi directly), you get additional convenience patterns:
 
-| Protect.js Pattern | Translates To | Output |
+| @cipherstash/stack Pattern | Translates To | Output |
 |-------------------|---------------|--------|
 | `{ path: "user.email" }` | `encryptQuery` with `$.user.email` selector | `{ s }` |
 | `{ path: "user.role", value: "admin" }` | `encryptQuery` with `{ user: { role: "admin" } }` term | `{ sv }` |
@@ -281,7 +236,7 @@ If using the full Protect.js library (not just protectjs-ffi directly), you get 
 
 **Note:** Path+value queries use containment semantics (not selector+value comparison). The path is used to build a nested object structure for the containment query.
 
-See the Protect.js source for implementation details.
+See the [@cipherstash/stack source](https://github.com/cipherstash/stack) for implementation details.
 
 ---
 

@@ -239,7 +239,7 @@ pub enum Error {
     Encryption(#[from] EncryptionError),
     #[error(transparent)]
     Eql(#[from] EqlError),
-    #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs/issues.")]
+    #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs-ffi/issues.")]
     InvariantViolation(String),
     #[error("Unknown query operation: '{0}'")]
     UnknownQueryOp(String),
