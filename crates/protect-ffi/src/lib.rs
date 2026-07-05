@@ -1596,6 +1596,7 @@ mod tests {
                 hmac_256: None,
                 bloom_filter: None,
                 ore_block_u64_8_256: None,
+                ope_cllw: None,
             });
             let value = serde_json::to_value(&payload).unwrap();
             assert_eq!(value["k"], "ct");
