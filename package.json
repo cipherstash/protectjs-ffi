@@ -32,7 +32,7 @@
     "cross": "npm run cross-build -- --release",
     "zigbuild": "npm run zig-build -- --release",
     "prepack": "tsc &&neon update",
-    "version": "neon bump --binaries platforms && git add .",
+    "version": "neon bump --binaries platforms && node scripts/changelog-release.mjs && git add .",
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
     "dryrun": "gh workflow run release.yml -f dryrun=true -f version=patch",
     "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack",

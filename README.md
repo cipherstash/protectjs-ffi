@@ -19,14 +19,13 @@ This command uses the [@neon-rs/cli](https://www.npmjs.com/package/@neon-rs/cli)
 
 ## Local setup
 
-You can use the `stash` CLI tool to set up your local environment.
-
-You will be prompted to sign in or create an account and follow steps to create a keyset and client key.
+Authenticate the `stash` CLI to set up your local environment. It runs via `npx` — no separate install needed:
 
 ```sh
-brew install cipherstash/tap/stash
-stash setup
+npx stash auth login
 ```
+
+You will be prompted to sign in or create an account.
 
 ## Exploring
 
@@ -205,8 +204,11 @@ To perform a release:
    Select "custom" in the dropdown and fill in the "Custom version" text box if you want to use a semver string instead of the shorthand (patch, minor, major, etc.).
 1. Click "Run workflow".
 
-Note that we currently don't have any automation around release notes or a changelog.
-However, you can add release notes after running the workflow by editing the release on GitHub.
+Release notes and the changelog are automated. Add notes for your changes under the
+`[Unreleased]` heading in [`CHANGELOG.md`](./CHANGELOG.md). On release, the `version`
+npm lifecycle hook promotes that section to a dated release entry
+(`scripts/changelog-release.mjs`), and the workflow publishes the promoted section as
+the GitHub release notes (`scripts/changelog-extract.mjs`).
 
 ## Learn More
 
