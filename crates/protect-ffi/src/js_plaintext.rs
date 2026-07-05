@@ -5,6 +5,32 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use vitaminc::protected::OpaqueDebug;
 
+/// The single-key wire form a JS `bigint` crosses the FFI boundary in:
+/// `{"__protect_ffi_bigint__": "<decimal string>"}`.
+///
+/// A JS `bigint` cannot cross either serde-based boundary natively:
+///
+/// - Neon extracts every options object with `neon::types::extract::Json`,
+///   which runs `JSON.stringify` on the JS side — and `JSON.stringify`
+///   throws a `TypeError` on any BigInt.
+/// - serde-wasm-bindgen's `deserialize_any` visits BOTH a JS BigInt and a
+///   safe-integer JS Number as `visit_i64`, so after `#[serde(untagged)]`
+///   buffering the two are indistinguishable (and a plain `i64` variant
+///   would shadow `Number`).
+///
+/// So the boundaries encode `typeof v === 'bigint'` values into this tagged
+/// map before serde ever sees them (`src/index.cts` for Neon,
+/// `encode_bigint_plaintext` in `wasm.rs` for wasm), and the [`bigint_wire`]
+/// serde module below decodes exactly this shape into
+/// [`JsPlaintext::BigInt`]. Both encoders bounds-check against `i64` first
+/// and raise a clear error, so an out-of-range value never reaches serde
+/// through the public API.
+// Referenced by the wasm boundary encoder (`wasm.rs`) and tests; the Neon
+// boundary builds the tagged form in TypeScript (`src/index.cts`), so the
+// non-wasm cdylib itself never reads the const.
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+pub(crate) const BIGINT_WIRE_KEY: &str = "__protect_ffi_bigint__";
+
 #[derive(Deserialize, Serialize, OpaqueDebug, PartialEq)]
 #[serde(untagged)]
 pub(crate) enum JsPlaintext {
@@ -15,6 +41,15 @@ pub(crate) enum JsPlaintext {
     String(String),
     Number(f64),
     Boolean(bool),
+    // A JS `bigint`, carried on the wire as the tagged single-key map
+    // documented on [`BIGINT_WIRE_KEY`]. Must precede `JsonB`, which
+    // accepts any map. Bounds: full i64 — the boundary encoders reject
+    // anything outside `i64::MIN..=i64::MAX` before serde runs. If the
+    // tagged shape carries a non-i64 string anyway (only reachable by
+    // bypassing the public wrappers), this variant fails to match and the
+    // value falls through to `JsonB`, where `to_plaintext_with_type`
+    // rejects it as a Json → numeric-column mismatch.
+    BigInt(#[serde(with = "bigint_wire")] i64),
     // Produced only on the decrypt path from `Plaintext::NaiveDate` /
     // `Plaintext::Timestamp`. Serializes as a plain RFC 3339 string via
     // chrono's default impl, so the JS side receives a string and can call
@@ -23,12 +58,50 @@ pub(crate) enum JsPlaintext {
     JsonB(serde_json::Value),
 }
 
+/// Serde (de)serialization of the [`BIGINT_WIRE_KEY`] tagged map form.
+///
+/// The value is a decimal *string*, not a JSON number: the Neon boundary
+/// builds the map in JavaScript, where an i64-magnitude number literal
+/// would already have lost precision beyond 2^53.
+mod bigint_wire {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Tagged {
+        #[serde(rename = "__protect_ffi_bigint__")]
+        value: String,
+    }
+
+    pub(super) fn serialize<S: Serializer>(v: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+        Tagged {
+            value: v.to_string(),
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+        let tagged = Tagged::deserialize(deserializer)?;
+        tagged.value.parse::<i64>().map_err(|_| {
+            // Note: inside #[serde(untagged)] this error is swallowed and
+            // the value falls through to the JsonB variant — see the
+            // BigInt variant docs. The message still helps direct
+            // (non-untagged) deserialization and tests.
+            serde::de::Error::custom(
+                "BigInt wire value is not a 64-bit signed integer \
+                 (-9223372036854775808..=9223372036854775807)",
+            )
+        })
+    }
+}
+
 impl From<JsPlaintext> for Plaintext {
     fn from(value: JsPlaintext) -> Self {
         match value {
             JsPlaintext::String(s) => Plaintext::Text(Some(s)),
             JsPlaintext::Number(n) => Plaintext::Float(Some(n)),
             JsPlaintext::Boolean(b) => Plaintext::Boolean(Some(b)),
+            JsPlaintext::BigInt(v) => Plaintext::BigInt(Some(v)),
             JsPlaintext::JsonB(j) => Plaintext::Json(Some(j)),
             JsPlaintext::Date(dt) => Plaintext::Timestamp(Some(dt)),
         }
@@ -44,10 +117,11 @@ impl TryFrom<Plaintext> for JsPlaintext {
             v @ Plaintext::Json(Some(_)) => {
                 serde_json::Value::try_from_plaintext(v).map(JsPlaintext::JsonB)
             }
-            // Note: BigInt is converted to f64, which may lose precision for integers larger than
-            // JavaScript's Number.MAX_SAFE_INTEGER (2^53 - 1). Only values up to this threshold
-            // can be safely represented as a Number in JavaScript without loss of precision.
-            Plaintext::BigInt(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
+            // BigInt decrypts to a JS `bigint` — ALWAYS, even for values
+            // that would fit in a JS number. (Breaking change: prior
+            // releases lowered to `Number(n as f64)`, silently losing
+            // precision beyond Number.MAX_SAFE_INTEGER, 2^53 - 1.)
+            Plaintext::BigInt(Some(n)) => Ok(JsPlaintext::BigInt(n)),
             Plaintext::Int(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
             Plaintext::SmallInt(Some(n)) => Ok(JsPlaintext::Number(n as f64)),
             // Decimal → f64 carries the same caveat as BigInt above: values
@@ -118,6 +192,31 @@ impl JsPlaintext {
                 }
             }
 
+            // BigInt conversions. The i64 arrives exact (the boundary
+            // already enforced i64 bounds), so BigInt stores it verbatim;
+            // the narrower integer targets and BigUInt are range-checked
+            // and error instead of truncating (same policy as the Number
+            // arms above); Decimal holds any i64 exactly. Float is NOT a
+            // valid target — f64 loses precision beyond 2^53, and a lossy
+            // cast would corrupt both the stored value and the index terms
+            // derived from it. Errors deliberately do not echo the value:
+            // it is plaintext being encrypted.
+            (JsPlaintext::BigInt(v), ColumnType::BigInt) => Ok(Plaintext::BigInt(Some(*v))),
+            (JsPlaintext::BigInt(v), ColumnType::Int) => i32::try_from(*v)
+                .map(|v| Plaintext::Int(Some(v)))
+                .map_err(|_| bigint_out_of_range(ColumnType::Int)),
+            (JsPlaintext::BigInt(v), ColumnType::SmallInt) => i16::try_from(*v)
+                .map(|v| Plaintext::SmallInt(Some(v)))
+                .map_err(|_| bigint_out_of_range(ColumnType::SmallInt)),
+            (JsPlaintext::BigInt(v), ColumnType::BigUInt) => u64::try_from(*v)
+                .map(|v| Plaintext::BigUInt(Some(v)))
+                .map_err(|_| {
+                    TypeParseError("Cannot convert negative BigInt to BigUInt".to_string())
+                }),
+            (JsPlaintext::BigInt(v), ColumnType::Decimal) => {
+                Ok(Plaintext::Decimal(Some(Decimal::from(*v))))
+            }
+
             // Boolean conversions - only allow to Boolean
             (JsPlaintext::Boolean(b), ColumnType::Boolean) => Ok(Plaintext::Boolean(Some(*b))),
 
@@ -141,6 +240,10 @@ impl JsPlaintext {
                     JsPlaintext::Number(_) => {
                         "Float, BigInt, Int, SmallInt, BigUInt, Decimal (numeric columns)"
                     }
+                    JsPlaintext::BigInt(_) => {
+                        "BigInt, Int, SmallInt, BigUInt, Decimal (integer columns; \
+                         Float is excluded because f64 cannot represent every i64)"
+                    }
                     JsPlaintext::Boolean(_) => "Boolean (boolean columns)",
                     JsPlaintext::JsonB(_) => "Json (json columns)",
                     JsPlaintext::Date(_) => {
@@ -156,6 +259,16 @@ impl JsPlaintext {
             }
         }
     }
+}
+
+/// Error for a BigInt that does not fit the (narrower) target column type.
+/// Mirrors the `f64_to_exact_int` error style — names the target type,
+/// never echoes the value (it is plaintext being encrypted).
+fn bigint_out_of_range(column_type: ColumnType) -> TypeParseError {
+    TypeParseError(format!(
+        "Cannot convert BigInt to {:?}: value is out of range",
+        column_type
+    ))
 }
 
 /// Convert a JS number (f64) into an integer type exactly, or error.
@@ -223,6 +336,7 @@ pub(crate) fn js_plaintext_type_name(js_plaintext: &JsPlaintext) -> &'static str
         JsPlaintext::String(_) => "String",
         JsPlaintext::Number(_) => "Number",
         JsPlaintext::Boolean(_) => "Boolean",
+        JsPlaintext::BigInt(_) => "BigInt",
         JsPlaintext::JsonB(_) => "Json",
         JsPlaintext::Date(_) => "Date",
     }
@@ -288,6 +402,12 @@ mod tests {
                 "JsPlaintext::Date should map to Plaintext::Timestamp without column-type context"
             );
         }
+
+        #[quickcheck]
+        fn test_bigint(i: i64) {
+            let pt: Plaintext = JsPlaintext::BigInt(i).into();
+            assert_eq!(pt, Plaintext::BigInt(Some(i)));
+        }
     }
 
     mod plaintext_to_js_plaintext {
@@ -329,10 +449,20 @@ mod tests {
         }
 
         #[quickcheck]
-        fn test_bigint(i: i64) {
+        fn test_bigint_becomes_bigint(i: i64) {
+            // BREAKING: cast_as 'bigint' columns decrypt to a JS bigint now
+            // (previously Number, which lost precision beyond 2^53).
             let plaintext_bigint = Plaintext::BigInt(Some(i));
-            let js_number: JsPlaintext = plaintext_bigint.try_into().unwrap();
-            assert_eq!(js_number, JsPlaintext::Number(i as f64));
+            let js: JsPlaintext = plaintext_bigint.try_into().unwrap();
+            assert_eq!(js, JsPlaintext::BigInt(i));
+        }
+
+        #[test]
+        fn test_bigint_extremes_survive_decrypt_exactly() {
+            for v in [i64::MIN, i64::MAX, 0, -1] {
+                let js: JsPlaintext = Plaintext::BigInt(Some(v)).try_into().unwrap();
+                assert_eq!(js, JsPlaintext::BigInt(v));
+            }
         }
 
         #[test]
@@ -884,6 +1014,237 @@ mod tests {
                 "Error should mention valid target Json: {}",
                 err_msg
             );
+        }
+    }
+
+    mod bigint_to_plaintext_with_type {
+        use super::*;
+
+        #[test]
+        fn bigint_to_bigint_is_exact_across_the_full_i64_range() {
+            for v in [i64::MIN, -1, 0, 42, i64::MAX] {
+                let result = JsPlaintext::BigInt(v)
+                    .to_plaintext_with_type(ColumnType::BigInt)
+                    .unwrap();
+                assert_eq!(result, Plaintext::BigInt(Some(v)));
+            }
+        }
+
+        /// Assert the conversion fails, names the target column type, and
+        /// does not echo the value (plaintext being encrypted).
+        fn assert_range_err(v: i64, column_type: ColumnType) {
+            let err = JsPlaintext::BigInt(v)
+                .to_plaintext_with_type(column_type)
+                .expect_err(&format!(
+                    "converting {}n to {:?} must fail instead of truncating",
+                    v, column_type
+                ));
+            assert!(
+                err.0.contains(&format!("{:?}", column_type)),
+                "error should name the target column type {:?}, got: {}",
+                column_type,
+                err.0
+            );
+            assert!(
+                !err.0
+                    .contains(&v.to_string().trim_start_matches('-').to_string()),
+                "error must not echo the plaintext value, got: {}",
+                err.0
+            );
+        }
+
+        #[test]
+        fn bigint_to_int_boundaries_pass() {
+            let max = JsPlaintext::BigInt(i32::MAX as i64)
+                .to_plaintext_with_type(ColumnType::Int)
+                .unwrap();
+            assert_eq!(max, Plaintext::Int(Some(i32::MAX)));
+            let min = JsPlaintext::BigInt(i32::MIN as i64)
+                .to_plaintext_with_type(ColumnType::Int)
+                .unwrap();
+            assert_eq!(min, Plaintext::Int(Some(i32::MIN)));
+        }
+
+        #[test]
+        fn bigint_to_int_overflow_fails() {
+            assert_range_err(i32::MAX as i64 + 1, ColumnType::Int);
+            assert_range_err(i32::MIN as i64 - 1, ColumnType::Int);
+            assert_range_err(5_000_000_000, ColumnType::Int);
+        }
+
+        #[test]
+        fn bigint_to_smallint_boundaries_pass() {
+            let max = JsPlaintext::BigInt(i16::MAX as i64)
+                .to_plaintext_with_type(ColumnType::SmallInt)
+                .unwrap();
+            assert_eq!(max, Plaintext::SmallInt(Some(i16::MAX)));
+            let min = JsPlaintext::BigInt(i16::MIN as i64)
+                .to_plaintext_with_type(ColumnType::SmallInt)
+                .unwrap();
+            assert_eq!(min, Plaintext::SmallInt(Some(i16::MIN)));
+        }
+
+        #[test]
+        fn bigint_to_smallint_overflow_fails() {
+            assert_range_err(40_000, ColumnType::SmallInt);
+            assert_range_err(-40_000, ColumnType::SmallInt);
+        }
+
+        #[test]
+        fn bigint_to_biguint_accepts_non_negative() {
+            let result = JsPlaintext::BigInt(i64::MAX)
+                .to_plaintext_with_type(ColumnType::BigUInt)
+                .unwrap();
+            assert_eq!(result, Plaintext::BigUInt(Some(i64::MAX as u64)));
+        }
+
+        #[test]
+        fn negative_bigint_to_biguint_fails() {
+            let err = JsPlaintext::BigInt(-1)
+                .to_plaintext_with_type(ColumnType::BigUInt)
+                .unwrap_err();
+            assert!(
+                err.0.contains("negative"),
+                "error should mention the negative direction: {}",
+                err.0
+            );
+        }
+
+        #[test]
+        fn bigint_to_decimal_is_exact() {
+            // rust_decimal's 96-bit mantissa holds any i64 exactly.
+            let result = JsPlaintext::BigInt(i64::MAX)
+                .to_plaintext_with_type(ColumnType::Decimal)
+                .unwrap();
+            assert_eq!(result, Plaintext::Decimal(Some(Decimal::from(i64::MAX))));
+        }
+
+        #[test]
+        fn bigint_to_float_fails() {
+            // f64 cannot represent every i64 — a lossy cast would corrupt
+            // the stored value and its index terms, so this is rejected.
+            let err = JsPlaintext::BigInt(42)
+                .to_plaintext_with_type(ColumnType::Float)
+                .unwrap_err();
+            assert!(err.0.contains("Cannot convert"), "got: {}", err.0);
+            assert!(
+                err.0.contains("cast_as"),
+                "error should point at the cast_as setting: {}",
+                err.0
+            );
+        }
+
+        #[test]
+        fn bigint_to_text_boolean_json_date_fail() {
+            for column_type in [
+                ColumnType::Text,
+                ColumnType::Boolean,
+                ColumnType::Json,
+                ColumnType::Date,
+                ColumnType::Timestamp,
+            ] {
+                let err = JsPlaintext::BigInt(42)
+                    .to_plaintext_with_type(column_type)
+                    .expect_err(&format!("BigInt must not coerce to {:?}", column_type));
+                assert!(
+                    err.0.contains("BigInt values can only be used with"),
+                    "error should list the valid BigInt targets: {}",
+                    err.0
+                );
+            }
+        }
+
+        #[test]
+        fn number_to_bigint_guard_is_unchanged() {
+            // The existing f64 path still applies to JS numbers: exact
+            // integers pass, anything beyond exact-f64 territory fails.
+            let ok = JsPlaintext::Number(9_007_199_254_740_992.0) // 2^53
+                .to_plaintext_with_type(ColumnType::BigInt)
+                .unwrap();
+            assert_eq!(ok, Plaintext::BigInt(Some(9_007_199_254_740_992)));
+            let err = JsPlaintext::Number(9_223_372_036_854_775_808.0) // 2^63
+                .to_plaintext_with_type(ColumnType::BigInt);
+            assert!(err.is_err(), "2^63 exceeds i64::MAX and must fail");
+        }
+    }
+
+    mod bigint_wire_form {
+        use super::*;
+
+        #[test]
+        fn tagged_map_deserializes_to_bigint() {
+            let parsed: JsPlaintext =
+                serde_json::from_str(r#"{"__protect_ffi_bigint__": "9223372036854775807"}"#)
+                    .unwrap();
+            assert_eq!(parsed, JsPlaintext::BigInt(i64::MAX));
+
+            let parsed: JsPlaintext =
+                serde_json::from_str(r#"{"__protect_ffi_bigint__": "-9223372036854775808"}"#)
+                    .unwrap();
+            assert_eq!(parsed, JsPlaintext::BigInt(i64::MIN));
+        }
+
+        #[test]
+        fn bigint_serializes_to_the_tagged_map() {
+            // Pins the serde rename to BIGINT_WIRE_KEY (the literal is
+            // duplicated in the serde attribute, which cannot reference a
+            // const).
+            let s = serde_json::to_string(&JsPlaintext::BigInt(42)).unwrap();
+            assert_eq!(s, format!(r#"{{"{}":"42"}}"#, BIGINT_WIRE_KEY));
+        }
+
+        #[test]
+        fn wire_round_trip_is_exact_at_the_extremes() {
+            for v in [i64::MIN, i64::MAX, 0, -1] {
+                let s = serde_json::to_string(&JsPlaintext::BigInt(v)).unwrap();
+                let parsed: JsPlaintext = serde_json::from_str(&s).unwrap();
+                assert_eq!(parsed, JsPlaintext::BigInt(v));
+            }
+        }
+
+        #[test]
+        fn out_of_i64_range_tagged_value_falls_through_to_jsonb() {
+            // Only reachable by bypassing the public wrappers (which
+            // bounds-check first): the BigInt variant fails to match and
+            // untagged deserialization falls through to JsonB, which the
+            // column conversion then rejects. Pin that behavior so a
+            // future serde change is noticed.
+            let parsed: JsPlaintext =
+                serde_json::from_str(r#"{"__protect_ffi_bigint__": "9223372036854775808"}"#)
+                    .unwrap();
+            assert!(
+                matches!(parsed, JsPlaintext::JsonB(_)),
+                "out-of-range tagged value should fall through to JsonB"
+            );
+            let err = parsed
+                .to_plaintext_with_type(ColumnType::BigInt)
+                .expect_err("JsonB must not convert to a BigInt column");
+            assert!(err.0.contains("Cannot convert"), "got: {}", err.0);
+        }
+
+        #[test]
+        fn json_objects_with_extra_keys_stay_jsonb() {
+            // deny_unknown_fields on the wire struct: a user JSON object
+            // that merely CONTAINS the magic key alongside other keys is
+            // still a JsonB value.
+            let parsed: JsPlaintext =
+                serde_json::from_str(r#"{"__protect_ffi_bigint__": "42", "other": true}"#).unwrap();
+            assert!(matches!(parsed, JsPlaintext::JsonB(_)));
+
+            // Nested occurrences of the magic key are also untouched.
+            let parsed: JsPlaintext =
+                serde_json::from_str(r#"{"nested": {"__protect_ffi_bigint__": "42"}}"#).unwrap();
+            assert!(matches!(parsed, JsPlaintext::JsonB(_)));
+        }
+
+        #[test]
+        fn plain_numbers_still_deserialize_as_number() {
+            // The BigInt variant must not shadow Number: integers arriving
+            // as JSON numbers keep the existing Number semantics.
+            let parsed: JsPlaintext = serde_json::from_str("42").unwrap();
+            assert_eq!(parsed, JsPlaintext::Number(42.0));
+            let parsed: JsPlaintext = serde_json::from_str("42.5").unwrap();
+            assert_eq!(parsed, JsPlaintext::Number(42.5));
         }
     }
 }

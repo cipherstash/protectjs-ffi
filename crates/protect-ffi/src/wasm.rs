@@ -49,7 +49,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::js_plaintext::JsPlaintext;
+use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
     encrypted_record_from_value, find_index_for_type, into_store_ciphertext, is_encrypted_value,
     parse_query_op, query_output, storage_output, to_query_plaintext, validate_eql_version,
@@ -257,6 +257,7 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
 
 #[wasm_bindgen]
 pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts = encode_bigint_plaintext(&opts)?;
     let opts: EncryptOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt(client, opts).await.map_err(error_to_js)?;
@@ -265,6 +266,7 @@ pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsVa
 
 #[wasm_bindgen(js_name = encryptBulk)]
 pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts = encode_bigint_plaintext_list(&opts, "plaintexts")?;
     let opts: EncryptBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_bulk(client, opts).await.map_err(error_to_js)?;
@@ -273,6 +275,7 @@ pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue,
 
 #[wasm_bindgen(js_name = encryptQuery)]
 pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts = encode_bigint_plaintext(&opts)?;
     let opts: EncryptQueryOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query(client, opts).await.map_err(error_to_js)?;
@@ -281,6 +284,7 @@ pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue
 
 #[wasm_bindgen(js_name = encryptQueryBulk)]
 pub async fn encrypt_query_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+    let opts = encode_bigint_plaintext_list(&opts, "queries")?;
     let opts: EncryptQueryBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query_bulk(client, opts)
@@ -294,7 +298,7 @@ pub async fn decrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsVa
     let opts: DecryptOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    plaintext_to_js(&out)
 }
 
 #[wasm_bindgen(js_name = decryptBulk)]
@@ -302,7 +306,11 @@ pub async fn decrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue,
     let opts: DecryptBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt_bulk(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    let arr = js_sys::Array::new();
+    for plaintext in &out {
+        arr.push(&plaintext_to_js(plaintext)?);
+    }
+    Ok(arr.into())
 }
 
 #[wasm_bindgen(js_name = decryptBulkFallible)]
@@ -312,7 +320,20 @@ pub async fn decrypt_bulk_fallible(client: &WasmClient, opts: JsValue) -> Result
     let out = do_decrypt_bulk_fallible(client, opts)
         .await
         .map_err(error_to_js)?;
-    to_js(&out)
+    let arr = js_sys::Array::new();
+    for result in &out {
+        let obj = js_sys::Object::new();
+        match result {
+            DecryptResult::Success { data } => {
+                set_prop(&obj, "data", &plaintext_to_js(data)?)?;
+            }
+            DecryptResult::Error { error } => {
+                set_prop(&obj, "error", &JsValue::from_str(error))?;
+            }
+        }
+        arr.push(&obj);
+    }
+    Ok(arr.into())
 }
 
 #[wasm_bindgen(js_name = isEncrypted)]
@@ -676,4 +697,121 @@ fn error_to_js(e: Error) -> JsValue {
 
 fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(value).map_err(|e| js_error(&e.to_string()))
+}
+
+fn set_prop(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
+    js_sys::Reflect::set(obj, &JsValue::from_str(key), value)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// BigInt boundary encoding
+// ---------------------------------------------------------------------------
+//
+// A JS `bigint` cannot pass through `serde_wasm_bindgen::from_value` into
+// the untagged `JsPlaintext` enum: `deserialize_any` visits BOTH a BigInt
+// and a safe-integer Number as `visit_i64`, so after untagged buffering the
+// two are indistinguishable and a bigint would silently land in the
+// `Number(f64)` arm (losing precision beyond 2^53). Instead, `bigint`
+// plaintexts are detected with `JsValue::is_bigint` BEFORE serde runs,
+// bounds-checked against i64, and swapped for the tagged wire map
+// (`{BIGINT_WIRE_KEY: "<decimal>"}`) on a shallow-cloned options object —
+// the caller's object is never mutated. This mirrors what `src/index.cts`
+// does for the Neon boundary.
+
+/// Bounds error for a JS `bigint` outside `i64::MIN..=i64::MAX`. Names the
+/// bounds and the offending direction; deliberately does not echo the
+/// value (it is plaintext being encrypted).
+fn bigint_bounds_error(value: &JsValue) -> JsValue {
+    let negative = js_sys::BigInt::new(value)
+        .ok()
+        .and_then(|b| b.to_string(10).ok())
+        .map(|s| String::from(s).starts_with('-'))
+        .unwrap_or(false);
+    let (direction, bound) = if negative {
+        ("below", "minimum")
+    } else {
+        ("above", "maximum")
+    };
+    js_error(&format!(
+        "BigInt plaintext is {direction} the {bound} supported value: \
+         encrypted bigint values must fit in a signed 64-bit integer \
+         (-9223372036854775808 to 9223372036854775807)"
+    ))
+}
+
+/// Convert a JS `bigint` into the tagged wire map `JsPlaintext`
+/// deserializes into `JsPlaintext::BigInt`, erroring (with the i64 bounds
+/// and direction) when the value does not fit an i64.
+fn tagged_bigint_wire(value: &JsValue) -> Result<JsValue, JsValue> {
+    debug_assert!(value.is_bigint());
+    let v = i64::try_from(value.clone()).map_err(|_| bigint_bounds_error(value))?;
+    let obj = js_sys::Object::new();
+    set_prop(&obj, BIGINT_WIRE_KEY, &JsValue::from_str(&v.to_string()))?;
+    Ok(obj.into())
+}
+
+/// Shallow-clone `opts` with a `bigint` top-level `plaintext` replaced by
+/// its tagged wire form. Non-bigint plaintexts (and non-object `opts`)
+/// pass through untouched, so serde reports its usual errors for
+/// malformed input.
+fn encode_bigint_plaintext(opts: &JsValue) -> Result<JsValue, JsValue> {
+    let Some(obj) = opts.dyn_ref::<js_sys::Object>() else {
+        return Ok(opts.clone());
+    };
+    let plaintext =
+        js_sys::Reflect::get(opts, &JsValue::from_str("plaintext")).unwrap_or(JsValue::UNDEFINED);
+    if !plaintext.is_bigint() {
+        return Ok(opts.clone());
+    }
+    let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
+    set_prop(&clone, "plaintext", &tagged_bigint_wire(&plaintext)?)?;
+    Ok(clone.into())
+}
+
+/// Bulk variant of [`encode_bigint_plaintext`]: shallow-clones `opts`,
+/// the payload array at `key`, and each payload carrying a `bigint`
+/// `plaintext`. Returns `opts` untouched when no payload carries a bigint.
+fn encode_bigint_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, JsValue> {
+    let Some(obj) = opts.dyn_ref::<js_sys::Object>() else {
+        return Ok(opts.clone());
+    };
+    let list = js_sys::Reflect::get(opts, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED);
+    let Some(arr) = list.dyn_ref::<js_sys::Array>() else {
+        return Ok(opts.clone());
+    };
+    let item_plaintext = |item: &JsValue| {
+        js_sys::Reflect::get(item, &JsValue::from_str("plaintext")).unwrap_or(JsValue::UNDEFINED)
+    };
+    if !arr.iter().any(|item| item_plaintext(&item).is_bigint()) {
+        return Ok(opts.clone());
+    }
+    let encoded = js_sys::Array::new();
+    for item in arr.iter() {
+        let plaintext = item_plaintext(&item);
+        match (plaintext.is_bigint(), item.dyn_ref::<js_sys::Object>()) {
+            (true, Some(item_obj)) => {
+                let item_clone = js_sys::Object::assign(&js_sys::Object::new(), item_obj);
+                set_prop(&item_clone, "plaintext", &tagged_bigint_wire(&plaintext)?)?;
+                encoded.push(&item_clone);
+            }
+            _ => {
+                encoded.push(&item);
+            }
+        }
+    }
+    let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
+    set_prop(&clone, key, &encoded)?;
+    Ok(clone.into())
+}
+
+/// Convert a decrypted [`JsPlaintext`] into a JS value. The serde route
+/// cannot produce a JS `bigint` (`JsPlaintext::BigInt` serializes as the
+/// tagged wire map), so BigInt is constructed directly; every other
+/// variant keeps the serde-wasm-bindgen path unchanged.
+fn plaintext_to_js(plaintext: &JsPlaintext) -> Result<JsValue, JsValue> {
+    match plaintext {
+        JsPlaintext::BigInt(v) => Ok(js_sys::BigInt::from(*v).into()),
+        other => to_js(other),
+    }
 }

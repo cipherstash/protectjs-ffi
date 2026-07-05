@@ -32,8 +32,8 @@ use js_plaintext::JsPlaintext;
 use neon::{
     prelude::*,
     types::{
-        extract::{Boxed, Json},
-        JsFuture,
+        extract::{self, Boxed, Json, TryIntoJs},
+        JsBigInt, JsFuture,
     },
 };
 use once_cell::sync::OnceCell;
@@ -82,6 +82,7 @@ pub enum ReceivedKind {
     String(String),
     Number(f64),
     Boolean(bool),
+    BigInt(i64),
     JsonObject,
     JsonArray,
     JsonScalar(String),
@@ -94,6 +95,7 @@ impl std::fmt::Display for ReceivedKind {
             Self::String(s) => write!(f, "String \"{}\"", truncate_for_error(s, 30)),
             Self::Number(n) => write!(f, "Number {}", n),
             Self::Boolean(b) => write!(f, "Boolean {}", b),
+            Self::BigInt(v) => write!(f, "BigInt {}n", v),
             Self::JsonObject => write!(f, "JSON object"),
             Self::JsonArray => write!(f, "JSON array"),
             Self::JsonScalar(s) => write!(f, "JSON scalar {}", s),
@@ -189,6 +191,7 @@ pub enum QueryInputHint {
     WrapNumberInObject,
     WrapBooleanInObject,
     UsePathOrObject,
+    BigIntNotJson,
 }
 
 impl std::fmt::Display for QueryInputHint {
@@ -199,6 +202,7 @@ impl std::fmt::Display for QueryInputHint {
             Self::WrapNumberInObject => write!(f, "Wrap the number in a JSON object to query by value: {{\"field\": <number>}}."),
             Self::WrapBooleanInObject => write!(f, "Wrap the boolean in a JSON object to query by value: {{\"field\": <boolean>}}."),
             Self::UsePathOrObject => write!(f, "Use a JSON path string like '$.field' for path queries, or a JSON object like {{\"field\": value}} for containment queries."),
+            Self::BigIntNotJson => write!(f, "BigInt values cannot appear in JSON documents; wrap a Number within the safe integer range in a JSON object instead: {{\"field\": <number>}}."),
         }
     }
 }
@@ -913,6 +917,14 @@ fn to_query_plaintext(
                         hint: QueryInputHint::WrapBooleanInObject,
                     });
                 }
+                JsPlaintext::BigInt(v) => {
+                    return Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::BigInt(*v),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::BigIntNotJson,
+                    });
+                }
                 JsPlaintext::JsonB(_) => {
                     // This is the expected type - proceed
                 }
@@ -953,6 +965,12 @@ fn to_query_plaintext(
                         received: ReceivedKind::Number(*n),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
+                    }),
+                    JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::BigInt(*v),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::BigIntNotJson,
                     }),
                     JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
                         query_op: QueryOpKind::SteVecDefault,
@@ -1355,12 +1373,26 @@ async fn encrypt_query_bulk(
     Ok(Json(final_results))
 }
 
+/// Convert a decrypted [`JsPlaintext`] into a JS value on the JS thread.
+///
+/// The `Json` return path (serde_json → `JSON.parse`) cannot produce a JS
+/// `bigint`, so the BigInt variant is constructed directly with
+/// [`JsBigInt::from_i64`]; every other variant keeps the JSON path
+/// unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+fn js_plaintext_into_js<'cx>(cx: &mut Cx<'cx>, plaintext: JsPlaintext) -> JsResult<'cx, JsValue> {
+    match plaintext {
+        JsPlaintext::BigInt(v) => Ok(JsBigInt::from_i64(cx, v).upcast()),
+        other => Json(other).try_into_js(cx),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
-) -> Result<Json<JsPlaintext>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
     let encrypted_record = encrypted_record_from_value(opts.ciphertext, lock_context)?;
 
@@ -1376,9 +1408,10 @@ async fn decrypt(
         .map_err(Error::from)
         .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from))?;
 
-    JsPlaintext::try_from(plaintext)
-        .map(Json)
-        .map_err(From::from)
+    let js_plaintext = JsPlaintext::try_from(plaintext).map_err(Error::from)?;
+    Ok(extract::with(move |cx| -> NeonResult<_> {
+        js_plaintext_into_js(cx, js_plaintext)
+    }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1386,7 +1419,7 @@ async fn decrypt(
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<Json<Vec<JsPlaintext>>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
     let encrypted_records: Vec<WithContext<'static>> = opts
         .ciphertexts
         .into_iter()
@@ -1411,7 +1444,14 @@ async fn decrypt_bulk(
         .map(|bytes| Plaintext::from_slice(&bytes).and_then(JsPlaintext::try_from))
         .collect::<Result<Vec<JsPlaintext>, TypeParseError>>()?;
 
-    Ok(Json(plaintexts))
+    Ok(extract::with(move |cx| -> NeonResult<_> {
+        let arr = cx.empty_array();
+        for (i, plaintext) in plaintexts.into_iter().enumerate() {
+            let value = js_plaintext_into_js(cx, plaintext)?;
+            arr.set(cx, i as u32, value)?;
+        }
+        Ok(arr)
+    }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1419,7 +1459,7 @@ async fn decrypt_bulk(
 async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
     // Decode each ciphertext independently so a single invalid payload turns
     // into a per-item `DecryptResult::Error` rather than aborting the whole
     // batch — matches the `*Fallible` contract.
@@ -1482,7 +1522,24 @@ async fn decrypt_bulk_fallible(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Json(results))
+    Ok(extract::with(move |cx| -> NeonResult<_> {
+        let arr = cx.empty_array();
+        for (i, result) in results.into_iter().enumerate() {
+            let obj = cx.empty_object();
+            match result {
+                DecryptResult::Success { data } => {
+                    let value = js_plaintext_into_js(cx, data)?;
+                    obj.set(cx, "data", value)?;
+                }
+                DecryptResult::Error { error } => {
+                    let message = cx.string(error);
+                    obj.set(cx, "error", message)?;
+                }
+            }
+            arr.set(cx, i as u32, obj)?;
+        }
+        Ok(arr)
+    }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1996,6 +2053,81 @@ mod tests {
                 "Error message should mention invalid input: {}",
                 err_msg
             );
+        }
+
+        #[test]
+        fn test_ste_vec_default_with_bigint_returns_error() {
+            let js_plaintext = JsPlaintext::BigInt(42);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::Json,
+            );
+
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("BigInt"),
+                "error should name the received BigInt: {}",
+                err_msg
+            );
+        }
+
+        #[test]
+        fn test_ste_vec_term_with_bigint_returns_error() {
+            let js_plaintext = JsPlaintext::BigInt(42);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecTerm,
+                &index_type,
+                ColumnType::Json,
+            );
+
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("BigInt") && err_msg.contains("JSON"),
+                "error should explain BigInt cannot appear in JSON documents: {}",
+                err_msg
+            );
+        }
+
+        #[test]
+        fn test_non_ste_vec_default_with_bigint_uses_column_type() {
+            // An ore/unique query term on a bigint column accepts a bigint
+            // and converts it via the column's cast type — the same path
+            // index-term generation uses on the storage side, so the
+            // boundary i64 bounds check covers both.
+            let js_plaintext = JsPlaintext::BigInt(i64::MAX);
+            let index_type = IndexType::Ore;
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::BigInt,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::BigInt(Some(i64::MAX)),
+                    InferredQueryMode::QueryMode(QueryOp::Default)
+                ))
+            ));
         }
 
         #[test]
