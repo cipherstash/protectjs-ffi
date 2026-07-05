@@ -179,6 +179,34 @@ describe('encryptQuery for numeric indexes', () => {
     assertScalar(result)
     expect(Array.isArray(result.ob)).toBe(true)
   })
+
+  test('should encrypt for ORE index with a bigint query term', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // Query terms are generated from the same Plaintext as storage terms,
+    // so a bigint beyond Number.MAX_SAFE_INTEGER stays exact here too.
+    const result = await encryptQuery(client, {
+      plaintext: 2n ** 60n,
+      ...scoreColumn,
+      indexType: 'ore',
+    })
+
+    assertScalar(result)
+    expect(result).toHaveProperty('ob')
+    expect(Array.isArray(result.ob)).toBe(true)
+  })
+
+  test('should reject a bigint query term outside the i64 range', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(
+      encryptQuery(client, {
+        plaintext: 2n ** 63n,
+        ...scoreColumn,
+        indexType: 'ore',
+      }),
+    ).rejects.toThrowError(/above the maximum.*signed 64-bit integer/)
+  })
 })
 
 describe('encryptQueryBulk for query ordering and grouping', () => {

@@ -63,7 +63,10 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
       c?: string
       hm?: string
     }>
-    decrypt: (client: unknown, opts: Record<string, unknown>) => Promise<string>
+    decrypt: (
+      client: unknown,
+      opts: Record<string, unknown>,
+    ) => Promise<unknown>
     isEncrypted: (raw: unknown) => boolean
   }
 
@@ -143,6 +146,66 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
 
     const decrypted = await wasm.decrypt(client, { ciphertext })
     expect(decrypted).toBe(plaintext)
+  })
+
+  test('round-trips a bigint plaintext exactly and rejects out-of-range values', async () => {
+    const env = {
+      workspaceCrn: process.env.CS_WORKSPACE_CRN,
+      accessKey: process.env.CS_CLIENT_ACCESS_KEY,
+      clientId: process.env.CS_CLIENT_ID,
+      clientKey: process.env.CS_CLIENT_KEY,
+    }
+    if (
+      !env.workspaceCrn ||
+      !env.accessKey ||
+      !env.clientId ||
+      !env.clientKey
+    ) {
+      throw new Error(
+        'unreachable: describe.skipIf should have prevented this test from running without env vars',
+      )
+    }
+
+    const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
+
+    const client = await wasm.newClient({
+      strategy,
+      encryptConfig: {
+        v: 1,
+        tables: {
+          users: {
+            score: {
+              cast_as: 'big_int',
+              indexes: { ore: {} },
+            },
+          },
+        },
+      },
+      clientId: env.clientId,
+      clientKey: env.clientKey,
+    })
+
+    // i64::MAX — far beyond Number.MAX_SAFE_INTEGER; must survive exactly.
+    const plaintext = 9223372036854775807n
+    const ciphertext = await wasm.encrypt(client, {
+      plaintext,
+      table: 'users',
+      column: 'score',
+    })
+
+    const decrypted = await wasm.decrypt(client, { ciphertext })
+    expect(typeof decrypted).toBe('bigint')
+    expect(decrypted).toBe(plaintext)
+
+    // 2^63 is just above i64::MAX — the wasm boundary rejects it before
+    // serde with an error naming the bounds and direction.
+    await expect(
+      wasm.encrypt(client, {
+        plaintext: 2n ** 63n,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrow(/above the maximum.*signed 64-bit integer/)
   })
 })
 

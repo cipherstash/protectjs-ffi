@@ -12,6 +12,7 @@ import {
   newClient,
   ProtectError,
   type BigintEq,
+  type BigintOrdOre,
   type DateOrdOre,
   type DoubleOrdOre,
   type EncryptConfig,
@@ -62,6 +63,10 @@ const v3Config: EncryptConfig = {
       score: {
         cast_as: 'bigint',
         indexes: { unique: {} },
+      },
+      big_score: {
+        cast_as: 'bigint',
+        indexes: { ore: {} },
       },
       weight: {
         cast_as: 'number',
@@ -114,7 +119,13 @@ describe('eql v3 scalar round-trips', async () => {
 
   type ScalarCase = {
     column: string
-    plaintext: string | number | boolean
+    plaintext: string | number | boolean | bigint
+    /**
+     * What decrypt returns when it differs from the input — bigint
+     * columns ALWAYS decrypt to a JS bigint, even for number inputs
+     * (breaking change: previously a number came back).
+     */
+    expected?: string | number | boolean | bigint
     /** the eql_v3 domain the config must select for this column */
     domain: string
     /**
@@ -165,8 +176,23 @@ describe('eql v3 scalar round-trips', async () => {
     {
       column: 'score',
       plaintext: 9007199254740,
+      expected: 9007199254740n,
       domain: 'bigint_eq',
       keys: v3WireKeys<BigintEq>()('v', 'i', 'c', 'hm'),
+    },
+    // bigint input beyond Number.MAX_SAFE_INTEGER: eq carries hm
+    {
+      column: 'score',
+      plaintext: 2n ** 62n,
+      domain: 'bigint_eq',
+      keys: v3WireKeys<BigintEq>()('v', 'i', 'c', 'hm'),
+    },
+    // ore-indexed bigint carries ob only (no hm on non-text ord domains)
+    {
+      column: 'big_score',
+      plaintext: 9223372036854775807n, // i64::MAX
+      domain: 'bigint_ord_ore',
+      keys: v3WireKeys<BigintOrdOre>()('v', 'i', 'c', 'ob'),
     },
     {
       column: 'weight',
@@ -191,7 +217,7 @@ describe('eql v3 scalar round-trips', async () => {
 
   test.each(cases)(
     'round-trips $column as eql_v3.$domain',
-    async ({ column, plaintext, domain, keys }) => {
+    async ({ column, plaintext, expected, domain, keys }) => {
       const ciphertext = await encrypt(client, {
         plaintext,
         column,
@@ -205,7 +231,12 @@ describe('eql v3 scalar round-trips', async () => {
       ).toEqual(keys)
 
       const decrypted = await decrypt(client, { ciphertext })
-      if (typeof plaintext === 'number' && !Number.isInteger(plaintext)) {
+      if (expected !== undefined) {
+        expect(decrypted).toBe(expected)
+      } else if (
+        typeof plaintext === 'number' &&
+        !Number.isInteger(plaintext)
+      ) {
         // decimal decrypts to a string representation
         expect(Number(decrypted)).toBeCloseTo(plaintext)
       } else {

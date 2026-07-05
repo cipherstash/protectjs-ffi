@@ -33,8 +33,14 @@ const numberColumn: UserColumn = {
 const payloads: EncryptPayload[] = [
   { ...stringColumn, plaintext: 'abc' },
   { ...intColumn, plaintext: 123 },
+  { ...intColumn, plaintext: 2n ** 60n },
   { ...numberColumn, plaintext: 123.456 },
 ]
+
+// What decryptBulk returns for `payloads`: the bigint column (score)
+// ALWAYS decrypts to a JS bigint — including for the `123` number input
+// (breaking change: it used to come back as a number).
+const expectedDecrypted = ['abc', 123n, 2n ** 60n, 123.456]
 
 describe('encryptBulk and decryptBulk', async () => {
   test('can round-trip encrypt and decrypt', async () => {
@@ -46,7 +52,7 @@ describe('encryptBulk and decryptBulk', async () => {
       ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
-    expect(decrypted).toEqual(payloads.map((p) => p.plaintext))
+    expect(decrypted).toEqual(expectedDecrypted)
   })
 
   test('can pass in undefined for optional fields', async () => {
@@ -65,7 +71,7 @@ describe('encryptBulk and decryptBulk', async () => {
       unverifiedContext: undefined,
     })
 
-    expect(decrypted).toEqual(payloads.map((p) => p.plaintext))
+    expect(decrypted).toEqual(expectedDecrypted)
   })
 
   test('can pass in unverified context', async () => {
@@ -84,7 +90,7 @@ describe('encryptBulk and decryptBulk', async () => {
       unverifiedContext,
     })
 
-    expect(decrypted).toEqual(payloads.map((p) => p.plaintext))
+    expect(decrypted).toEqual(expectedDecrypted)
   })
 
   test('can use decryptBulkFallible', async () => {
@@ -98,7 +104,7 @@ describe('encryptBulk and decryptBulk', async () => {
       ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
-    expect(decrypted).toEqual(payloads.map((p) => ({ data: p.plaintext })))
+    expect(decrypted).toEqual(expectedDecrypted.map((data) => ({ data })))
   })
 
   test('can use unverified context with decryptBulkFallible', async () => {
@@ -117,7 +123,7 @@ describe('encryptBulk and decryptBulk', async () => {
       unverifiedContext,
     })
 
-    expect(decrypted).toEqual(payloads.map((p) => ({ data: p.plaintext })))
+    expect(decrypted).toEqual(expectedDecrypted.map((data) => ({ data })))
   })
 
   test('encryptBulk throws an error when identityClaim is used without a service token', async () => {
@@ -175,7 +181,8 @@ describe('bulk encryption order preservation', async () => {
       ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
-    expect(decrypted).toEqual(['string-1', 100, 'string-2', 99.99, 'string-3'])
+    // score is a bigint column, so 100 decrypts to 100n
+    expect(decrypted).toEqual(['string-1', 100n, 'string-2', 99.99, 'string-3'])
   })
 
   test('should handle large batch with interleaved types', async () => {
@@ -195,10 +202,11 @@ describe('bulk encryption order preservation', async () => {
       ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
-    // Verify interleaved order preserved
+    // Verify interleaved order preserved (score is a bigint column, so
+    // its values decrypt to JS bigints)
     for (let i = 0; i < 20; i++) {
       expect(decrypted[i * 2]).toBe(`string-${i}`)
-      expect(decrypted[i * 2 + 1]).toBe(i)
+      expect(decrypted[i * 2 + 1]).toBe(BigInt(i))
     }
   })
 
@@ -221,6 +229,6 @@ describe('bulk encryption order preservation', async () => {
       ciphertexts: ciphertexts.map((ciphertext) => ({ ciphertext })),
     })
 
-    expect(decrypted).toEqual(['duplicate', 42, 'duplicate', 42, 'unique'])
+    expect(decrypted).toEqual(['duplicate', 42n, 'duplicate', 42n, 'unique'])
   })
 })

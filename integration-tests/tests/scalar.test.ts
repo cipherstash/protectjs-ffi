@@ -34,45 +34,121 @@ const numberColumn: UserColumn = {
   column: 'score_float',
 }
 
-const cases: { identifier: UserColumn; plaintext: string | number }[] = [
-  { identifier: stringColumn, plaintext: 'abc' },
-  { identifier: intColumn, plaintext: 123 },
-  { identifier: numberColumn, plaintext: 123.456 },
+const cases: {
+  identifier: UserColumn
+  plaintext: string | number | bigint
+  /**
+   * What decrypt returns. Differs from the input for the bigint column:
+   * cast_as 'bigint' ALWAYS decrypts to a JS bigint (breaking change —
+   * it used to come back as a number).
+   */
+  expected: string | number | bigint
+}[] = [
+  { identifier: stringColumn, plaintext: 'abc', expected: 'abc' },
+  { identifier: intColumn, plaintext: 123, expected: 123n },
+  { identifier: intColumn, plaintext: 456n, expected: 456n },
+  { identifier: numberColumn, plaintext: 123.456, expected: 123.456 },
 ]
 
-describe.each(cases)('encrypt and decrypt', ({ identifier, plaintext }) => {
-  describe(`using column ${identifier.column} with ${typeof plaintext} value`, () => {
-    test('can round-trip encrypt and decrypt a string', async () => {
-      const client = await newClient({ encryptConfig })
-      const ciphertext = await encrypt(client, {
-        plaintext,
-        ...identifier,
+describe.each(cases)(
+  'encrypt and decrypt',
+  ({ identifier, plaintext, expected }) => {
+    describe(`using column ${identifier.column} with ${typeof plaintext} value`, () => {
+      test('can round-trip encrypt and decrypt a string', async () => {
+        const client = await newClient({ encryptConfig })
+        const ciphertext = await encrypt(client, {
+          plaintext,
+          ...identifier,
+        })
+
+        expect(isEncrypted(ciphertext)).toBe(true)
+
+        const decrypted = await decrypt(client, { ciphertext })
+        expect(decrypted).toBe(expected)
       })
 
-      expect(isEncrypted(ciphertext)).toBe(true)
+      test('can explicitly pass in undefined for optional fields', async () => {
+        const client = await newClient({ encryptConfig })
 
+        const ciphertext = await encrypt(client, {
+          plaintext,
+          lockContext: undefined,
+          unverifiedContext: undefined,
+          ...identifier,
+        })
+
+        const decrypted = await decrypt(client, {
+          ciphertext,
+          lockContext: undefined,
+          unverifiedContext: undefined,
+        })
+
+        expect(decrypted).toBe(expected)
+      })
+    })
+  },
+)
+
+describe('bigint plaintexts', () => {
+  const I64_MAX = 2n ** 63n - 1n
+  const I64_MIN = -(2n ** 63n)
+
+  test('round-trips the full i64 range exactly as JS bigint', async () => {
+    const client = await newClient({ encryptConfig })
+
+    for (const plaintext of [I64_MAX, I64_MIN, 0n, -1n]) {
+      const ciphertext = await encrypt(client, {
+        plaintext,
+        table: 'users',
+        column: 'score',
+      })
       const decrypted = await decrypt(client, { ciphertext })
+      expect(typeof decrypted).toBe('bigint')
       expect(decrypted).toBe(plaintext)
-    })
+    }
+  })
 
-    test('can explicitly pass in undefined for optional fields', async () => {
-      const client = await newClient({ encryptConfig })
+  test('rejects 2^63 (just above i64::MAX) with a RangeError at the boundary', async () => {
+    const client = await newClient({ encryptConfig })
 
-      const ciphertext = await encrypt(client, {
-        plaintext,
-        lockContext: undefined,
-        unverifiedContext: undefined,
-        ...identifier,
-      })
+    await expect(
+      encrypt(client, {
+        plaintext: I64_MAX + 1n,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrowError(RangeError)
+    await expect(
+      encrypt(client, {
+        plaintext: I64_MAX + 1n,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrowError(/above the maximum.*signed 64-bit integer/)
+  })
 
-      const decrypted = await decrypt(client, {
-        ciphertext,
-        lockContext: undefined,
-        unverifiedContext: undefined,
-      })
+  test('rejects -(2^63) - 1 (just below i64::MIN) with a RangeError at the boundary', async () => {
+    const client = await newClient({ encryptConfig })
 
-      expect(decrypted).toBe(plaintext)
-    })
+    await expect(
+      encrypt(client, {
+        plaintext: I64_MIN - 1n,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrowError(/below the minimum.*signed 64-bit integer/)
+  })
+
+  test('number input beyond the i64 range is still rejected (existing guard)', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(
+      encrypt(client, {
+        plaintext: 1e19,
+        table: 'users',
+        column: 'score',
+      }),
+    ).rejects.toThrowError(/out of range/)
   })
 })
 
