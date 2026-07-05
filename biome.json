@@ -4,6 +4,7 @@
     "ignore": [
       "**/package.json",
       ".turbo/",
+      "dist",
       "lib",
       "target",
       "src/eql-v3-types"

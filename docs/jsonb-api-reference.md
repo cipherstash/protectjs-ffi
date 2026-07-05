@@ -329,6 +329,7 @@ The FFI receives JavaScript values and categorizes them:
 |-----------------|---------------------|-------|
 | `"string"` | `String` | Strings |
 | `42`, `3.14` | `Number` | All numbers (integers and floats) |
+| `42n` | `BigInt` | Top-level scalar plaintexts only — i64-bounded, not valid inside JSON |
 | `true`, `false` | `Boolean` | Booleans (supported for storage and decryption) |
 | `{ key: val }` | `JsonB` | Objects |
 | `[1, 2, 3]` | `JsonB` | Arrays |
@@ -336,14 +337,18 @@ The FFI receives JavaScript values and categorizes them:
 
 ### Conversion Rules
 
-Type coercion follows strict rules (conversion allowed, parsing not):
+Type coercion follows strict rules (conversion allowed, parsing not; a
+value that cannot be represented exactly in the target type errors instead
+of being truncated):
 
 | From | To | Result |
 |------|----|--------|
 | String | Utf8Str | Allowed |
 | String | JsonB | **Error** |
-| Number | Float/BigInt/Int | Allowed (with truncation) |
+| Number | Float/BigInt/Int | Allowed (errors on fractional / out-of-range / non-finite) |
 | Number | Utf8Str | **Error** |
+| BigInt | BigInt/Int/SmallInt/BigUInt/Decimal | Allowed (errors on out-of-range) |
+| BigInt | Float/JsonB/Utf8Str | **Error** |
 | Boolean | Boolean | Allowed |
 | Boolean | Utf8Str | **Error** |
 | JsonB | JsonB | Allowed |

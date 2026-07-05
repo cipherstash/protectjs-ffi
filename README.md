@@ -104,6 +104,46 @@ Notes:
 > `payload.v === 3` to detect the v3 members. (A bare `payload.k === 'ct'`
 > does not compile against the union.)
 
+## BigInt plaintexts
+
+Encrypted `cast_as: 'bigint'` columns store signed 64-bit integers
+(PostgreSQL `bigint`). `encrypt` / `encryptBulk` / `encryptQuery` /
+`encryptQueryBulk` accept the plaintext as either a JS `number` or a JS
+`bigint`:
+
+- `bigint` inputs are exact and bounds-checked against the full i64 range:
+  **-9223372036854775808 to 9223372036854775807** (-2^63 to 2^63 - 1).
+  Values outside that range throw a `RangeError` (a plain `RangeError`, not
+  a `ProtectError`) naming the bounds and the offending direction. Search
+  index terms (`hm`, `ob`, `op`) are derived from the same value, so the
+  boundary check covers index-term generation too.
+- `number` inputs keep the existing exact-integer guard: fractional,
+  non-finite, or out-of-range values error instead of being silently
+  truncated.
+- A `bigint` is only accepted as the top-level plaintext of a scalar
+  column. JSON has no bigint, so bigints nested inside `cast_as: 'json'`
+  documents (or JSON containment query terms) are not supported.
+
+```js
+const ciphertext = await addon.encrypt(client, {
+  plaintext: 9007199254740993n, // beyond Number.MAX_SAFE_INTEGER — stays exact
+  column: 'score',
+  table: 'users',
+})
+const decrypted = await addon.decrypt(client, { ciphertext })
+// decrypted === 9007199254740993n (a JS bigint)
+```
+
+> [!WARNING]
+> **Breaking change:** `decrypt` / `decryptBulk` / `decryptBulkFallible`
+> now ALWAYS return a JS `bigint` for `cast_as: 'bigint'` columns — even
+> for values that fit in a JS number. Previous releases returned a
+> `number`, silently losing precision beyond `Number.MAX_SAFE_INTEGER`
+> (2^53 - 1). Code comparing or doing arithmetic on decrypted bigint
+> columns must be updated (e.g. `decrypted === 123n` instead of
+> `decrypted === 123`, or `Number(decrypted)` when the value is known to
+> be small).
+
 ## Errors
 
 Async API calls throw `ProtectError` with a stable `code` for programmatic handling.
