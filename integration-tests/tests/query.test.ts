@@ -369,6 +369,51 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
     expect(results[0].hm).not.toEqual(results[1].hm)
     expect(results[1].hm).not.toEqual(results[2].hm)
   })
+
+  test('should encrypt a bigint query term in bulk (mixed with strings)', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // A bigint element exercises the clone branch of
+    // `withEncodedPlaintexts(opts.queries)` in `encryptQueryBulk` — the
+    // single-query test above covers `withEncodedPlaintext`, but the bulk
+    // wrapper's array rewrite is a separate path (mirrors what
+    // scalar-bulk.test.ts does for encryptBulk).
+    const queries: QueryPayload[] = [
+      {
+        plaintext: 'test1@example.com',
+        ...emailColumn,
+        indexType: 'unique',
+      },
+      {
+        plaintext: 2n ** 60n,
+        ...scoreColumn,
+        indexType: 'ore',
+      },
+    ]
+
+    const results = await encryptQueryBulk(client, { queries })
+
+    expect(results).toHaveLength(2)
+    expect(results[0]).toHaveProperty('hm')
+    expect(results[1]).toHaveProperty('ob')
+    assertScalar(results[1])
+  })
+
+  test('should reject an out-of-range bigint query term in bulk with a RangeError', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(
+      encryptQueryBulk(client, {
+        queries: [
+          {
+            plaintext: 2n ** 63n,
+            ...scoreColumn,
+            indexType: 'ore',
+          },
+        ],
+      }),
+    ).rejects.toThrowError(/above the maximum.*signed 64-bit integer/)
+  })
 })
 
 describe('encryptQuery error handling', () => {

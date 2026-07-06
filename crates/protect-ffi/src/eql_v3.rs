@@ -1114,8 +1114,10 @@ mod tests {
         #[test]
         fn v3_bigint_eq_output_carries_hm_only() {
             // A unique-indexed bigint column maps to eql_v3.bigint_eq:
-            // v, i, c, hm and nothing else (the alpha.2 domain CHECKs
-            // require exactly the family terms alongside v/i/c).
+            // v, i, c, hm and nothing else (the domain CHECKs in the
+            // vendored eql-bindings schemas — EQL release
+            // eql-3.0.0-alpha.2 — require exactly the family terms
+            // alongside v/i/c).
             let cfg = column(
                 ColumnType::BigInt,
                 vec![Index::new(IndexType::Unique {

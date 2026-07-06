@@ -345,7 +345,9 @@ of being truncated):
 |------|----|--------|
 | String | Utf8Str | Allowed |
 | String | JsonB | **Error** |
-| Number | Float/BigInt/Int | Allowed (errors on fractional / out-of-range / non-finite) |
+| Number | Float | Allowed (including fractional and non-finite values) |
+| Number | BigInt/Int/SmallInt/BigUInt | Allowed (errors on fractional / out-of-range / non-finite) |
+| Number | Decimal | Allowed (errors on non-finite) |
 | Number | Utf8Str | **Error** |
 | BigInt | BigInt/Int/SmallInt/BigUInt/Decimal | Allowed (errors on out-of-range) |
 | BigInt | Float/JsonB/Utf8Str | **Error** |

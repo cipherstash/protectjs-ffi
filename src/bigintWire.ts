@@ -71,7 +71,12 @@ export function encodeBigIntPlaintext<T>(
 export function withEncodedPlaintext<T extends { plaintext: unknown }>(
   opts: T,
 ): T {
-  if (typeof opts.plaintext !== 'bigint') {
+  // `opts?.` (matching the detection pass in withEncodedPlaintexts): a
+  // null/undefined element must fall through to native's own validation
+  // error rather than throw a raw property-access TypeError here — the
+  // error a bad element produces must not depend on whether a *sibling*
+  // element happens to carry a bigint.
+  if (typeof opts?.plaintext !== 'bigint') {
     return opts
   }
   return { ...opts, plaintext: encodeBigIntPlaintext(opts.plaintext) }

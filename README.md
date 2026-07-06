@@ -127,6 +127,11 @@ Encrypted `cast_as: 'bigint'` columns store signed 64-bit integers
   `JSON.stringify` semantics on both platforms: `toJSON` is honored (a
   `Date` becomes its ISO string), `undefined` properties are dropped, and
   non-finite numbers become `null`.
+- The internal wire form `{"__protect_ffi_bigint__": "<digits>"}` is
+  reserved: a `cast_as: 'json'` plaintext consisting of exactly that
+  single-key shape (with an in-range i64 decimal string) is read as a
+  bigint at the boundary and rejected for json columns. Nested
+  occurrences of the key inside a larger document are unaffected.
 
 ```js
 const ciphertext = await addon.encrypt(client, {

@@ -20,7 +20,7 @@ const stringColumn: UserColumn = {
   column: 'email',
 }
 
-const intColumn: UserColumn = {
+const bigintColumn: UserColumn = {
   table: 'users',
   column: 'score',
 }
@@ -32,8 +32,8 @@ const numberColumn: UserColumn = {
 
 const payloads: EncryptPayload[] = [
   { ...stringColumn, plaintext: 'abc' },
-  { ...intColumn, plaintext: 123 },
-  { ...intColumn, plaintext: 2n ** 60n },
+  { ...bigintColumn, plaintext: 123 },
+  { ...bigintColumn, plaintext: 2n ** 60n },
   { ...numberColumn, plaintext: 123.456 },
 ]
 
@@ -168,7 +168,7 @@ describe('bulk encryption order preservation', async () => {
     // Create payloads with different column types that may be grouped internally
     const payloads: EncryptPayload[] = [
       { ...stringColumn, plaintext: 'string-1' },
-      { ...intColumn, plaintext: 100 },
+      { ...bigintColumn, plaintext: 100 },
       { ...stringColumn, plaintext: 'string-2' },
       { ...numberColumn, plaintext: 99.99 },
       { ...stringColumn, plaintext: 'string-3' },
@@ -192,7 +192,7 @@ describe('bulk encryption order preservation', async () => {
     const payloads: EncryptPayload[] = []
     for (let i = 0; i < 20; i++) {
       payloads.push({ ...stringColumn, plaintext: `string-${i}` })
-      payloads.push({ ...intColumn, plaintext: i })
+      payloads.push({ ...bigintColumn, plaintext: i })
     }
 
     const ciphertexts = await encryptBulk(client, { plaintexts: payloads })
@@ -216,9 +216,9 @@ describe('bulk encryption order preservation', async () => {
     // Same plaintext values at different positions
     const payloads: EncryptPayload[] = [
       { ...stringColumn, plaintext: 'duplicate' },
-      { ...intColumn, plaintext: 42 },
+      { ...bigintColumn, plaintext: 42 },
       { ...stringColumn, plaintext: 'duplicate' },
-      { ...intColumn, plaintext: 42 },
+      { ...bigintColumn, plaintext: 42 },
       { ...stringColumn, plaintext: 'unique' },
     ]
 

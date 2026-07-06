@@ -481,7 +481,8 @@ export type EnsureKeysetResult = {
 
 /**
  * A plaintext value accepted by {@link encrypt} / {@link encryptBulk} /
- * {@link encryptQuery} and returned by {@link decrypt} / {@link decryptBulk}.
+ * {@link encryptQuery} and returned by {@link decrypt} / {@link decryptBulk} /
+ * {@link decryptBulkFallible} (in the `data` arm of each result).
  *
  * `bigint` support (encrypted `cast_as: 'bigint'` columns store signed
  * 64-bit integers):

@@ -24,7 +24,7 @@ const stringColumn: UserColumn = {
   column: 'email',
 }
 
-const intColumn: UserColumn = {
+const bigintColumn: UserColumn = {
   table: 'users',
   column: 'score',
 }
@@ -45,8 +45,8 @@ const cases: {
   expected: string | number | bigint
 }[] = [
   { identifier: stringColumn, plaintext: 'abc', expected: 'abc' },
-  { identifier: intColumn, plaintext: 123, expected: 123n },
-  { identifier: intColumn, plaintext: 456n, expected: 456n },
+  { identifier: bigintColumn, plaintext: 123, expected: 123n },
+  { identifier: bigintColumn, plaintext: 456n, expected: 456n },
   { identifier: numberColumn, plaintext: 123.456, expected: 123.456 },
 ]
 

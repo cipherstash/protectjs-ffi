@@ -740,7 +740,9 @@ fn set_prop(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), JsVa
 
 /// Bounds error for a JS `bigint` outside `i64::MIN..=i64::MAX`. Names the
 /// bounds and the offending direction; deliberately does not echo the
-/// value (it is plaintext being encrypted).
+/// value (it is plaintext being encrypted). A `RangeError` — the class the
+/// README and the `JsPlaintext` JSDoc promise, and the class the Neon
+/// boundary (`src/bigintWire.ts`) throws.
 fn bigint_bounds_error(value: &JsValue) -> JsValue {
     let negative = js_sys::BigInt::new(value)
         .ok()
@@ -752,11 +754,12 @@ fn bigint_bounds_error(value: &JsValue) -> JsValue {
     } else {
         ("above", "maximum")
     };
-    js_error(&format!(
+    js_sys::RangeError::new(&format!(
         "BigInt plaintext is {direction} the {bound} supported value: \
          encrypted bigint values must fit in a signed 64-bit integer \
          (-9223372036854775808 to 9223372036854775807)"
     ))
+    .into()
 }
 
 /// Convert a JS `bigint` into the tagged wire map `JsPlaintext`
