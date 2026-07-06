@@ -12,7 +12,18 @@ if (!version) {
   process.exit(2)
 }
 
-const text = readFileSync('CHANGELOG.md', 'utf8')
+let text
+try {
+  text = readFileSync('CHANGELOG.md', 'utf8')
+} catch (err) {
+  // A missing/unreadable file (or wrong cwd) should read as "no notes here"
+  // — a concise message and non-zero exit so the caller falls back cleanly,
+  // not a raw stack trace.
+  console.error(
+    `changelog-extract: could not read CHANGELOG.md (${err.message})`,
+  )
+  process.exit(1)
+}
 // Escape every regex metacharacter — semver pre-release/build tags can contain
 // `+`, `.` and other special chars — so the heading is matched literally.
 const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

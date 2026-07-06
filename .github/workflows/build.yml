@@ -230,6 +230,13 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
+          # A release with no tag is a misconfiguration — fail fast with a
+          # clear message rather than emitting an empty version and a broken
+          # `blob//CHANGELOG.md` fallback link.
+          if [ -z "$TAG" ]; then
+            echo "Extract release notes: inputs.tag is empty but github-release is true" >&2
+            exit 1
+          fi
           # Source the GitHub release body from the matching CHANGELOG section.
           # Fall back to a pointer rather than failing the release if it's absent.
           if ! node scripts/changelog-extract.mjs "${TAG#v}" > RELEASE_NOTES.md; then
