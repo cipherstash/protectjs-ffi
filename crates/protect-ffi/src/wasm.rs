@@ -42,7 +42,7 @@ use cipherstash_client::zerokms::{
     self, SecretKey, ViturKeyMaterial, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey,
 };
 use cipherstash_client::IdentifiedBy;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use stack_auth::{AuthError, AuthStrategy, SecretToken, ServiceToken};
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
@@ -860,11 +860,17 @@ fn encode_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, JsValue> 
 
 /// Convert a decrypted [`JsPlaintext`] into a JS value. The serde route
 /// cannot produce a JS `bigint` (`JsPlaintext::BigInt` serializes as the
-/// tagged wire map), so BigInt is constructed directly; every other
-/// variant keeps the serde-wasm-bindgen path unchanged.
+/// tagged wire map), so BigInt is constructed directly. Every other
+/// variant goes through serde-wasm-bindgen's JSON-compatible serializer:
+/// the default serializer emits Rust maps as JS `Map`s and nulls as
+/// `undefined`, so a decrypted `JsonB` document would come back as
+/// `Map { "score" => undefined }` on wasm while the Neon boundary returns
+/// the plain object `{ score: null }` it round-trips through JSON.
 fn plaintext_to_js(plaintext: &JsPlaintext) -> Result<JsValue, JsValue> {
     match plaintext {
         JsPlaintext::BigInt(v) => Ok(js_sys::BigInt::from(*v).into()),
-        other => to_js(other),
+        other => other
+            .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .map_err(|e| js_error(&e.to_string())),
     }
 }
