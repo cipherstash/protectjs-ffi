@@ -110,7 +110,8 @@ jobs:
         env:
           # Bind the input to an env var so it never expands into the shell
           # body — guards against template-injection via `${{ }}` in `run:`.
-          # Keep this step in sync with the identical guard in the `wasm` job.
+          # Keep this guard in sync with the `wasm` job and release.yml's Tag
+          # Release step.
           VERSION_INPUT: ${{ inputs.version }}
         run: |
           git config --global user.name $ACTIONS_USER
@@ -189,7 +190,8 @@ jobs:
         env:
           # Bind the input to an env var so it never expands into the shell
           # body — guards against template-injection via `${{ }}` in `run:`.
-          # Keep this step in sync with the identical guard in the `binaries` job.
+          # Keep this guard in sync with the `binaries` job and release.yml's Tag
+          # Release step.
           VERSION_INPUT: ${{ inputs.version }}
         run: |
           git config --global user.name $ACTIONS_USER

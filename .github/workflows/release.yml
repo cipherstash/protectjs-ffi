@@ -84,10 +84,27 @@ jobs:
         if: ${{ !inputs.dryrun }}
         id: tag
         shell: bash
+        env:
+          # Bind the resolved version to an env var so it never expands into the
+          # shell body — guards against template-injection via `${{ }}` in
+          # `run:` (a `custom` value could otherwise break out of the quotes).
+          # Keep this guard in sync with the Update Version steps in build.yml.
+          VERSION_INPUT: ${{ (inputs.version == 'custom' && inputs.custom) || inputs.version }}
         run: |
           git config --global user.name $ACTIONS_USER
           git config --global user.email $ACTIONS_EMAIL
-          npm version -m 'v%s' '${{ (inputs.version == 'custom' && inputs.custom) || inputs.version }}'
+          # Allowlist gate: only npm `version` bump keywords or strict semver
+          # (with optional `v` prefix and pre-release / build metadata) get through.
+          case "$VERSION_INPUT" in
+            patch|minor|major|prepatch|preminor|premajor|prerelease) ;;
+            v[0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*) ;;
+            v[0-9]*.[0-9]*.[0-9]*-*|[0-9]*.[0-9]*.[0-9]*-*) ;;
+            *)
+              echo "Invalid version input: '$VERSION_INPUT' (expected an npm bump keyword or semver)" >&2
+              exit 1
+              ;;
+          esac
+          npm version -m 'v%s' "$VERSION_INPUT"
           git push --follow-tags
           echo tag=$(git describe --abbrev=0) | tee -a $GITHUB_OUTPUT
 
