@@ -382,3 +382,25 @@ describe('deeply nested JSON encryption', () => {
     expect(decrypted).toEqual(mixedDeep)
   })
 })
+
+// JSON plaintexts follow JSON.stringify semantics at the boundary on BOTH
+// platforms: on Neon because neon's `Json` extractor stringifies the
+// options object, on wasm because the boundary canonicalizes plaintexts
+// through JSON.stringify → JSON.parse explicitly (see the wasm suite's
+// counterpart test in wasm-round-trip.test.ts). This block pins the Neon
+// half of that contract.
+describe('json plaintext boundary', () => {
+  test('rejects a bigint nested inside a json plaintext with a TypeError', async () => {
+    const client = await newClient({ encryptConfig: jsonOpaque })
+
+    // JSON has no bigint — JSON.stringify throws, and the error reaches
+    // the caller as the engine's own TypeError (normalizeError passes
+    // unknown error classes through untouched).
+    await expect(
+      encrypt(client, {
+        plaintext: { count: 2n ** 60n + 1n },
+        ...userProfile,
+      }),
+    ).rejects.toThrow(TypeError)
+  })
+})

@@ -831,6 +831,31 @@ mod tests {
         }
 
         #[test]
+        fn big_int_without_indexes_is_storage_only() {
+            assert_eq!(domain(ColumnType::BigInt, vec![]), "bigint");
+        }
+
+        #[test]
+        fn big_int_ore_is_ord_ore() {
+            assert_eq!(domain(ColumnType::BigInt, vec![ore()]), "bigint_ord_ore");
+        }
+
+        #[test]
+        fn big_int_unique_and_ore_prefers_ord_ore_over_eq() {
+            // Same non-text rule as integer: bigint_ord_ore carries only ob;
+            // hm drops but equality survives via the ORE operators.
+            assert_eq!(
+                domain(ColumnType::BigInt, vec![unique(), ore()]),
+                "bigint_ord_ore"
+            );
+        }
+
+        #[test]
+        fn big_int_ope_is_ord_ope() {
+            assert_eq!(domain(ColumnType::BigInt, vec![ope()]), "bigint_ord_ope");
+        }
+
+        #[test]
         fn float_maps_to_double_family() {
             assert_eq!(domain(ColumnType::Float, vec![ore()]), "double_ord_ore");
         }
@@ -939,7 +964,10 @@ mod tests {
                 (ColumnType::SmallInt, vec![ore()]),
                 (ColumnType::SmallInt, vec![ope()]),
                 (ColumnType::Int, vec![ore()]),
+                (ColumnType::BigInt, vec![]),
+                (ColumnType::BigInt, vec![unique()]),
                 (ColumnType::BigInt, vec![ore()]),
+                (ColumnType::BigInt, vec![ope()]),
                 (ColumnType::Float, vec![ore()]),
                 (ColumnType::Decimal, vec![ore()]),
                 (ColumnType::Date, vec![ore()]),
@@ -1081,6 +1109,52 @@ mod tests {
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["ob"], serde_json::json!(["bb"]));
             assert!(value.get("hm").is_none(), "hm dropped for integer_ord_ore");
+        }
+
+        #[test]
+        fn v3_bigint_eq_output_carries_hm_only() {
+            // A unique-indexed bigint column maps to eql_v3.bigint_eq:
+            // v, i, c, hm and nothing else (the domain CHECKs in the
+            // vendored eql-bindings schemas — EQL release
+            // eql-3.0.0-alpha.2 — require exactly the family terms
+            // alongside v/i/c).
+            let cfg = column(
+                ColumnType::BigInt,
+                vec![Index::new(IndexType::Unique {
+                    token_filters: vec![],
+                })],
+            );
+            let output =
+                storage_output(scalar_payload(Some("aa"), None, None), EqlVersion::V3, &cfg)
+                    .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["v"], 3);
+            assert_eq!(value["hm"], "aa");
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().collect();
+            keys.sort();
+            assert_eq!(keys, ["c", "hm", "i", "v"]);
+        }
+
+        #[test]
+        fn v3_bigint_ord_ore_output_carries_ob_and_no_hm() {
+            // An ore-indexed bigint column maps to eql_v3.bigint_ord_ore:
+            // ob is the ordering term; hm must NOT appear (non-text
+            // ordering domains carry no hm).
+            let cfg = column(ColumnType::BigInt, vec![Index::new(IndexType::Ore)]);
+            let output = storage_output(
+                scalar_payload(None, None, Some(vec!["bb"])),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["ob"], serde_json::json!(["bb"]));
+            assert!(value.get("hm").is_none(), "no hm on bigint_ord_ore");
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().collect();
+            keys.sort();
+            assert_eq!(keys, ["c", "i", "ob", "v"]);
         }
 
         #[test]

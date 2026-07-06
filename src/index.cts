@@ -1,5 +1,6 @@
 // This module is the CJS entry point for the library.
 
+import { withEncodedPlaintext, withEncodedPlaintexts } from './bigintWire.js'
 import { type CredentialOpts, withEnvCredentials } from './credentials.js'
 import * as native from './load.cjs'
 import {
@@ -99,7 +100,7 @@ export function encrypt(
   client: Client,
   opts: EncryptOptions,
 ): Promise<EncryptedPayload> {
-  return wrapAsync(() => native.encrypt(client, opts))
+  return wrapAsync(() => native.encrypt(client, withEncodedPlaintext(opts)))
 }
 
 export function decrypt(
@@ -124,7 +125,13 @@ export function encryptBulk(
   client: Client,
   opts: EncryptBulkOptions,
 ): Promise<EncryptedPayload[]> {
-  return wrapAsync(() => native.encryptBulk(client, opts))
+  return wrapAsync(() => {
+    const plaintexts = withEncodedPlaintexts(opts.plaintexts)
+    return native.encryptBulk(
+      client,
+      plaintexts === opts.plaintexts ? opts : { ...opts, plaintexts },
+    )
+  })
 }
 
 export function decryptBulk(
@@ -166,7 +173,9 @@ export function encryptQuery(
   client: Client,
   opts: EncryptQueryOptions,
 ): Promise<Encrypted | EncryptedQuery | EncryptedV3Query> {
-  return wrapAsync(() => native.encryptQuery(client, opts))
+  return wrapAsync(() =>
+    native.encryptQuery(client, withEncodedPlaintext(opts)),
+  )
 }
 
 /** Bulk variant of {@link encryptQuery} — same EQL v3 restrictions apply. */
@@ -174,7 +183,13 @@ export function encryptQueryBulk(
   client: Client,
   opts: EncryptQueryBulkOptions,
 ): Promise<(Encrypted | EncryptedQuery | EncryptedV3Query)[]> {
-  return wrapAsync(() => native.encryptQueryBulk(client, opts))
+  return wrapAsync(() => {
+    const queries = withEncodedPlaintexts(opts.queries)
+    return native.encryptQueryBulk(
+      client,
+      queries === opts.queries ? opts : { ...opts, queries },
+    )
+  })
 }
 
 /**
@@ -464,10 +479,33 @@ export type EnsureKeysetResult = {
   name: string
 }
 
+/**
+ * A plaintext value accepted by {@link encrypt} / {@link encryptBulk} /
+ * {@link encryptQuery} and returned by {@link decrypt} / {@link decryptBulk} /
+ * {@link decryptBulkFallible} (in the `data` arm of each result).
+ *
+ * `bigint` support (encrypted `cast_as: 'bigint'` columns store signed
+ * 64-bit integers):
+ *
+ * - **Input**: a top-level `bigint` plaintext is accepted alongside
+ *   `number`. Values outside the i64 range (-2^63 to 2^63 - 1) throw a
+ *   `RangeError` at the boundary — this covers index-term generation too,
+ *   since terms derive from the same value. `number` inputs keep the
+ *   existing exact-integer guard (fractional, non-finite, or beyond-2^53
+ *   inexact values are rejected). `bigint` values nested inside JSON
+ *   objects/arrays are NOT supported (JSON has no bigint) and throw a
+ *   `TypeError` on both Neon and wasm — plaintexts follow
+ *   `JSON.stringify` semantics on both platforms.
+ * - **Output** (BREAKING since the introduction of bigint support):
+ *   decrypting a `cast_as: 'bigint'` column ALWAYS returns a `bigint`,
+ *   even for values that fit in a JS number. Previous releases returned a
+ *   `number`, silently losing precision beyond `Number.MAX_SAFE_INTEGER`.
+ */
 export type JsPlaintext =
   | string
   | number
   | boolean
+  | bigint
   | Record<string, unknown>
   | JsPlaintext[]
 
