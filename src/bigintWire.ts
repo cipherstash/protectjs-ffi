@@ -13,7 +13,7 @@
  * precision beyond 2^53.
  *
  * The wasm build performs the equivalent encoding in Rust
- * (`encode_bigint_plaintext` in `crates/protect-ffi/src/wasm.rs`) because
+ * (`encode_plaintext` in `crates/protect-ffi/src/wasm.rs`) because
  * wasm consumers call the wasm-bindgen exports directly, without this
  * wrapper.
  *

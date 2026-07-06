@@ -492,7 +492,9 @@ export type EnsureKeysetResult = {
  *   since terms derive from the same value. `number` inputs keep the
  *   existing exact-integer guard (fractional, non-finite, or beyond-2^53
  *   inexact values are rejected). `bigint` values nested inside JSON
- *   objects/arrays are NOT supported (JSON has no bigint).
+ *   objects/arrays are NOT supported (JSON has no bigint) and throw a
+ *   `TypeError` on both Neon and wasm — plaintexts follow
+ *   `JSON.stringify` semantics on both platforms.
  * - **Output** (BREAKING since the introduction of bigint support):
  *   decrypting a `cast_as: 'bigint'` column ALWAYS returns a `bigint`,
  *   even for values that fit in a JS number. Previous releases returned a

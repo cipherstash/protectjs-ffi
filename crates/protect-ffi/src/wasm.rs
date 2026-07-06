@@ -257,7 +257,7 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
 
 #[wasm_bindgen]
 pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_bigint_plaintext(&opts)?;
+    let opts = encode_plaintext(&opts)?;
     let opts: EncryptOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt(client, opts).await.map_err(error_to_js)?;
@@ -266,7 +266,7 @@ pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsVa
 
 #[wasm_bindgen(js_name = encryptBulk)]
 pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_bigint_plaintext_list(&opts, "plaintexts")?;
+    let opts = encode_plaintext_list(&opts, "plaintexts")?;
     let opts: EncryptBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_bulk(client, opts).await.map_err(error_to_js)?;
@@ -275,7 +275,7 @@ pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue,
 
 #[wasm_bindgen(js_name = encryptQuery)]
 pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_bigint_plaintext(&opts)?;
+    let opts = encode_plaintext(&opts)?;
     let opts: EncryptQueryOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query(client, opts).await.map_err(error_to_js)?;
@@ -284,7 +284,7 @@ pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue
 
 #[wasm_bindgen(js_name = encryptQueryBulk)]
 pub async fn encrypt_query_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_bigint_plaintext_list(&opts, "queries")?;
+    let opts = encode_plaintext_list(&opts, "queries")?;
     let opts: EncryptQueryBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query_bulk(client, opts)
@@ -705,19 +705,38 @@ fn set_prop(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), JsVa
 }
 
 // ---------------------------------------------------------------------------
-// BigInt boundary encoding
+// Plaintext boundary encoding
 // ---------------------------------------------------------------------------
 //
-// A JS `bigint` cannot pass through `serde_wasm_bindgen::from_value` into
-// the untagged `JsPlaintext` enum: `deserialize_any` visits BOTH a BigInt
-// and a safe-integer Number as `visit_i64`, so after untagged buffering the
-// two are indistinguishable and a bigint would silently land in the
-// `Number(f64)` arm (losing precision beyond 2^53). Instead, `bigint`
-// plaintexts are detected with `JsValue::is_bigint` BEFORE serde runs,
-// bounds-checked against i64, and swapped for the tagged wire map
-// (`{BIGINT_WIRE_KEY: "<decimal>"}`) on a shallow-cloned options object —
-// the caller's object is never mutated. This mirrors what `src/index.cts`
-// does for the Neon boundary.
+// Every `plaintext` value is rewritten BEFORE serde_wasm_bindgen runs, for
+// two reasons:
+//
+// 1. BigInt tagging. A JS `bigint` cannot pass through
+//    `serde_wasm_bindgen::from_value` into the untagged `JsPlaintext` enum:
+//    `deserialize_any` visits BOTH a BigInt and a safe-integer Number as
+//    `visit_i64`, so after untagged buffering the two are indistinguishable
+//    and a bigint would silently land in the `Number(f64)` arm (losing
+//    precision beyond 2^53). Instead, `bigint` plaintexts are detected with
+//    `JsValue::is_bigint`, bounds-checked against i64, and swapped for the
+//    tagged wire map (`{BIGINT_WIRE_KEY: "<decimal>"}`). This mirrors what
+//    `src/index.cts` does for the Neon boundary.
+//
+// 2. JSON canonicalization. The Neon boundary extracts every options object
+//    with `neon::types::extract::Json`, i.e. `JSON.stringify` on the JS
+//    side — so Neon plaintexts get JSON.stringify semantics: `toJSON` is
+//    honored (a `Date` becomes its ISO string), `undefined` properties are
+//    dropped, non-finite numbers become `null`, and anything JSON cannot
+//    represent (a bigint nested inside a json-column document, a circular
+//    reference) throws a `TypeError`. serde_wasm_bindgen walks the live
+//    object instead, so without this step the platforms diverge — most
+//    sharply for a nested bigint, which Neon rejects but serde folds into
+//    the document as an i64 that later decrypts through f64 (silently
+//    rounding above 2^53). Round-tripping every non-bigint plaintext
+//    through `JSON.stringify` → `JSON.parse` makes the wasm boundary
+//    match Neon exactly, including the thrown `TypeError`.
+//
+// Rewrites land on a shallow-cloned options object — the caller's object
+// is never mutated.
 
 /// Bounds error for a JS `bigint` outside `i64::MIN..=i64::MAX`. Names the
 /// bounds and the offending direction; deliberately does not echo the
@@ -751,28 +770,57 @@ fn tagged_bigint_wire(value: &JsValue) -> Result<JsValue, JsValue> {
     Ok(obj.into())
 }
 
-/// Shallow-clone `opts` with a `bigint` top-level `plaintext` replaced by
-/// its tagged wire form. Non-bigint plaintexts (and non-object `opts`)
-/// pass through untouched, so serde reports its usual errors for
-/// malformed input.
-fn encode_bigint_plaintext(opts: &JsValue) -> Result<JsValue, JsValue> {
+/// Round-trip a value through `JSON.stringify` → `JSON.parse`, matching
+/// the Neon boundary's `neon::types::extract::Json` semantics. Returns
+/// `None` when the value has no JSON form (`undefined`, a function, a
+/// symbol — `JSON.stringify` returns `undefined` for these): the caller
+/// passes the value through untouched so serde reports its usual error,
+/// mirroring Neon, where `JSON.stringify` drops the property and serde
+/// reports the plaintext as missing. Propagates `JSON.stringify`'s
+/// `TypeError` (nested bigint, circular reference) unchanged.
+fn json_canonical(value: &JsValue) -> Result<Option<JsValue>, JsValue> {
+    let json: JsValue = js_sys::JSON::stringify(value)?.into();
+    // `js_sys::JSON::stringify` types its success as `JsString`, but for
+    // undefined/function/symbol inputs the underlying JS value is
+    // `undefined` — `as_string()` is the honest check.
+    let Some(json) = json.as_string() else {
+        return Ok(None);
+    };
+    js_sys::JSON::parse(&json).map(Some)
+}
+
+/// The canonical boundary form of one `plaintext` value: a `bigint` becomes
+/// the tagged wire map (bounds-checked), everything else is JSON
+/// canonicalized. `None` means "leave the value untouched" (no JSON form).
+fn boundary_plaintext(value: &JsValue) -> Result<Option<JsValue>, JsValue> {
+    if value.is_bigint() {
+        return tagged_bigint_wire(value).map(Some);
+    }
+    json_canonical(value)
+}
+
+/// Shallow-clone `opts` with its top-level `plaintext` replaced by the
+/// canonical boundary form ([`boundary_plaintext`]). Plaintexts with no
+/// canonical form (and non-object `opts`) pass through untouched, so serde
+/// reports its usual errors for malformed input.
+fn encode_plaintext(opts: &JsValue) -> Result<JsValue, JsValue> {
     let Some(obj) = opts.dyn_ref::<js_sys::Object>() else {
         return Ok(opts.clone());
     };
     let plaintext =
         js_sys::Reflect::get(opts, &JsValue::from_str("plaintext")).unwrap_or(JsValue::UNDEFINED);
-    if !plaintext.is_bigint() {
+    let Some(encoded) = boundary_plaintext(&plaintext)? else {
         return Ok(opts.clone());
-    }
+    };
     let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
-    set_prop(&clone, "plaintext", &tagged_bigint_wire(&plaintext)?)?;
+    set_prop(&clone, "plaintext", &encoded)?;
     Ok(clone.into())
 }
 
-/// Bulk variant of [`encode_bigint_plaintext`]: shallow-clones `opts`,
-/// the payload array at `key`, and each payload carrying a `bigint`
-/// `plaintext`. Returns `opts` untouched when no payload carries a bigint.
-fn encode_bigint_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, JsValue> {
+/// Bulk variant of [`encode_plaintext`]: shallow-clones `opts`, the payload
+/// array at `key`, and each payload whose `plaintext` has a canonical
+/// boundary form. Returns `opts` untouched when nothing needed rewriting.
+fn encode_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, JsValue> {
     let Some(obj) = opts.dyn_ref::<js_sys::Object>() else {
         return Ok(opts.clone());
     };
@@ -783,22 +831,24 @@ fn encode_bigint_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, Js
     let item_plaintext = |item: &JsValue| {
         js_sys::Reflect::get(item, &JsValue::from_str("plaintext")).unwrap_or(JsValue::UNDEFINED)
     };
-    if !arr.iter().any(|item| item_plaintext(&item).is_bigint()) {
-        return Ok(opts.clone());
-    }
     let encoded = js_sys::Array::new();
+    let mut changed = false;
     for item in arr.iter() {
         let plaintext = item_plaintext(&item);
-        match (plaintext.is_bigint(), item.dyn_ref::<js_sys::Object>()) {
-            (true, Some(item_obj)) => {
+        match (boundary_plaintext(&plaintext)?, item.dyn_ref::<js_sys::Object>()) {
+            (Some(canonical), Some(item_obj)) => {
                 let item_clone = js_sys::Object::assign(&js_sys::Object::new(), item_obj);
-                set_prop(&item_clone, "plaintext", &tagged_bigint_wire(&plaintext)?)?;
+                set_prop(&item_clone, "plaintext", &canonical)?;
                 encoded.push(&item_clone);
+                changed = true;
             }
             _ => {
                 encoded.push(&item);
             }
         }
+    }
+    if !changed {
+        return Ok(opts.clone());
     }
     let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
     set_prop(&clone, key, &encoded)?;

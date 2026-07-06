@@ -122,7 +122,11 @@ Encrypted `cast_as: 'bigint'` columns store signed 64-bit integers
   truncated.
 - A `bigint` is only accepted as the top-level plaintext of a scalar
   column. JSON has no bigint, so bigints nested inside `cast_as: 'json'`
-  documents (or JSON containment query terms) are not supported.
+  documents (or JSON containment query terms) are rejected with a
+  `TypeError` on both Neon and wasm. More generally, plaintexts follow
+  `JSON.stringify` semantics on both platforms: `toJSON` is honored (a
+  `Date` becomes its ISO string), `undefined` properties are dropped, and
+  non-finite numbers become `null`.
 
 ```js
 const ciphertext = await addon.encrypt(client, {

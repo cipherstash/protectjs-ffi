@@ -20,7 +20,7 @@ use vitaminc::protected::OpaqueDebug;
 ///
 /// So the boundaries encode `typeof v === 'bigint'` values into this tagged
 /// map before serde ever sees them (`src/index.cts` for Neon,
-/// `encode_bigint_plaintext` in `wasm.rs` for wasm), and the [`bigint_wire`]
+/// `encode_plaintext` in `wasm.rs` for wasm), and the [`bigint_wire`]
 /// serde module below decodes exactly this shape into
 /// [`JsPlaintext::BigInt`]. Both encoders bounds-check against `i64` first
 /// and raise a clear error, so an out-of-range value never reaches serde

@@ -207,6 +207,77 @@ describe.skipIf(missingEnv.length > 0)('wasm round-trip', () => {
       }),
     ).rejects.toThrow(/above the maximum.*signed 64-bit integer/)
   })
+
+  test('json plaintexts follow JSON.stringify semantics (Neon parity)', async () => {
+    const env = {
+      workspaceCrn: process.env.CS_WORKSPACE_CRN,
+      accessKey: process.env.CS_CLIENT_ACCESS_KEY,
+      clientId: process.env.CS_CLIENT_ID,
+      clientKey: process.env.CS_CLIENT_KEY,
+    }
+    if (
+      !env.workspaceCrn ||
+      !env.accessKey ||
+      !env.clientId ||
+      !env.clientKey
+    ) {
+      throw new Error(
+        'unreachable: describe.skipIf should have prevented this test from running without env vars',
+      )
+    }
+
+    const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
+
+    const client = await wasm.newClient({
+      strategy,
+      encryptConfig: {
+        v: 1,
+        tables: {
+          users: {
+            profile: {
+              cast_as: 'json',
+              indexes: {},
+            },
+          },
+        },
+      },
+      clientId: env.clientId,
+      clientKey: env.clientKey,
+    })
+
+    // JSON has no bigint: the wasm boundary canonicalizes plaintexts
+    // through JSON.stringify, so a bigint nested inside a json-column
+    // document rejects with the engine's own TypeError — exactly as it
+    // does on Neon, where neon's `Json` extractor stringifies the options
+    // object. (Before canonicalization, serde_wasm_bindgen silently folded
+    // the bigint into the document as an i64 that decrypted back through
+    // f64, rounding above 2^53.)
+    await expect(
+      wasm.encrypt(client, {
+        plaintext: { count: 2n ** 60n + 1n },
+        table: 'users',
+        column: 'profile',
+      }),
+    ).rejects.toThrow(TypeError)
+
+    // The rest of JSON.stringify's semantics apply too: `toJSON` is
+    // honored (Date → ISO string), `undefined` properties are dropped,
+    // and non-finite numbers become `null`.
+    const ciphertext = await wasm.encrypt(client, {
+      plaintext: {
+        joined: new Date('2026-01-02T03:04:05.678Z'),
+        nickname: undefined,
+        score: Number.NaN,
+      },
+      table: 'users',
+      column: 'profile',
+    })
+    const decrypted = await wasm.decrypt(client, { ciphertext })
+    expect(decrypted).toEqual({
+      joined: '2026-01-02T03:04:05.678Z',
+      score: null,
+    })
+  })
 })
 
 // The wasm `newClient` requires `opts.strategy` (no env/fs fallback). Both
