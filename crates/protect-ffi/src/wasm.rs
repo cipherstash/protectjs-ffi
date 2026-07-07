@@ -44,7 +44,7 @@ use cipherstash_client::zerokms::{
 };
 use cipherstash_client::IdentifiedBy;
 use serde::Deserialize;
-use stack_auth::{AuthError, AuthStrategy, SecretToken, ServiceToken};
+use stack_auth::{AuthError, AuthStrategy, SecretToken, ServerError, ServiceToken};
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -117,22 +117,86 @@ impl AuthStrategy for &JsAuthStrategy {
     fn get_token(self) -> impl Future<Output = Result<ServiceToken, AuthError>> {
         let promise = self.get_token.call0(&self.strategy);
         async move {
-            let promise = promise
-                .map_err(|e| AuthError::Server(format!("strategy.getToken() threw: {e:?}")))?;
-            let promise: js_sys::Promise = promise.dyn_into().map_err(|_| {
-                AuthError::Server("strategy.getToken() did not return a Promise".to_string())
+            let promise = promise.map_err(|e| {
+                AuthError::Server(ServerError(format!("strategy.getToken() threw: {e:?}")))
             })?;
-            let result = JsFuture::from(promise)
-                .await
-                .map_err(|e| AuthError::Server(format!("strategy.getToken() rejected: {e:?}")))?;
-            let token = js_sys::Reflect::get(&result, &JsValue::from_str("token"))
-                .map_err(|e| AuthError::Server(format!("missing token field: {e:?}")))?;
-            let token = token
-                .as_string()
-                .ok_or_else(|| AuthError::Server("token field is not a string".to_string()))?;
+            let promise: js_sys::Promise = promise.dyn_into().map_err(|_| {
+                AuthError::Server(ServerError(
+                    "strategy.getToken() did not return a Promise".to_string(),
+                ))
+            })?;
+            let result = JsFuture::from(promise).await.map_err(|e| {
+                AuthError::Server(ServerError(format!("strategy.getToken() rejected: {e:?}")))
+            })?;
+            // `Reflect::get` throws on a non-object receiver, so validate up
+            // front: a non-object resolution (e.g. a bare string) is a distinct,
+            // clearer failure than the "missing token field" it would otherwise
+            // surface as. Mirrors the Node seam's `downcast::<JsObject>` guard.
+            if !result.is_object() {
+                return Err(AuthError::Server(ServerError(
+                    "strategy.getToken() did not return an object".to_string(),
+                )));
+            }
+            // Accept both `@cipherstash/auth` shapes:
+            //   >= 0.41: a `@byteslice/result` `Result` — `{ data: TokenResult }`
+            //            on success, `{ failure: AuthFailure }` on error.
+            //   <= 0.40 / custom strategies: the bare `TokenResult`, with `token`
+            //            at the top level (the documented
+            //            `getToken(): Promise<{ token }>` contract).
+            // `result` is an object, so `Reflect::get` only throws on a getter
+            // that itself throws (e.g. a Proxy trap) — propagate that rather than
+            // silently treating the field as absent.
+            let failure =
+                js_sys::Reflect::get(&result, &JsValue::from_str("failure")).map_err(|e| {
+                    AuthError::Server(ServerError(format!("reading failure field: {e:?}")))
+                })?;
+            if !failure.is_undefined() && !failure.is_null() {
+                return Err(js_failure_to_auth_error(failure));
+            }
+            // Unwrap the `data` envelope when present (0.41+); otherwise read the
+            // bare result object directly (<= 0.40).
+            let data = js_sys::Reflect::get(&result, &JsValue::from_str("data")).map_err(|e| {
+                AuthError::Server(ServerError(format!("reading data field: {e:?}")))
+            })?;
+            let source = if data.is_object() { data } else { result };
+            let token =
+                js_sys::Reflect::get(&source, &JsValue::from_str("token")).map_err(|e| {
+                    AuthError::Server(ServerError(format!("missing token field: {e:?}")))
+                })?;
+            let token = token.as_string().ok_or_else(|| {
+                AuthError::Server(ServerError("token field is not a string".to_string()))
+            })?;
             Ok(ServiceToken::new(SecretToken::new(token)))
         }
     }
+}
+
+/// Reconstruct a [`stack_auth::AuthError`] from an `@cipherstash/auth`
+/// `AuthFailure` (`{ ...payload, type, error: Error, help?, url? }`) via
+/// [`AuthError::from_error_code`], so a strategy failure crosses back into Rust
+/// as the real typed error — preserving its code and any structured payload
+/// (e.g. `WORKSPACE_MISMATCH`'s `expected`/`actual`) — rather than a flattened
+/// `Server`. Unknown / foreign codes fall through to `AuthError::Custom`.
+fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
+    let code = js_sys::Reflect::get(&failure, &JsValue::from_str("type"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    let message = js_sys::Reflect::get(&failure, &JsValue::from_str("error"))
+        .ok()
+        .and_then(|err| js_sys::Reflect::get(&err, &JsValue::from_str("message")).ok())
+        .and_then(|m| m.as_string())
+        .unwrap_or_default();
+    // The structured payload is every own field except the reserved
+    // `type`/`error`/`help`/`url`. `error` is a live JS `Error`; the rest are
+    // plain values, so deserialization is lossless for what `from_error_code`
+    // reads (and degrades to an empty map, i.e. `Custom`, if it ever isn't).
+    let mut payload: serde_json::Map<String, serde_json::Value> =
+        serde_wasm_bindgen::from_value(failure).unwrap_or_default();
+    for key in ["type", "error", "help", "url"] {
+        payload.remove(key);
+    }
+    AuthError::from_error_code(&code, message, &payload)
 }
 
 // ---------------------------------------------------------------------------
