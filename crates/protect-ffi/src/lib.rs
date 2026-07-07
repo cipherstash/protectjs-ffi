@@ -29,10 +29,10 @@ use neon::{
         JsFuture,
     },
 };
-#[cfg(not(target_arch = "wasm32"))]
-use stack_auth::{AuthStrategy, SecretToken, ServerError};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
+use stack_auth::{AuthStrategy, SecretToken, ServerError};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -325,17 +325,13 @@ impl NeonJsAuthStrategy {
                 let raw: Handle<JsValue> = obj.prop(&mut cx, "getToken").get()?;
                 if raw.is_a::<JsUndefined, _>(&mut cx) || raw.is_a::<JsNull, _>(&mut cx) {
                     channel.unref(&mut cx);
-                    return Ok(Err(
-                        "opts.strategy.getToken is missing".to_string()
-                    ));
+                    return Ok(Err("opts.strategy.getToken is missing".to_string()));
                 }
                 let func = match raw.downcast::<JsFunction, _>(&mut cx) {
                     Ok(f) => f,
                     Err(_) => {
                         channel.unref(&mut cx);
-                        return Ok(Err(
-                            "opts.strategy.getToken is not a function".to_string()
-                        ));
+                        return Ok(Err("opts.strategy.getToken is not a function".to_string()));
                     }
                 };
                 channel.unref(&mut cx);
@@ -358,32 +354,59 @@ impl NeonJsAuthStrategy {
 /// back to a generic message — and crucially clears the pending N-API
 /// exception so the channel callback returns cleanly.
 #[cfg(not(target_arch = "wasm32"))]
-fn thrown_to_string<'cx, 'h, C: Context<'cx>>(
-    thrown: Handle<'h, JsValue>,
-    cx: &mut C,
-) -> String {
+fn thrown_to_string<'cx, 'h, C: Context<'cx>>(thrown: Handle<'h, JsValue>, cx: &mut C) -> String {
     cx.try_catch(|cx| Ok(thrown.to_string(cx)?.value(cx)))
         .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
 }
 
-/// Best-effort render of an `@cipherstash/auth` `AuthFailure`
-/// (`{ type, error, help?, url? }`) into a message. Reads the `type`
-/// discriminant; falls back to a bare label if the shape is unexpected.
+/// Read `obj[key]` as a `String`, or `None` if it's absent or not a JS string.
 #[cfg(not(target_arch = "wasm32"))]
-fn neon_failure_message<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -> String {
+fn prop_string<'cx>(cx: &mut Cx<'cx>, obj: Handle<JsObject>, key: &str) -> Option<String> {
+    let value: Handle<JsValue> = obj.prop(cx, key).get().ok()?;
+    value.downcast::<JsString, _>(cx).ok().map(|s| s.value(cx))
+}
+
+/// Read `obj[key]` as an object handle, or `None` if it's absent or not a JS object.
+#[cfg(not(target_arch = "wasm32"))]
+fn prop_object<'cx>(
+    cx: &mut Cx<'cx>,
+    obj: Handle<JsObject>,
+    key: &str,
+) -> Option<Handle<'cx, JsObject>> {
+    let value: Handle<JsValue> = obj.prop(cx, key).get().ok()?;
+    value.downcast::<JsObject, _>(cx).ok()
+}
+
+/// A protect-ffi-internal error for a strategy that returned a malformed shape
+/// (not an auth-domain outcome). Kept as `Server` — the shape it took before
+/// this reconstruction existed.
+#[cfg(not(target_arch = "wasm32"))]
+fn strategy_protocol_error(msg: impl Into<String>) -> AuthError {
+    AuthError::Server(ServerError(msg.into()))
+}
+
+/// Reconstruct a [`stack_auth::AuthError`] from an `@cipherstash/auth`
+/// `AuthFailure` (`{ ...payload, type, error, help?, url? }`) via
+/// [`AuthError::from_error_code`], so a strategy failure crosses back into Rust
+/// as the real typed error (preserving its code) rather than a flattened
+/// `Server`. Unknown / foreign codes fall through to `AuthError::Custom`.
+///
+/// Unlike the WASM seam, the structured `payload` isn't threaded across the
+/// Neon boundary, so `WORKSPACE_MISMATCH` reconstructs as `Custom` here (its
+/// message still carries the workspace detail); every other code round-trips.
+#[cfg(not(target_arch = "wasm32"))]
+fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -> AuthError {
     let obj = match failure.downcast::<JsObject, _>(cx) {
         Ok(o) => o,
-        Err(_) => return "strategy.getToken failed".to_string(),
+        Err(_) => return strategy_protocol_error("strategy.getToken failed"),
     };
-    let kind_val: Handle<JsValue> = match obj.prop(cx, "type").get() {
-        Ok(v) => v,
-        Err(_) => return "strategy.getToken failed".to_string(),
+    let code = prop_string(cx, obj, "type").unwrap_or_default();
+    // The message lives on the nested `error` (a live JS `Error`).
+    let message = match prop_object(cx, obj, "error") {
+        Some(err_obj) => prop_string(cx, err_obj, "message").unwrap_or_default(),
+        None => String::new(),
     };
-    let kind = match kind_val.downcast::<JsString, _>(cx) {
-        Ok(s) => s.value(cx),
-        Err(_) => "UNKNOWN".to_string(),
-    };
-    format!("strategy.getToken failed: {kind}")
+    AuthError::from_error_code(&code, message, &serde_json::Map::new())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -405,113 +428,113 @@ impl AuthStrategy for &NeonJsAuthStrategy {
         // The inner `Result<JsFuture<...>, String>` is the structural
         // outcome (a future to await vs. a synthesised error message);
         // the outer `try_catch` only fires on a real throw.
-        let outer: Result<JsFuture<Result<String, String>>, String> = channel
+        let outer: Result<JsFuture<Result<String, AuthError>>, AuthError> = channel
             .send(move |mut cx| {
-                let outcome: Result<JsFuture<Result<String, String>>, String> = match cx
-                    .try_catch(|cx| -> NeonResult<
-                        Result<JsFuture<Result<String, String>>, String>,
-                    > {
-                        let strategy_h = strategy.to_inner(cx);
-                        let func_h = get_token.to_inner(cx);
-                        let args: [Handle<JsValue>; 0] = [];
-                        let result = func_h.call(cx, strategy_h, args)?;
-                        let promise = match result.downcast::<JsPromise, _>(cx) {
-                            Ok(p) => p,
-                            Err(_) => {
-                                return Ok(Err(
-                                    "strategy.getToken did not return a Promise"
-                                        .to_string(),
-                                ))
-                            }
-                        };
-                        // Inner `to_future` closure: structural mismatches
-                        // (wrong type for resolved value, missing/non-string
-                        // `token`) are returned as `Ok(Err(...))`. The
-                        // remaining Throw risk is a property getter on the
-                        // resolved object that throws — vanishingly rare in
-                        // practice, and the existing try_catch on the outer
-                        // closure body covers throws from this same channel
-                        // dispatch path.
-                        let fut = promise.to_future(cx, |mut cx, settled| {
-                            match settled {
-                                Ok(v) => {
-                                    let obj = match v.downcast::<JsObject, _>(&mut cx) {
-                                        Ok(o) => o,
-                                        Err(_) => {
-                                            return Ok(Err(
-                                                "strategy.getToken did not return an object"
-                                                    .to_string(),
-                                            ))
+                let outcome: Result<JsFuture<Result<String, AuthError>>, AuthError> = match cx
+                    .try_catch(
+                        |cx| -> NeonResult<Result<JsFuture<Result<String, AuthError>>, AuthError>> {
+                            let strategy_h = strategy.to_inner(cx);
+                            let func_h = get_token.to_inner(cx);
+                            let args: [Handle<JsValue>; 0] = [];
+                            let result = func_h.call(cx, strategy_h, args)?;
+                            let promise = match result.downcast::<JsPromise, _>(cx) {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    return Ok(Err(strategy_protocol_error(
+                                        "strategy.getToken did not return a Promise",
+                                    )))
+                                }
+                            };
+                            // Inner `to_future` closure: structural mismatches
+                            // (wrong type for resolved value, missing/non-string
+                            // `token`) are returned as `Ok(Err(...))`. The
+                            // remaining Throw risk is a property getter on the
+                            // resolved object that throws — vanishingly rare in
+                            // practice, and the existing try_catch on the outer
+                            // closure body covers throws from this same channel
+                            // dispatch path.
+                            let fut = promise.to_future(cx, |mut cx, settled| {
+                                match settled {
+                                    Ok(v) => {
+                                        let obj =
+                                            match v.downcast::<JsObject, _>(&mut cx) {
+                                                Ok(o) => o,
+                                                Err(_) => return Ok(Err(strategy_protocol_error(
+                                                    "strategy.getToken did not return an object",
+                                                ))),
+                                            };
+                                        // Accept both `@cipherstash/auth` shapes:
+                                        //   >= 0.41: a `@byteslice/result` `Result` —
+                                        //            `{ data: TokenResult }` on success,
+                                        //            `{ failure: AuthFailure }` on error.
+                                        //   <= 0.40 / custom strategies: the bare
+                                        //            `TokenResult`, with `token` at the top
+                                        //            level (the documented
+                                        //            `getToken(): Promise<{ token }>` contract).
+                                        let failure: Handle<JsValue> =
+                                            match obj.prop(&mut cx, "failure").get() {
+                                                Ok(v) => v,
+                                                Err(_) => cx.undefined().upcast(),
+                                            };
+                                        if !failure.is_a::<JsUndefined, _>(&mut cx)
+                                            && !failure.is_a::<JsNull, _>(&mut cx)
+                                        {
+                                            return Ok(Err(neon_failure_to_auth_error(
+                                                &mut cx, failure,
+                                            )));
                                         }
-                                    };
-                                    // Accept both `@cipherstash/auth` shapes:
-                                    //   >= 0.41: a `@byteslice/result` `Result` —
-                                    //            `{ data: TokenResult }` on success,
-                                    //            `{ failure: AuthFailure }` on error.
-                                    //   <= 0.40 / custom strategies: the bare
-                                    //            `TokenResult`, with `token` at the top
-                                    //            level (the documented
-                                    //            `getToken(): Promise<{ token }>` contract).
-                                    let failure: Handle<JsValue> =
-                                        match obj.prop(&mut cx, "failure").get() {
-                                            Ok(v) => v,
-                                            Err(_) => cx.undefined().upcast(),
+                                        // Unwrap the `data` envelope when present (0.41+);
+                                        // otherwise read `token` from the bare result (<= 0.40).
+                                        let data_val: Handle<JsValue> =
+                                            match obj.prop(&mut cx, "data").get() {
+                                                Ok(v) => v,
+                                                Err(_) => cx.undefined().upcast(),
+                                            };
+                                        let source = match data_val.downcast::<JsObject, _>(&mut cx)
+                                        {
+                                            Ok(d) => d,
+                                            Err(_) => obj,
                                         };
-                                    if !failure.is_a::<JsUndefined, _>(&mut cx)
-                                        && !failure.is_a::<JsNull, _>(&mut cx)
-                                    {
-                                        return Ok(Err(neon_failure_message(&mut cx, failure)));
-                                    }
-                                    // Unwrap the `data` envelope when present (0.41+);
-                                    // otherwise read `token` from the bare result (<= 0.40).
-                                    let data_val: Handle<JsValue> =
-                                        match obj.prop(&mut cx, "data").get() {
-                                            Ok(v) => v,
-                                            Err(_) => cx.undefined().upcast(),
-                                        };
-                                    let source = match data_val.downcast::<JsObject, _>(&mut cx) {
-                                        Ok(d) => d,
-                                        Err(_) => obj,
-                                    };
-                                    let raw: Handle<JsValue> =
-                                        match source.prop(&mut cx, "token").get() {
-                                            Ok(v) => v,
+                                        let raw: Handle<JsValue> =
+                                            match source.prop(&mut cx, "token").get() {
+                                                Ok(v) => v,
+                                                Err(_) => {
+                                                    return Ok(Err(strategy_protocol_error(
+                                                        "could not read 'token' field",
+                                                    )))
+                                                }
+                                            };
+                                        if raw.is_a::<JsUndefined, _>(&mut cx)
+                                            || raw.is_a::<JsNull, _>(&mut cx)
+                                        {
+                                            return Ok(Err(strategy_protocol_error(
+                                                "missing 'token' field",
+                                            )));
+                                        }
+                                        let token = match raw.downcast::<JsString, _>(&mut cx) {
+                                            Ok(s) => s,
                                             Err(_) => {
-                                                return Ok(Err(
-                                                    "could not read 'token' field"
-                                                        .to_string(),
-                                                ))
+                                                return Ok(Err(strategy_protocol_error(
+                                                    "'token' field is not a string",
+                                                )))
                                             }
                                         };
-                                    if raw.is_a::<JsUndefined, _>(&mut cx)
-                                        || raw.is_a::<JsNull, _>(&mut cx)
-                                    {
-                                        return Ok(Err("missing 'token' field".to_string()));
+                                        Ok(Ok(token.value(&mut cx)))
                                     }
-                                    let token = match raw.downcast::<JsString, _>(&mut cx) {
-                                        Ok(s) => s,
-                                        Err(_) => {
-                                            return Ok(Err(
-                                                "'token' field is not a string"
-                                                    .to_string(),
-                                            ))
-                                        }
-                                    };
-                                    Ok(Ok(token.value(&mut cx)))
+                                    Err(err) => Ok(Err(strategy_protocol_error(format!(
+                                        "strategy.getToken rejected: {}",
+                                        thrown_to_string(err, &mut cx),
+                                    )))),
                                 }
-                                Err(err) => Ok(Err(format!(
-                                    "strategy.getToken rejected: {}",
-                                    thrown_to_string(err, &mut cx),
-                                ))),
-                            }
-                        })?;
-                        Ok(Ok(fut))
-                    }) {
+                            })?;
+                            Ok(Ok(fut))
+                        },
+                    ) {
                     Ok(inner) => inner,
-                    Err(thrown) => Err(format!(
+                    Err(thrown) => Err(strategy_protocol_error(format!(
                         "strategy.getToken threw synchronously: {}",
                         thrown_to_string(thrown, &mut cx),
-                    )),
+                    ))),
                 };
                 Ok(outcome)
             })
@@ -520,13 +543,11 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                 AuthError::Server(ServerError(format!("strategy callback failed: {e}")))
             })?;
 
-        let js_future = outer.map_err(|e| AuthError::Server(ServerError(e)))?;
+        let js_future = outer?;
         let token_result = js_future.await.map_err(|e| {
             AuthError::Server(ServerError(format!("strategy promise await failed: {e}")))
         })?;
-        token_result
-            .map(|s| stack_auth::ServiceToken::new(SecretToken::new(s)))
-            .map_err(|e| AuthError::Server(ServerError(e)))
+        token_result.map(|s| stack_auth::ServiceToken::new(SecretToken::new(s)))
     }
 }
 
@@ -1020,9 +1041,7 @@ pub async fn new_client(
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
-        Some(s) => {
-            NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?)
-        }
+        Some(s) => NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?),
         None => NodeAuthStrategy::Auto(Box::new(client_opts.creds.build_strategy()?)),
     };
     let zerokms = ZeroKMSBuilder::new(auth)

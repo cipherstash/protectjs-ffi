@@ -134,18 +134,20 @@ impl AuthStrategy for &JsAuthStrategy {
             //   <= 0.40 / custom strategies: the bare `TokenResult`, with `token`
             //            at the top level (the documented
             //            `getToken(): Promise<{ token }>` contract).
-            let failure =
-                js_sys::Reflect::get(&result, &JsValue::from_str("failure")).unwrap_or(JsValue::UNDEFINED);
+            let failure = js_sys::Reflect::get(&result, &JsValue::from_str("failure"))
+                .unwrap_or(JsValue::UNDEFINED);
             if !failure.is_undefined() && !failure.is_null() {
-                return Err(AuthError::Server(ServerError(js_failure_message(&failure))));
+                return Err(js_failure_to_auth_error(failure));
             }
             // Unwrap the `data` envelope when present (0.41+); otherwise read the
             // bare result object directly (<= 0.40).
-            let data =
-                js_sys::Reflect::get(&result, &JsValue::from_str("data")).unwrap_or(JsValue::UNDEFINED);
+            let data = js_sys::Reflect::get(&result, &JsValue::from_str("data"))
+                .unwrap_or(JsValue::UNDEFINED);
             let source = if data.is_object() { data } else { result };
-            let token = js_sys::Reflect::get(&source, &JsValue::from_str("token"))
-                .map_err(|e| AuthError::Server(ServerError(format!("missing token field: {e:?}"))))?;
+            let token =
+                js_sys::Reflect::get(&source, &JsValue::from_str("token")).map_err(|e| {
+                    AuthError::Server(ServerError(format!("missing token field: {e:?}")))
+                })?;
             let token = token.as_string().ok_or_else(|| {
                 AuthError::Server(ServerError("token field is not a string".to_string()))
             })?;
@@ -154,24 +156,32 @@ impl AuthStrategy for &JsAuthStrategy {
     }
 }
 
-/// Render an `@cipherstash/auth` `AuthFailure` (`{ type, error: Error, help?, url? }`)
-/// into a human-readable message: `getToken() failed (TYPE): <error.message>`.
-/// Best-effort — falls back to a bare label if the fields are missing.
-fn js_failure_message(failure: &JsValue) -> String {
-    let kind = js_sys::Reflect::get(failure, &JsValue::from_str("type"))
+/// Reconstruct a [`stack_auth::AuthError`] from an `@cipherstash/auth`
+/// `AuthFailure` (`{ ...payload, type, error: Error, help?, url? }`) via
+/// [`AuthError::from_error_code`], so a strategy failure crosses back into Rust
+/// as the real typed error — preserving its code and any structured payload
+/// (e.g. `WORKSPACE_MISMATCH`'s `expected`/`actual`) — rather than a flattened
+/// `Server`. Unknown / foreign codes fall through to `AuthError::Custom`.
+fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
+    let code = js_sys::Reflect::get(&failure, &JsValue::from_str("type"))
         .ok()
         .and_then(|v| v.as_string())
-        .unwrap_or_else(|| "UNKNOWN".to_string());
-    let detail = js_sys::Reflect::get(failure, &JsValue::from_str("error"))
+        .unwrap_or_default();
+    let message = js_sys::Reflect::get(&failure, &JsValue::from_str("error"))
         .ok()
         .and_then(|err| js_sys::Reflect::get(&err, &JsValue::from_str("message")).ok())
         .and_then(|m| m.as_string())
         .unwrap_or_default();
-    if detail.is_empty() {
-        format!("strategy.getToken() failed: {kind}")
-    } else {
-        format!("strategy.getToken() failed ({kind}): {detail}")
+    // The structured payload is every own field except the reserved
+    // `type`/`error`/`help`/`url`. `error` is a live JS `Error`; the rest are
+    // plain values, so deserialization is lossless for what `from_error_code`
+    // reads (and degrades to an empty map, i.e. `Custom`, if it ever isn't).
+    let mut payload: serde_json::Map<String, serde_json::Value> =
+        serde_wasm_bindgen::from_value(failure).unwrap_or_default();
+    for key in ["type", "error", "help", "url"] {
+        payload.remove(key);
     }
+    AuthError::from_error_code(&code, message, &payload)
 }
 
 // ---------------------------------------------------------------------------

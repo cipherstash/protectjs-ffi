@@ -22,9 +22,14 @@ uses the promoted section as the GitHub release notes.
   error, … } }` on error — on both the Node (Neon) and WASM auth paths. The
   bare `{ token }` shape (the documented `getToken(): Promise<{ token }>`
   contract, used by `@cipherstash/auth` `<= 0.40` and custom strategies) is
-  still accepted, so this is backward compatible. A `failure` result now
-  surfaces the failure's `type` (and, on WASM, the underlying error message)
-  instead of an opaque token error.
+  still accepted, so this is backward compatible. A `failure` result is
+  reconstructed into the real `stack_auth::AuthError` via
+  `AuthError::from_error_code`, preserving its code (e.g. `NOT_AUTHENTICATED`,
+  `EXPIRED_TOKEN`) rather than flattening every failure to `Server`; unknown or
+  foreign codes become `AuthError::Custom`. On the WASM path the structured
+  payload rides along too, so `WORKSPACE_MISMATCH` round-trips; the Node path
+  reconstructs by code + message (there `WORKSPACE_MISMATCH` surfaces as
+  `Custom`, with the workspace detail preserved in the message).
 - `CHANGELOG.md` plus automated release notes. On `npm version`, the `version`
   lifecycle hook promotes the `[Unreleased]` section to a dated entry
   (`scripts/changelog-release.mjs`); the release workflow then publishes that
@@ -33,8 +38,9 @@ uses the promoted section as the GitHub release notes.
 ### Changed
 
 - Bumped `cipherstash-client`, `cts-common`, `stack-auth`, and `stack-profile`
-  to `0.39.0`. `stack-auth`'s `AuthError::Server` now wraps a `ServerError`
-  newtype rather than a bare `String`.
+  to `0.39.1`. `stack-auth`'s `AuthError::Server` now wraps a `ServerError`
+  newtype rather than a bare `String`, and `0.39.1` adds
+  `AuthError::from_error_code` (the reconstruction the auth bridge now uses).
 
 ## [0.26.0] - 2026-06-08
 
