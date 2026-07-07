@@ -444,12 +444,14 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                             ))
                                         }
                                     };
-                                    // `@cipherstash/auth` >= 0.41 wraps the token in a
-                                    // `@byteslice/result` `Result`: `{ data: TokenResult }`
-                                    // on success, `{ failure: AuthFailure }` on error
-                                    // (earlier versions returned `token` at the top level).
-                                    // Report a failure with its `type` rather than the opaque
-                                    // "missing 'token' field" a bare `.token` read produced.
+                                    // Accept both `@cipherstash/auth` shapes:
+                                    //   >= 0.41: a `@byteslice/result` `Result` —
+                                    //            `{ data: TokenResult }` on success,
+                                    //            `{ failure: AuthFailure }` on error.
+                                    //   <= 0.40 / custom strategies: the bare
+                                    //            `TokenResult`, with `token` at the top
+                                    //            level (the documented
+                                    //            `getToken(): Promise<{ token }>` contract).
                                     let failure: Handle<JsValue> =
                                         match obj.prop(&mut cx, "failure").get() {
                                             Ok(v) => v,
@@ -460,26 +462,19 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                     {
                                         return Ok(Err(neon_failure_message(&mut cx, failure)));
                                     }
-                                    let data: Handle<JsValue> =
+                                    // Unwrap the `data` envelope when present (0.41+);
+                                    // otherwise read `token` from the bare result (<= 0.40).
+                                    let data_val: Handle<JsValue> =
                                         match obj.prop(&mut cx, "data").get() {
                                             Ok(v) => v,
-                                            Err(_) => {
-                                                return Ok(Err(
-                                                    "could not read 'data' field".to_string(),
-                                                ))
-                                            }
+                                            Err(_) => cx.undefined().upcast(),
                                         };
-                                    let data = match data.downcast::<JsObject, _>(&mut cx) {
-                                        Ok(o) => o,
-                                        Err(_) => {
-                                            return Ok(Err(
-                                                "strategy.getToken result missing 'data' object"
-                                                    .to_string(),
-                                            ))
-                                        }
+                                    let source = match data_val.downcast::<JsObject, _>(&mut cx) {
+                                        Ok(d) => d,
+                                        Err(_) => obj,
                                     };
                                     let raw: Handle<JsValue> =
-                                        match data.prop(&mut cx, "token").get() {
+                                        match source.prop(&mut cx, "token").get() {
                                             Ok(v) => v,
                                             Err(_) => {
                                                 return Ok(Err(

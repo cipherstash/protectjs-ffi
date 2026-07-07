@@ -15,34 +15,26 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
-### Breaking
+### Added
 
-- The JS auth strategy's `getToken()` result is now read as `@cipherstash/auth`
-  `0.41`'s `@byteslice/result` `Result` shape — `{ data: { token, … } }` on
-  success, `{ failure: { type, error, … } }` on error — instead of a bare
-  `{ token }`. Pass a strategy from `@cipherstash/auth` `>= 0.41`; strategies
-  from earlier versions (top-level `token`) are no longer accepted, on either
-  the Node (Neon) or WASM path.
+- Support for `@cipherstash/auth` `0.41`'s `@byteslice/result` `Result`-shaped
+  `getToken()` — `{ data: { token, … } }` on success, `{ failure: { type,
+  error, … } }` on error — on both the Node (Neon) and WASM auth paths. The
+  bare `{ token }` shape (the documented `getToken(): Promise<{ token }>`
+  contract, used by `@cipherstash/auth` `<= 0.40` and custom strategies) is
+  still accepted, so this is backward compatible. A `failure` result now
+  surfaces the failure's `type` (and, on WASM, the underlying error message)
+  instead of an opaque token error.
+- `CHANGELOG.md` plus automated release notes. On `npm version`, the `version`
+  lifecycle hook promotes the `[Unreleased]` section to a dated entry
+  (`scripts/changelog-release.mjs`); the release workflow then publishes that
+  section as the GitHub release body (`scripts/changelog-extract.mjs`).
 
 ### Changed
 
 - Bumped `cipherstash-client`, `cts-common`, `stack-auth`, and `stack-profile`
   to `0.39.0`. `stack-auth`'s `AuthError::Server` now wraps a `ServerError`
   newtype rather than a bare `String`.
-
-### Added
-
-- `CHANGELOG.md` plus automated release notes. On `npm version`, the `version`
-  lifecycle hook promotes the `[Unreleased]` section to a dated entry
-  (`scripts/changelog-release.mjs`); the release workflow then publishes that
-  section as the GitHub release body (`scripts/changelog-extract.mjs`).
-
-### Fixed
-
-- The Node/WASM JS-auth bridge no longer fails with `token field is not a
-  string` when handed an `@cipherstash/auth` `0.41` strategy (whose `getToken()`
-  returns a `Result`). Auth failures now surface the failure's `type` (and, on
-  the WASM path, the underlying error message) instead of an opaque token error.
 
 ## [0.26.0] - 2026-06-08
 

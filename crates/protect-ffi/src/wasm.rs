@@ -128,20 +128,23 @@ impl AuthStrategy for &JsAuthStrategy {
             let result = JsFuture::from(promise).await.map_err(|e| {
                 AuthError::Server(ServerError(format!("strategy.getToken() rejected: {e:?}")))
             })?;
-            // `@cipherstash/auth` >= 0.41 wraps the token in a `@byteslice/result`
-            // `Result`: `{ data: TokenResult }` on success, `{ failure: AuthFailure }`
-            // on error (earlier versions returned the `TokenResult` directly, with
-            // `token` at the top level). Surface a failure with its type/message
-            // rather than the opaque "token field is not a string" a bare `.token`
-            // read used to produce.
+            // Accept both `@cipherstash/auth` shapes:
+            //   >= 0.41: a `@byteslice/result` `Result` — `{ data: TokenResult }`
+            //            on success, `{ failure: AuthFailure }` on error.
+            //   <= 0.40 / custom strategies: the bare `TokenResult`, with `token`
+            //            at the top level (the documented
+            //            `getToken(): Promise<{ token }>` contract).
             let failure =
                 js_sys::Reflect::get(&result, &JsValue::from_str("failure")).unwrap_or(JsValue::UNDEFINED);
             if !failure.is_undefined() && !failure.is_null() {
                 return Err(AuthError::Server(ServerError(js_failure_message(&failure))));
             }
-            let data = js_sys::Reflect::get(&result, &JsValue::from_str("data"))
-                .map_err(|e| AuthError::Server(ServerError(format!("missing data field: {e:?}"))))?;
-            let token = js_sys::Reflect::get(&data, &JsValue::from_str("token"))
+            // Unwrap the `data` envelope when present (0.41+); otherwise read the
+            // bare result object directly (<= 0.40).
+            let data =
+                js_sys::Reflect::get(&result, &JsValue::from_str("data")).unwrap_or(JsValue::UNDEFINED);
+            let source = if data.is_object() { data } else { result };
+            let token = js_sys::Reflect::get(&source, &JsValue::from_str("token"))
                 .map_err(|e| AuthError::Server(ServerError(format!("missing token field: {e:?}"))))?;
             let token = token.as_string().ok_or_else(|| {
                 AuthError::Server(ServerError("token field is not a string".to_string()))
