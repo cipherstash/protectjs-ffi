@@ -44,7 +44,7 @@ use cipherstash_client::zerokms::{
 };
 use cipherstash_client::IdentifiedBy;
 use serde::Deserialize;
-use stack_auth::{AuthError, AuthStrategy, SecretToken, ServiceToken};
+use stack_auth::{AuthError, AuthStrategy, SecretToken, ServerError, ServiceToken};
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -117,21 +117,57 @@ impl AuthStrategy for &JsAuthStrategy {
     fn get_token(self) -> impl Future<Output = Result<ServiceToken, AuthError>> {
         let promise = self.get_token.call0(&self.strategy);
         async move {
-            let promise = promise
-                .map_err(|e| AuthError::Server(format!("strategy.getToken() threw: {e:?}")))?;
-            let promise: js_sys::Promise = promise.dyn_into().map_err(|_| {
-                AuthError::Server("strategy.getToken() did not return a Promise".to_string())
+            let promise = promise.map_err(|e| {
+                AuthError::Server(ServerError(format!("strategy.getToken() threw: {e:?}")))
             })?;
-            let result = JsFuture::from(promise)
-                .await
-                .map_err(|e| AuthError::Server(format!("strategy.getToken() rejected: {e:?}")))?;
-            let token = js_sys::Reflect::get(&result, &JsValue::from_str("token"))
-                .map_err(|e| AuthError::Server(format!("missing token field: {e:?}")))?;
-            let token = token
-                .as_string()
-                .ok_or_else(|| AuthError::Server("token field is not a string".to_string()))?;
+            let promise: js_sys::Promise = promise.dyn_into().map_err(|_| {
+                AuthError::Server(ServerError(
+                    "strategy.getToken() did not return a Promise".to_string(),
+                ))
+            })?;
+            let result = JsFuture::from(promise).await.map_err(|e| {
+                AuthError::Server(ServerError(format!("strategy.getToken() rejected: {e:?}")))
+            })?;
+            // `@cipherstash/auth` >= 0.41 wraps the token in a `@byteslice/result`
+            // `Result`: `{ data: TokenResult }` on success, `{ failure: AuthFailure }`
+            // on error (earlier versions returned the `TokenResult` directly, with
+            // `token` at the top level). Surface a failure with its type/message
+            // rather than the opaque "token field is not a string" a bare `.token`
+            // read used to produce.
+            let failure =
+                js_sys::Reflect::get(&result, &JsValue::from_str("failure")).unwrap_or(JsValue::UNDEFINED);
+            if !failure.is_undefined() && !failure.is_null() {
+                return Err(AuthError::Server(ServerError(js_failure_message(&failure))));
+            }
+            let data = js_sys::Reflect::get(&result, &JsValue::from_str("data"))
+                .map_err(|e| AuthError::Server(ServerError(format!("missing data field: {e:?}"))))?;
+            let token = js_sys::Reflect::get(&data, &JsValue::from_str("token"))
+                .map_err(|e| AuthError::Server(ServerError(format!("missing token field: {e:?}"))))?;
+            let token = token.as_string().ok_or_else(|| {
+                AuthError::Server(ServerError("token field is not a string".to_string()))
+            })?;
             Ok(ServiceToken::new(SecretToken::new(token)))
         }
+    }
+}
+
+/// Render an `@cipherstash/auth` `AuthFailure` (`{ type, error: Error, help?, url? }`)
+/// into a human-readable message: `getToken() failed (TYPE): <error.message>`.
+/// Best-effort — falls back to a bare label if the fields are missing.
+fn js_failure_message(failure: &JsValue) -> String {
+    let kind = js_sys::Reflect::get(failure, &JsValue::from_str("type"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+    let detail = js_sys::Reflect::get(failure, &JsValue::from_str("error"))
+        .ok()
+        .and_then(|err| js_sys::Reflect::get(&err, &JsValue::from_str("message")).ok())
+        .and_then(|m| m.as_string())
+        .unwrap_or_default();
+    if detail.is_empty() {
+        format!("strategy.getToken() failed: {kind}")
+    } else {
+        format!("strategy.getToken() failed ({kind}): {detail}")
     }
 }
 

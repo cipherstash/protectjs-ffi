@@ -30,7 +30,7 @@ use neon::{
     },
 };
 #[cfg(not(target_arch = "wasm32"))]
-use stack_auth::{AuthStrategy, SecretToken};
+use stack_auth::{AuthStrategy, SecretToken, ServerError};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -366,6 +366,26 @@ fn thrown_to_string<'cx, 'h, C: Context<'cx>>(
         .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
 }
 
+/// Best-effort render of an `@cipherstash/auth` `AuthFailure`
+/// (`{ type, error, help?, url? }`) into a message. Reads the `type`
+/// discriminant; falls back to a bare label if the shape is unexpected.
+#[cfg(not(target_arch = "wasm32"))]
+fn neon_failure_message<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -> String {
+    let obj = match failure.downcast::<JsObject, _>(cx) {
+        Ok(o) => o,
+        Err(_) => return "strategy.getToken failed".to_string(),
+    };
+    let kind_val: Handle<JsValue> = match obj.prop(cx, "type").get() {
+        Ok(v) => v,
+        Err(_) => return "strategy.getToken failed".to_string(),
+    };
+    let kind = match kind_val.downcast::<JsString, _>(cx) {
+        Ok(s) => s.value(cx),
+        Err(_) => "UNKNOWN".to_string(),
+    };
+    format!("strategy.getToken failed: {kind}")
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl AuthStrategy for &NeonJsAuthStrategy {
     async fn get_token(self) -> Result<stack_auth::ServiceToken, AuthError> {
@@ -424,8 +444,42 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                             ))
                                         }
                                     };
+                                    // `@cipherstash/auth` >= 0.41 wraps the token in a
+                                    // `@byteslice/result` `Result`: `{ data: TokenResult }`
+                                    // on success, `{ failure: AuthFailure }` on error
+                                    // (earlier versions returned `token` at the top level).
+                                    // Report a failure with its `type` rather than the opaque
+                                    // "missing 'token' field" a bare `.token` read produced.
+                                    let failure: Handle<JsValue> =
+                                        match obj.prop(&mut cx, "failure").get() {
+                                            Ok(v) => v,
+                                            Err(_) => cx.undefined().upcast(),
+                                        };
+                                    if !failure.is_a::<JsUndefined, _>(&mut cx)
+                                        && !failure.is_a::<JsNull, _>(&mut cx)
+                                    {
+                                        return Ok(Err(neon_failure_message(&mut cx, failure)));
+                                    }
+                                    let data: Handle<JsValue> =
+                                        match obj.prop(&mut cx, "data").get() {
+                                            Ok(v) => v,
+                                            Err(_) => {
+                                                return Ok(Err(
+                                                    "could not read 'data' field".to_string(),
+                                                ))
+                                            }
+                                        };
+                                    let data = match data.downcast::<JsObject, _>(&mut cx) {
+                                        Ok(o) => o,
+                                        Err(_) => {
+                                            return Ok(Err(
+                                                "strategy.getToken result missing 'data' object"
+                                                    .to_string(),
+                                            ))
+                                        }
+                                    };
                                     let raw: Handle<JsValue> =
-                                        match obj.prop(&mut cx, "token").get() {
+                                        match data.prop(&mut cx, "token").get() {
                                             Ok(v) => v,
                                             Err(_) => {
                                                 return Ok(Err(
@@ -467,15 +521,17 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                 Ok(outcome)
             })
             .await
-            .map_err(|e| AuthError::Server(format!("strategy callback failed: {e}")))?;
+            .map_err(|e| {
+                AuthError::Server(ServerError(format!("strategy callback failed: {e}")))
+            })?;
 
-        let js_future = outer.map_err(AuthError::Server)?;
-        let token_result = js_future
-            .await
-            .map_err(|e| AuthError::Server(format!("strategy promise await failed: {e}")))?;
+        let js_future = outer.map_err(|e| AuthError::Server(ServerError(e)))?;
+        let token_result = js_future.await.map_err(|e| {
+            AuthError::Server(ServerError(format!("strategy promise await failed: {e}")))
+        })?;
         token_result
             .map(|s| stack_auth::ServiceToken::new(SecretToken::new(s)))
-            .map_err(AuthError::Server)
+            .map_err(|e| AuthError::Server(ServerError(e)))
     }
 }
 
@@ -1569,6 +1625,7 @@ mod tests {
                 hmac_256: None,
                 bloom_filter: None,
                 ore_block_u64_8_256: None,
+                ope_cllw: None,
             });
             let value = serde_json::to_value(&payload).unwrap();
             assert_eq!(value["k"], "ct");
