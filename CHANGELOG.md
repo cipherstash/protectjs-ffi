@@ -41,6 +41,21 @@ uses the promoted section as the GitHub release notes.
   to `0.39.1`. `stack-auth`'s `AuthError::Server` now wraps a `ServerError`
   newtype rather than a bare `String`, and `0.39.1` adds
   `AuthError::from_error_code` (the reconstruction the auth bridge now uses).
+- License is now MIT across `LICENSE.md`, `package.json`, and `Cargo.toml`
+  (the manifests previously declared ISC).
+
+### Fixed
+
+- Access-key auth now refreshes tokens correctly (via the `cipherstash-client`
+  bump, CIP-3233). Previously the refresher treated the absolute-epoch `expiry`
+  as a relative duration, so auto-refresh never fired and every encrypt/decrypt
+  began failing roughly 15 minutes after process start.
+
+### Security
+
+- Hardened the release and build workflows: the version input is allowlist-gated
+  to npm bump keywords or strict semver before it reaches any `run:` step,
+  guarding against `${{ }}` template injection.
 
 ## [0.26.0] - 2026-06-08
 
