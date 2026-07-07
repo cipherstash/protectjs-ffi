@@ -128,21 +128,36 @@ impl AuthStrategy for &JsAuthStrategy {
             let result = JsFuture::from(promise).await.map_err(|e| {
                 AuthError::Server(ServerError(format!("strategy.getToken() rejected: {e:?}")))
             })?;
+            // `Reflect::get` throws on a non-object receiver, so validate up
+            // front: a non-object resolution (e.g. a bare string) is a distinct,
+            // clearer failure than the "missing token field" it would otherwise
+            // surface as. Mirrors the Node seam's `downcast::<JsObject>` guard.
+            if !result.is_object() {
+                return Err(AuthError::Server(ServerError(
+                    "strategy.getToken() did not return an object".to_string(),
+                )));
+            }
             // Accept both `@cipherstash/auth` shapes:
             //   >= 0.41: a `@byteslice/result` `Result` — `{ data: TokenResult }`
             //            on success, `{ failure: AuthFailure }` on error.
             //   <= 0.40 / custom strategies: the bare `TokenResult`, with `token`
             //            at the top level (the documented
             //            `getToken(): Promise<{ token }>` contract).
-            let failure = js_sys::Reflect::get(&result, &JsValue::from_str("failure"))
-                .unwrap_or(JsValue::UNDEFINED);
+            // `result` is an object, so `Reflect::get` only throws on a getter
+            // that itself throws (e.g. a Proxy trap) — propagate that rather than
+            // silently treating the field as absent.
+            let failure =
+                js_sys::Reflect::get(&result, &JsValue::from_str("failure")).map_err(|e| {
+                    AuthError::Server(ServerError(format!("reading failure field: {e:?}")))
+                })?;
             if !failure.is_undefined() && !failure.is_null() {
                 return Err(js_failure_to_auth_error(failure));
             }
             // Unwrap the `data` envelope when present (0.41+); otherwise read the
             // bare result object directly (<= 0.40).
-            let data = js_sys::Reflect::get(&result, &JsValue::from_str("data"))
-                .unwrap_or(JsValue::UNDEFINED);
+            let data = js_sys::Reflect::get(&result, &JsValue::from_str("data")).map_err(|e| {
+                AuthError::Server(ServerError(format!("reading data field: {e:?}")))
+            })?;
             let source = if data.is_object() { data } else { result };
             let token =
                 js_sys::Reflect::get(&source, &JsValue::from_str("token")).map_err(|e| {
