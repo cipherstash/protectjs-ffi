@@ -51,11 +51,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
-    encrypted_record_from_value, find_index_for_type, into_store_ciphertext, is_encrypted_value,
-    parse_query_op, query_output, storage_output, to_query_plaintext, validate_eql_version,
-    DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
-    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error,
-    InferredQueryMode, QueryOutput,
+    auth_failure_message, encrypted_record_from_value, find_index_for_type, into_store_ciphertext,
+    is_encrypted_value, parse_query_op, query_output, storage_output, to_query_plaintext,
+    validate_eql_version, DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions,
+    EncryptOptions, EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion,
+    Error, InferredQueryMode, QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -178,6 +178,13 @@ impl AuthStrategy for &JsAuthStrategy {
 /// (e.g. `WORKSPACE_MISMATCH`'s `expected`/`actual`) — rather than a flattened
 /// `Server`. Unknown / foreign codes fall through to `AuthError::Custom`.
 fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
+    // A non-object failure (a bare string/number) carries no `type`/`error`, so
+    // reconstruction would produce a blank `Custom("")`. Treat it as a malformed
+    // strategy result with a clear message instead — mirroring the Neon seam's
+    // `downcast::<JsObject>` guard.
+    if !failure.is_object() {
+        return AuthError::Server(ServerError("strategy.getToken failed".to_string()));
+    }
     let code = js_sys::Reflect::get(&failure, &JsValue::from_str("type"))
         .ok()
         .and_then(|v| v.as_string())
@@ -196,7 +203,7 @@ fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
     for key in ["type", "error", "help", "url"] {
         payload.remove(key);
     }
-    AuthError::from_error_code(&code, message, &payload)
+    AuthError::from_error_code(&code, auth_failure_message(&code, message), &payload)
 }
 
 // ---------------------------------------------------------------------------

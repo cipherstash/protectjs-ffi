@@ -32,7 +32,7 @@ use js_plaintext::JsPlaintext;
 use neon::{
     prelude::*,
     types::{
-        extract::{self, Boxed, Json, TryIntoJs},
+        extract::{self, Boxed, Json, TryFromJs, TryIntoJs},
         JsBigInt, JsFuture,
     },
 };
@@ -389,21 +389,44 @@ fn thrown_to_string<'cx, 'h, C: Context<'cx>>(thrown: Handle<'h, JsValue>, cx: &
         .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
 }
 
+/// Build an attributable message for a reconstructed auth failure. Falls back
+/// to the failure `code` (or a generic phrase when that's absent too) if the
+/// strategy supplied no `error.message`, so a reconstructed error is never
+/// blank. Codes that map to a fixed [`AuthError`] variant ignore this message;
+/// it only surfaces for the `Custom` fallthrough. Shared by the Neon and wasm
+/// seams so both reconstruct the same message.
+pub(crate) fn auth_failure_message(code: &str, message: String) -> String {
+    if !message.is_empty() {
+        message
+    } else if !code.is_empty() {
+        format!("auth failure: {code}")
+    } else {
+        "strategy.getToken failed with an unspecified auth failure".to_string()
+    }
+}
+
 /// Read `obj[key]` as a `String`, or `None` if it's absent or not a JS string.
+///
+/// The `get()` runs through `cx.try_catch` because this is called at
+/// promise-settle time on a user-controlled object: a throwing getter must have
+/// its pending N-API exception cleared (not merely discarded via `.ok()`), or
+/// it dangles on the env — the same invariant the settle closure's top-level
+/// reads uphold.
 #[cfg(not(target_arch = "wasm32"))]
 fn prop_string<'cx>(cx: &mut Cx<'cx>, obj: Handle<JsObject>, key: &str) -> Option<String> {
-    let value: Handle<JsValue> = obj.prop(cx, key).get().ok()?;
+    let value: Handle<JsValue> = cx.try_catch(|cx| obj.prop(cx, key).get()).ok()?;
     value.downcast::<JsString, _>(cx).ok().map(|s| s.value(cx))
 }
 
-/// Read `obj[key]` as an object handle, or `None` if it's absent or not a JS object.
+/// Read `obj[key]` as an object handle, or `None` if it's absent or not a JS
+/// object. Guarded with `try_catch` for the same reason as [`prop_string`].
 #[cfg(not(target_arch = "wasm32"))]
 fn prop_object<'cx>(
     cx: &mut Cx<'cx>,
     obj: Handle<JsObject>,
     key: &str,
 ) -> Option<Handle<'cx, JsObject>> {
-    let value: Handle<JsValue> = obj.prop(cx, key).get().ok()?;
+    let value: Handle<JsValue> = cx.try_catch(|cx| obj.prop(cx, key).get()).ok()?;
     value.downcast::<JsObject, _>(cx).ok()
 }
 
@@ -418,14 +441,18 @@ fn strategy_protocol_error(msg: impl Into<String>) -> AuthError {
 /// Reconstruct a [`stack_auth::AuthError`] from an `@cipherstash/auth`
 /// `AuthFailure` (`{ ...payload, type, error, help?, url? }`) via
 /// [`AuthError::from_error_code`], so a strategy failure crosses back into Rust
-/// as the real typed error (preserving its code) rather than a flattened
+/// as the real typed error — preserving its code and any structured payload
+/// (e.g. `WORKSPACE_MISMATCH`'s `expected`/`actual`) — rather than a flattened
 /// `Server`. Unknown / foreign codes fall through to `AuthError::Custom`.
 ///
-/// Unlike the WASM seam, the structured `payload` isn't threaded across the
-/// Neon boundary, so `WORKSPACE_MISMATCH` reconstructs as `Custom` here (its
-/// message still carries the workspace detail); every other code round-trips.
+/// Mirrors the wasm seam: the structured payload is threaded by JSON-serialising
+/// the whole failure object and dropping the reserved `type`/`error`/`help`/`url`
+/// keys, so both runtimes reconstruct the same variant. Every property read
+/// runs through a `try_catch` (directly, via `prop_*`, or via `Json`) so a
+/// throwing getter on the user-controlled failure object clears its pending
+/// N-API exception instead of leaving it dangling.
 #[cfg(not(target_arch = "wasm32"))]
-fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -> AuthError {
+fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<'cx, JsValue>) -> AuthError {
     let obj = match failure.downcast::<JsObject, _>(cx) {
         Ok(o) => o,
         Err(_) => return strategy_protocol_error("strategy.getToken failed"),
@@ -436,7 +463,23 @@ fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -
         Some(err_obj) => prop_string(cx, err_obj, "message").unwrap_or_default(),
         None => String::new(),
     };
-    AuthError::from_error_code(&code, message, &serde_json::Map::new())
+    // Thread the structured payload the same way the wasm seam does: serialise
+    // the whole failure object, then drop the reserved keys. `Json::try_from_js`
+    // goes through `JSON.stringify`, which invokes getters, so guard it with
+    // `try_catch`; a throw (or a non-serialisable field) degrades to an empty
+    // payload (i.e. `Custom`).
+    let mut payload = cx
+        .try_catch(|cx| {
+            Json::<serde_json::Map<String, serde_json::Value>>::try_from_js(cx, failure)
+        })
+        .ok()
+        .and_then(|result| result.ok())
+        .map(|Json(map)| map)
+        .unwrap_or_default();
+    for key in ["type", "error", "help", "url"] {
+        payload.remove(key);
+    }
+    AuthError::from_error_code(&code, auth_failure_message(&code, message), &payload)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -507,7 +550,12 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                             .try_catch(|cx| obj.prop(cx, "failure").get())
                                         {
                                             Ok(v) => v,
-                                            Err(_) => cx.undefined().upcast(),
+                                            Err(thrown) => {
+                                                return Ok(Err(strategy_protocol_error(format!(
+                                                    "reading 'failure' field threw: {}",
+                                                    thrown_to_string(thrown, &mut cx),
+                                                ))))
+                                            }
                                         };
                                         if !failure.is_a::<JsUndefined, _>(&mut cx)
                                             && !failure.is_a::<JsNull, _>(&mut cx)
@@ -518,11 +566,17 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                         }
                                         // Unwrap the `data` envelope when present (0.41+);
                                         // otherwise read `token` from the bare result (<= 0.40).
-                                        let data_val: Handle<JsValue> =
-                                            match cx.try_catch(|cx| obj.prop(cx, "data").get()) {
-                                                Ok(v) => v,
-                                                Err(_) => cx.undefined().upcast(),
-                                            };
+                                        let data_val: Handle<JsValue> = match cx
+                                            .try_catch(|cx| obj.prop(cx, "data").get())
+                                        {
+                                            Ok(v) => v,
+                                            Err(thrown) => {
+                                                return Ok(Err(strategy_protocol_error(format!(
+                                                    "reading 'data' field threw: {}",
+                                                    thrown_to_string(thrown, &mut cx),
+                                                ))))
+                                            }
+                                        };
                                         let source = match data_val.downcast::<JsObject, _>(&mut cx)
                                         {
                                             Ok(d) => d,
