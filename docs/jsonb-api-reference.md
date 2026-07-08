@@ -279,7 +279,7 @@ wire format instead. Scalar payloads carry no `k` discriminator (the
 envelope is `{ v: 3, i, ... }` with the shape determined by the column's
 `eql_v3` domain); SteVec documents keep `k: "sv"`.
 
-**SteVec storage encryption (`eql_v3.json`):**
+**SteVec storage encryption (`public.json`):**
 ```json
 {
   "v": 3,
