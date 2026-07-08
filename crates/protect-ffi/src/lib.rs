@@ -296,10 +296,6 @@ pub enum Error {
     },
     #[error("EQL v3 conversion failed: {0}")]
     FromV2(#[from] eql_bindings::from_v2::FromV2Error),
-    #[error("EQL v3 scalar query encryption is not yet supported — encrypt_query requires eqlVersion 2 for scalar indexes")]
-    V3ScalarQueryUnsupported,
-    #[error("EQL v3 selector query encryption is not yet supported — encrypt_query with queryOp 'ste_vec_selector' requires eqlVersion 2. EQL v3 path queries pass the plain tokenized selector as text (see eql_v3.\"->\").")]
-    V3SelectorQueryUnsupported,
     #[error("Invalid EQL ciphertext: {0}")]
     InvalidCiphertext(#[from] zerokms::DecryptError),
 }
@@ -1009,12 +1005,18 @@ enum InferredQueryMode {
 /// - Default: For SteVec indexes, infers from plaintext type:
 ///   - String → QueryMode with SteVecSelector (path queries)
 ///   - Json (Object/Array) → StoreMode (containment queries need sv array)
-///   - Other indexes use column's cast_type and QueryMode with Default
+///   - Other indexes use column's cast_type; QueryMode with Default under
+///     eqlVersion 2, StoreMode under eqlVersion 3 — the v3 scalar query
+///     operand must carry ALL the column domain's terms (its query twin's
+///     domain CHECK requires them), so the terms are generated exactly as
+///     storage encryption generates them and query_output hoists them,
+///     dropping the ciphertext.
 fn to_query_plaintext(
     js_plaintext: &JsPlaintext,
     query_op: QueryOp,
     index_type: &IndexType,
     column_type: cipherstash_client::schema::column::ColumnType,
+    eql_version: EqlVersion,
 ) -> Result<(Plaintext, InferredQueryMode), Error> {
     use cipherstash_client::schema::column::ColumnType;
 
@@ -1131,7 +1133,13 @@ fn to_query_plaintext(
             } else {
                 // Non-SteVec indexes: use column's storage type (original behavior)
                 let plaintext = js_plaintext.to_plaintext_with_type(column_type)?;
-                Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::Default)))
+                let mode = match eql_version {
+                    EqlVersion::V2 => InferredQueryMode::QueryMode(QueryOp::Default),
+                    // See the doc comment: v3 scalar operands need every
+                    // term of the column's domain, so run Store mode.
+                    EqlVersion::V3 => InferredQueryMode::StoreMode,
+                };
+                Ok((plaintext, mode))
             }
         }
     }
@@ -1390,6 +1398,7 @@ async fn encrypt_query(
         query_op,
         &index.index_type,
         column_config.cast_type,
+        client.eql_version,
     )?;
 
     // Select the appropriate EqlOperation based on inferred mode
@@ -1417,7 +1426,11 @@ async fn encrypt_query(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_output = encrypted.remove(0);
 
-    Ok(Json(query_output(eql_output, client.eql_version)?))
+    Ok(Json(query_output(
+        eql_output,
+        client.eql_version,
+        column_config,
+    )?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1448,7 +1461,7 @@ async fn encrypt_query_bulk(
             .collect();
 
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut original_indices = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
 
         for (original_idx, payload) in payloads {
             let ident = Identifier::new(payload.table.clone(), payload.column.clone());
@@ -1468,6 +1481,7 @@ async fn encrypt_query_bulk(
                 query_op,
                 &index.index_type,
                 column_config.cast_type,
+                client.eql_version,
             )?;
 
             // Select the appropriate EqlOperation based on inferred mode
@@ -1485,7 +1499,7 @@ async fn encrypt_query_bulk(
             );
 
             prepared_plaintexts.push(prepared);
-            original_indices.push(original_idx);
+            payload_data.push((original_idx, ident));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -1498,8 +1512,14 @@ async fn encrypt_query_bulk(
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
-        for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(query_output(eql_output, client.eql_version)?);
+        // Place results back in original order
+        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            results[original_idx] =
+                Some(query_output(eql_output, client.eql_version, column_config)?);
         }
     }
 
@@ -2111,6 +2131,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // String on SteVec should infer QueryMode with SteVecSelector
@@ -2138,6 +2159,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // Object on SteVec should infer StoreMode (produces sv array for containment)
@@ -2162,6 +2184,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // Array on SteVec should infer StoreMode (produces sv array for containment)
@@ -2186,6 +2209,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // Numbers should return error for SteVec queries
@@ -2213,6 +2237,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             let err_msg = result.unwrap_err().to_string();
@@ -2238,6 +2263,7 @@ mod tests {
                 QueryOp::SteVecTerm,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             let err_msg = result.unwrap_err().to_string();
@@ -2262,6 +2288,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::BigInt,
+                EqlVersion::V2,
             );
 
             assert!(matches!(
@@ -2288,6 +2315,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // Booleans should return error for SteVec queries
@@ -2309,6 +2337,7 @@ mod tests {
                 QueryOp::SteVecSelector,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // Explicit SteVecSelector should use QueryMode
@@ -2336,6 +2365,7 @@ mod tests {
                 QueryOp::SteVecTerm,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             // Explicit SteVecTerm uses StoreMode to produce sv array for containment
@@ -2361,6 +2391,7 @@ mod tests {
                 QueryOp::Default,
                 &index_type,
                 ColumnType::Text,
+                EqlVersion::V2,
             );
 
             // Non-SteVec with Default should use column type and QueryMode with Default
@@ -2388,6 +2419,7 @@ mod tests {
                 QueryOp::SteVecTerm,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             assert!(result.is_err());
@@ -2427,6 +2459,7 @@ mod tests {
                 QueryOp::SteVecSelector,
                 &index_type,
                 ColumnType::Json,
+                EqlVersion::V2,
             );
 
             assert!(result.is_err());
@@ -2443,6 +2476,109 @@ mod tests {
                 "Error should suggest correct format with $: {}",
                 err_msg
             );
+        }
+
+        #[test]
+        fn test_default_scalar_under_v3_infers_store_mode() {
+            // A v3 scalar query operand must carry ALL the column domain's
+            // terms (the SQL pairs each domain only with its same-name query
+            // twin), so the scalar Default path runs Store mode and
+            // query_output hoists the terms.
+            let js_plaintext = JsPlaintext::String("hello".to_string());
+            let index_type = IndexType::Unique {
+                token_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::Text,
+                EqlVersion::V3,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((Plaintext::Text(Some(_)), InferredQueryMode::StoreMode))
+            ));
+        }
+
+        #[test]
+        fn test_default_scalar_under_v2_keeps_query_mode() {
+            let js_plaintext = JsPlaintext::String("hello".to_string());
+            let index_type = IndexType::Unique {
+                token_filters: vec![],
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::Text,
+                EqlVersion::V2,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Text(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::Default)
+                ))
+            ));
+        }
+
+        #[test]
+        fn test_ste_vec_selector_under_v3_stays_query_mode() {
+            // Selector queries are version-independent at this layer:
+            // query_output turns the v2 selector payload into the bare
+            // selector string under v3.
+            let js_plaintext = JsPlaintext::String("$.user.email".to_string());
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecSelector,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Text(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecSelector)
+                ))
+            ));
+        }
+
+        #[test]
+        fn test_ste_vec_containment_under_v3_stays_store_mode() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"role": "admin"}));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
+            ));
         }
     }
 }

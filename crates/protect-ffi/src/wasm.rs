@@ -546,6 +546,7 @@ async fn do_encrypt_query(
         query_op,
         &index.index_type,
         column_config.cast_type,
+        client.eql_version,
     )?;
     let eql_operation = match inferred_mode {
         InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
@@ -566,7 +567,7 @@ async fn do_encrypt_query(
         decryption_policy: None,
     };
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    query_output(encrypted.remove(0), client.eql_version)
+    query_output(encrypted.remove(0), client.eql_version, column_config)
 }
 
 async fn do_encrypt_query_bulk(
@@ -593,7 +594,7 @@ async fn do_encrypt_query_bulk(
             .collect();
 
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut original_indices = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
 
         for (original_idx, payload) in payloads {
             let ident = Identifier::new(payload.table.clone(), payload.column.clone());
@@ -608,6 +609,7 @@ async fn do_encrypt_query_bulk(
                 query_op,
                 &index.index_type,
                 column_config.cast_type,
+                client.eql_version,
             )?;
             let eql_operation = match inferred_mode {
                 InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
@@ -621,7 +623,7 @@ async fn do_encrypt_query_bulk(
                 eql_operation,
             );
             prepared_plaintexts.push(prepared);
-            original_indices.push(original_idx);
+            payload_data.push((original_idx, ident));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -633,8 +635,14 @@ async fn do_encrypt_query_bulk(
         };
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
-        for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(query_output(eql_output, client.eql_version)?);
+        // Place results back in original order
+        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            results[original_idx] =
+                Some(query_output(eql_output, client.eql_version, column_config)?);
         }
     }
 
