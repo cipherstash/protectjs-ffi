@@ -87,9 +87,14 @@ Notes:
   carry `hm` + `ob`/`op`); `ore`-only text errors.
 - `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
   v3 data can coexist during a migration.
-- v3 query encryption currently supports JSON containment only; scalar and
-  selector queries throw `EQL_V3_QUERY_UNSUPPORTED` and need an
-  `eqlVersion: 2` client.
+- v3 query encryption returns index-terms-only operands: scalar queries
+  produce the column domain's query twin (`{v, i, <terms>}`, no `c`
+  ciphertext) — bind with `col = $1::jsonb::eql_v3.query_<name>` (or the
+  ordering / `@>` match operator). The operand always carries ALL the
+  column domain's terms, whichever `indexType` was queried. JSON
+  containment queries produce the `eql_v3.query_jsonb` needle, and
+  `ste_vec_selector` queries return the bare selector hash (a string) for
+  the `->` / `->>` operators.
 - `ope`-indexed columns map to `<family>_ord_ope` and carry the `op`
   (CLLW-OPE) term (emitted since cipherstash-client 0.38.1).
 
