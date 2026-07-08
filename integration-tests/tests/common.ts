@@ -10,13 +10,20 @@ import type {
 // Everything encrypt / encryptBulk ({@link EncryptedPayload}) and
 // encryptQuery / encryptQueryBulk ({@link EncryptedQuery} /
 // {@link EncryptedV3Query}) can return — these helpers accept any of those
-// dual-format shapes and narrow to the v2 shapes the tests assert on.
+// dual-format shapes (including the bare v3 selector string) and narrow to
+// the v2 shapes the tests assert on.
 type AnyEncrypted = EncryptedPayload | EncryptedQuery | EncryptedV3Query
+
+function formDiscriminator(payload: AnyEncrypted): unknown {
+  return typeof payload === 'object' && payload !== null && 'k' in payload
+    ? payload.k
+    : undefined
+}
 
 export function assertSteVec(
   payload: AnyEncrypted,
 ): asserts payload is EncryptedSteVec {
-  const k = 'k' in payload ? payload.k : undefined
+  const k = formDiscriminator(payload)
   if (k !== 'sv') {
     throw new Error(`expected k:"sv" payload, got k:"${String(k)}"`)
   }
@@ -25,7 +32,7 @@ export function assertSteVec(
 export function assertScalar(
   payload: AnyEncrypted,
 ): asserts payload is EncryptedScalar {
-  const k = 'k' in payload ? payload.k : undefined
+  const k = formDiscriminator(payload)
   if (k !== 'ct') {
     throw new Error(`expected k:"ct" payload, got k:"${String(k)}"`)
   }

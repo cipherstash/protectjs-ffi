@@ -1,29 +1,34 @@
 import 'dotenv/config'
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import {
+  type EncryptConfig,
+  type EncryptedPayload,
+  type IntegerOrdOpe,
+  type IntegerOrdOpeQuery,
+  type IntegerOrdOre,
+  type IntegerOrdOreQuery,
+  type TextEq,
+  type TextEqQuery,
+  type TextSearchQuery,
   decrypt,
   decryptBulk,
   encrypt,
   encryptBulk,
+  encryptQuery,
   newClient,
-  type EncryptConfig,
-  type EncryptedPayload,
-  type IntegerOrdOpe,
-  type IntegerOrdOre,
-  type TextEq,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
+import { beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import { v3WireKeys } from './common'
 
 // Requires the eql_v3 schema: `mise run eql:v3:install` (part of `mise
-// setup`) installs the committed snapshot sql/cipherstash-encrypt-v3.sql.
-// There is no v3 release artifact yet — refresh the snapshot from a sibling
-// encrypt-query-language checkout with `mise run eql:v3:build`.
+// setup`) installs the committed snapshot sql/cipherstash-encrypt-v3.sql,
+// which is extracted from the locked eql-bindings release — refresh it with
+// `mise run eql:v3:build` after bumping eql-bindings.
 //
 // The config -> eql_v3 domain mapping is asserted, not assumed: each
 // payload's exact key set is checked against the vendored domain type
-// before INSERT (below), and the live domain CHECK on the eql_v3.text_eq /
-// eql_v3.integer_ord_ore / eql_v3.integer_ord_ope columns validates the
+// before INSERT (below), and the live domain CHECK on the public.text_eq /
+// public.integer_ord_ore / public.integer_ord_ope columns validates the
 // required keys on INSERT.
 const encryptConfig: EncryptConfig = {
   v: 1,
@@ -41,6 +46,14 @@ const encryptConfig: EncryptConfig = {
         cast_as: 'int',
         indexes: { ope: {} },
       },
+      bio: {
+        cast_as: 'text',
+        indexes: { unique: {}, ore: {}, match: {} },
+      },
+      profile: {
+        cast_as: 'json',
+        indexes: { ste_vec: { prefix: 'v3pg/profile' } },
+      },
     },
   },
 }
@@ -50,6 +63,18 @@ const encryptConfig: EncryptConfig = {
 const textEqKeys = v3WireKeys<TextEq>()('v', 'i', 'c', 'hm')
 const integerOrdOreKeys = v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob')
 const integerOrdOpeKeys = v3WireKeys<IntegerOrdOpe>()('v', 'i', 'c', 'op')
+
+// Query operands are the term-only twins: no `c`.
+const textEqQueryKeys = v3WireKeys<TextEqQuery>()('v', 'i', 'hm')
+const textSearchQueryKeys = v3WireKeys<TextSearchQuery>()(
+  'v',
+  'i',
+  'hm',
+  'ob',
+  'bf',
+)
+const integerOrdOreQueryKeys = v3WireKeys<IntegerOrdOreQuery>()('v', 'i', 'ob')
+const integerOrdOpeQueryKeys = v3WireKeys<IntegerOrdOpeQuery>()('v', 'i', 'op')
 
 describe('postgres eql_v3', () => {
   // Vitest does not await the `describe` callback, so an `async describe` with
@@ -69,9 +94,11 @@ describe('postgres eql_v3', () => {
     await pg.query(`
       CREATE TABLE encrypted_v3 (
         id SERIAL PRIMARY KEY,
-        email eql_v3.text_eq,
-        score eql_v3.integer_ord_ore,
-        rank eql_v3.integer_ord_ope
+        email public.text_eq,
+        score public.integer_ord_ore,
+        rank public.integer_ord_ope,
+        bio public.text_search,
+        profile public.json
       )
     `)
 
@@ -174,43 +201,6 @@ describe('postgres eql_v3', () => {
     expect(decrypted).toEqual([10, 20, 30])
   })
 
-  test('equality via the hm extractor finds the matching row', async () => {
-    const ciphertexts = await encryptBulk(protectClient, {
-      plaintexts: [
-        { plaintext: 'a@example.com', column: 'email', table: 'v3pg' },
-        { plaintext: 'b@example.com', column: 'email', table: 'v3pg' },
-      ],
-    })
-
-    for (const ciphertext of ciphertexts) {
-      expect(Object.keys(ciphertext).sort()).toEqual(textEqKeys)
-    }
-
-    await pg.query(
-      'INSERT INTO encrypted_v3 (email) VALUES ($1::jsonb), ($2::jsonb)',
-      ciphertexts,
-    )
-
-    const needle = await encrypt(protectClient, {
-      plaintext: 'b@example.com',
-      column: 'email',
-      table: 'v3pg',
-    })
-
-    const res: QueryResult<{ email: EncryptedPayload }> = await pg.query(
-      `
-      SELECT email::jsonb FROM encrypted_v3
-      WHERE eql_v3.eq_term(email) = eql_v3.eq_term($1::jsonb::eql_v3.text_eq)
-      `,
-      [needle],
-    )
-
-    const decrypted = await decryptBulk(protectClient, {
-      ciphertexts: res.rows.map((row) => ({ ciphertext: row.email })),
-    })
-    expect(decrypted).toEqual(['b@example.com'])
-  })
-
   // Real-ciphertext _ord_ope coverage (CIP-3348): cipherstash-client 0.38.1
   // emits the scalar `op` (CLLW-OPE) term, so an `ope`-indexed column can be
   // produced end-to-end (0.38.0 dropped the term at encrypt time).
@@ -241,5 +231,247 @@ describe('postgres eql_v3', () => {
       ciphertexts: res.rows.map((row) => ({ ciphertext: row.rank })),
     })
     expect(decrypted).toEqual([10, 20, 30])
+  })
+
+  // ---------------------------------------------------------------------
+  // encryptQuery round-trips (CIP-3423): rows written via encrypt(), then
+  // matched with term-only operands via the public SQL entry points
+  // (`col <op> $1::jsonb::eql_v3.query_<name>`).
+  // ---------------------------------------------------------------------
+
+  test('equality: a query_text_eq operand finds the matching row', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        { plaintext: 'a@example.com', column: 'email', table: 'v3pg' },
+        { plaintext: 'b@example.com', column: 'email', table: 'v3pg' },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted_v3 (email) VALUES ($1::jsonb), ($2::jsonb)',
+      ciphertexts,
+    )
+
+    const operand = await encryptQuery(protectClient, {
+      plaintext: 'b@example.com',
+      column: 'email',
+      table: 'v3pg',
+      indexType: 'unique',
+    })
+    expect(Object.keys(operand as object).sort()).toEqual(textEqQueryKeys)
+
+    const res: QueryResult<{ email: EncryptedPayload }> = await pg.query(
+      `
+      SELECT email::jsonb FROM encrypted_v3
+      WHERE email = $1::jsonb::eql_v3.query_text_eq
+      `,
+      [operand],
+    )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.email })),
+    })
+    expect(decrypted).toEqual(['b@example.com'])
+  })
+
+  test('range: a query_integer_ord_ore operand matches plaintext order', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        { plaintext: 10, column: 'score', table: 'v3pg' },
+        { plaintext: 20, column: 'score', table: 'v3pg' },
+        { plaintext: 30, column: 'score', table: 'v3pg' },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted_v3 (score) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      ciphertexts,
+    )
+
+    const operand = await encryptQuery(protectClient, {
+      plaintext: 15,
+      column: 'score',
+      table: 'v3pg',
+      indexType: 'ore',
+    })
+    expect(Object.keys(operand as object).sort()).toEqual(
+      integerOrdOreQueryKeys,
+    )
+
+    const res: QueryResult<{ score: EncryptedPayload }> = await pg.query(
+      `
+      SELECT score::jsonb FROM encrypted_v3
+      WHERE score > $1::jsonb::eql_v3.query_integer_ord_ore
+      ORDER BY eql_v3.ord_term(score) ASC
+      `,
+      [operand],
+    )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.score })),
+    })
+    expect(decrypted).toEqual([20, 30])
+  })
+
+  test('range: a query_integer_ord_ope operand matches plaintext order', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        { plaintext: 10, column: 'rank', table: 'v3pg' },
+        { plaintext: 20, column: 'rank', table: 'v3pg' },
+        { plaintext: 30, column: 'rank', table: 'v3pg' },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted_v3 (rank) VALUES ($1::jsonb), ($2::jsonb), ($3::jsonb)',
+      ciphertexts,
+    )
+
+    const operand = await encryptQuery(protectClient, {
+      plaintext: 25,
+      column: 'rank',
+      table: 'v3pg',
+      indexType: 'ope',
+    })
+    expect(Object.keys(operand as object).sort()).toEqual(
+      integerOrdOpeQueryKeys,
+    )
+
+    const res: QueryResult<{ rank: EncryptedPayload }> = await pg.query(
+      `
+      SELECT rank::jsonb FROM encrypted_v3
+      WHERE rank < $1::jsonb::eql_v3.query_integer_ord_ope
+      ORDER BY eql_v3.ord_ope_term(rank) ASC
+      `,
+      [operand],
+    )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.rank })),
+    })
+    expect(decrypted).toEqual([10, 20])
+  })
+
+  test('match: a query_text_search operand finds rows containing the term', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: 'the quick brown fox',
+          column: 'bio',
+          table: 'v3pg',
+        },
+        {
+          plaintext: 'a lazy dog sleeps',
+          column: 'bio',
+          table: 'v3pg',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted_v3 (bio) VALUES ($1::jsonb), ($2::jsonb)',
+      ciphertexts,
+    )
+
+    // The operand carries the FULL text_search term set (hm + ob + bf),
+    // whichever indexType was queried — the bf term drives `@>` here.
+    const operand = await encryptQuery(protectClient, {
+      plaintext: 'quick',
+      column: 'bio',
+      table: 'v3pg',
+      indexType: 'match',
+    })
+    expect(Object.keys(operand as object).sort()).toEqual(textSearchQueryKeys)
+
+    const res: QueryResult<{ bio: EncryptedPayload }> = await pg.query(
+      `
+      SELECT bio::jsonb FROM encrypted_v3
+      WHERE bio @> $1::jsonb::eql_v3.query_text_search
+      `,
+      [operand],
+    )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.bio })),
+    })
+    expect(decrypted).toEqual(['the quick brown fox'])
+  })
+
+  test('containment: a query_jsonb needle finds the matching document', async () => {
+    const ciphertexts = await encryptBulk(protectClient, {
+      plaintexts: [
+        {
+          plaintext: { role: 'admin', level: 3 },
+          column: 'profile',
+          table: 'v3pg',
+        },
+        {
+          plaintext: { role: 'viewer', level: 1 },
+          column: 'profile',
+          table: 'v3pg',
+        },
+      ],
+    })
+
+    await pg.query(
+      'INSERT INTO encrypted_v3 (profile) VALUES ($1::jsonb), ($2::jsonb)',
+      ciphertexts,
+    )
+
+    const needle = await encryptQuery(protectClient, {
+      plaintext: { role: 'admin' },
+      column: 'profile',
+      table: 'v3pg',
+      indexType: 'ste_vec',
+      queryOp: 'ste_vec_term',
+    })
+
+    const res: QueryResult<{ profile: EncryptedPayload }> = await pg.query(
+      `
+      SELECT profile::jsonb FROM encrypted_v3
+      WHERE profile @> $1::jsonb::eql_v3.query_jsonb
+      `,
+      [needle],
+    )
+
+    const decrypted = await decryptBulk(protectClient, {
+      ciphertexts: res.rows.map((row) => ({ ciphertext: row.profile })),
+    })
+    expect(decrypted).toEqual([{ role: 'admin', level: 3 }])
+  })
+
+  test('selector: the bare selector hash extracts the matching entry', async () => {
+    const profile = { role: 'admin', level: 3 }
+    const ciphertext = await encrypt(protectClient, {
+      plaintext: profile,
+      column: 'profile',
+      table: 'v3pg',
+    })
+
+    await pg.query('INSERT INTO encrypted_v3 (profile) VALUES ($1::jsonb)', [
+      ciphertext,
+    ])
+
+    const selector = await encryptQuery(protectClient, {
+      plaintext: '$.role',
+      column: 'profile',
+      table: 'v3pg',
+      indexType: 'ste_vec',
+      queryOp: 'ste_vec_selector',
+    })
+    expect(selector).toBeTypeOf('string')
+
+    // `->` has text and integer overloads, so pin the argument type. The
+    // extracted jsonb_entry carries the selector it matched on.
+    const res: QueryResult<{ entry: { s: string } }> = await pg.query(
+      `
+      SELECT (profile -> $1::text)::jsonb AS entry FROM encrypted_v3
+      WHERE profile -> $1::text IS NOT NULL
+      `,
+      [selector],
+    )
+
+    expect(res.rowCount).toBe(1)
+    expect(res.rows[0].entry.s).toBe(selector)
   })
 })

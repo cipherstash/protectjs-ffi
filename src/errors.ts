@@ -9,7 +9,6 @@ export type ProtectErrorCode =
   | 'MATCH_REQUIRES_TEXT'
   | 'UNSUPPORTED_CONFIG_VERSION'
   | 'INVALID_EQL_VERSION'
-  | 'EQL_V3_QUERY_UNSUPPORTED'
   | 'EQL_V3_UNSUPPORTED_COLUMN'
   | 'EQL_V3_CONVERSION_FAILED'
   | 'INVALID_CIPHERTEXT'
@@ -64,12 +63,6 @@ export function inferErrorCode(message: string): ProtectErrorCode {
   }
   if (message.startsWith('Invalid eqlVersion')) {
     return 'INVALID_EQL_VERSION'
-  }
-  if (
-    message.startsWith('EQL v3 scalar query') ||
-    message.startsWith('EQL v3 selector query')
-  ) {
-    return 'EQL_V3_QUERY_UNSUPPORTED'
   }
   if (message.includes('cannot be represented in EQL v3')) {
     return 'EQL_V3_UNSUPPORTED_COLUMN'

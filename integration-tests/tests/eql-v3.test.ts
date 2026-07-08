@@ -2,15 +2,6 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
-  decrypt,
-  decryptBulk,
-  decryptBulkFallible,
-  encrypt,
-  encryptBulk,
-  encryptQuery,
-  isEncrypted,
-  newClient,
-  ProtectError,
   type BigintEq,
   type BigintOrdOre,
   type DateOrdOre,
@@ -19,14 +10,27 @@ import {
   type EncryptedV3,
   type EqlV3Boolean,
   type IntegerOrdOpe,
+  type IntegerOrdOpeQuery,
   type IntegerOrdOre,
+  type IntegerOrdOreQuery,
   type NumericOrdOre,
   type SmallintOrdOre,
   type SteVecDocument,
   type SteVecQuery,
   type TextEq,
+  type TextEqQuery,
   type TextSearch,
+  type TextSearchQuery,
   type TimestampOrdOre,
+  decrypt,
+  decryptBulk,
+  decryptBulkFallible,
+  encrypt,
+  encryptBulk,
+  encryptQuery,
+  encryptQueryBulk,
+  isEncrypted,
+  newClient,
 } from '@cipherstash/protect-ffi'
 import { v3WireKeys } from './common'
 
@@ -371,7 +375,17 @@ describe('eql v3 ste_vec round-trip', async () => {
 describe('eql v3 query encryption', async () => {
   const client = await newClient({ encryptConfig: v3Config, eqlVersion: 3 })
 
-  test('containment query returns the jsonb_query needle', async () => {
+  /** Term-only operand: v3 envelope, no ciphertext, no form discriminator. */
+  function expectV3QueryOperand(payload: unknown): Record<string, unknown> {
+    const p = payload as Record<string, unknown>
+    expect(p.v).toBe(3)
+    expect(p.k).toBeUndefined()
+    expect(p.i).toBeTypeOf('object')
+    expect(p.c, 'query operands must not carry a ciphertext').toBeUndefined()
+    return p
+  }
+
+  test('containment query returns the query_jsonb needle', async () => {
     const result = (await encryptQuery(client, {
       plaintext: { role: 'admin' },
       column: 'profile',
@@ -405,23 +419,80 @@ describe('eql v3 query encryption', async () => {
     expect(Array.isArray(result.sv)).toBe(true)
   })
 
-  test('scalar query returns a typed error', async () => {
-    const attempt = encryptQuery(client, {
-      plaintext: 'v3@example.com',
+  type ScalarQueryCase = {
+    column: string
+    plaintext: string | number
+    indexType: 'unique' | 'ore' | 'ope' | 'match'
+    /** the query twin the operand must target: eql_v3.query_<domain> */
+    domain: string
+    /** exact top-level wire keys — the column DOMAIN's terms, no c */
+    keys: readonly string[]
+  }
+
+  // The operand always carries ALL the column domain's terms, whichever
+  // indexType was queried — the SQL operators pair each column domain only
+  // with its same-name eql_v3.query_<name> twin, whose CHECK requires the
+  // full term set.
+  const scalarQueryCases: ScalarQueryCase[] = [
+    {
       column: 'email',
-      table: 'v3users',
+      plaintext: 'v3@example.com',
       indexType: 'unique',
-    })
+      domain: 'text_search',
+      keys: v3WireKeys<TextSearchQuery>()('v', 'i', 'hm', 'ob', 'bf'),
+    },
+    // match on the same column: identical operand — tracks the column
+    // domain, not the queried index
+    {
+      column: 'email',
+      plaintext: 'example',
+      indexType: 'match',
+      domain: 'text_search',
+      keys: v3WireKeys<TextSearchQuery>()('v', 'i', 'hm', 'ob', 'bf'),
+    },
+    {
+      column: 'name',
+      plaintext: 'Ada',
+      indexType: 'unique',
+      domain: 'text_eq',
+      keys: v3WireKeys<TextEqQuery>()('v', 'i', 'hm'),
+    },
+    {
+      column: 'count',
+      plaintext: 123456,
+      indexType: 'ore',
+      domain: 'integer_ord_ore',
+      keys: v3WireKeys<IntegerOrdOreQuery>()('v', 'i', 'ob'),
+    },
+    {
+      column: 'rank',
+      plaintext: 7,
+      indexType: 'ope',
+      domain: 'integer_ord_ope',
+      keys: v3WireKeys<IntegerOrdOpeQuery>()('v', 'i', 'op'),
+    },
+  ]
 
-    await expect(attempt).rejects.toThrowError(ProtectError)
-    await expect(attempt).rejects.toMatchObject({
-      code: 'EQL_V3_QUERY_UNSUPPORTED',
-    })
-    await expect(attempt).rejects.toThrowError(/eqlVersion 2/)
-  })
+  test.each(scalarQueryCases)(
+    'scalar $indexType query on $column returns a term-only eql_v3.query_$domain operand',
+    async ({ column, plaintext, indexType, domain, keys }) => {
+      const result = await encryptQuery(client, {
+        plaintext,
+        column,
+        table: 'v3users',
+        indexType,
+      })
 
-  test('selector query returns a typed error', async () => {
-    const attempt = encryptQuery(client, {
+      const operand = expectV3QueryOperand(result)
+      expect(
+        Object.keys(operand).sort(),
+        `the operand must target eql_v3.query_${domain}`,
+      ).toEqual(keys)
+    },
+  )
+
+  test('selector query returns the bare selector hash as a string', async () => {
+    const selector = await encryptQuery(client, {
       plaintext: '$.role',
       column: 'profile',
       table: 'v3users',
@@ -429,9 +500,62 @@ describe('eql v3 query encryption', async () => {
       queryOp: 'ste_vec_selector',
     })
 
-    await expect(attempt).rejects.toMatchObject({
-      code: 'EQL_V3_QUERY_UNSUPPORTED',
+    expect(selector).toBeTypeOf('string')
+    expect((selector as string).length).toBeGreaterThan(0)
+
+    // The selector is the same encoding SteVec entries carry in `s`: an
+    // encrypted document containing that path must have a matching entry.
+    const doc = (await encrypt(client, {
+      plaintext: { role: 'admin' },
+      column: 'profile',
+      table: 'v3users',
+    })) as SteVecDocument
+    expect(doc.sv.map((entry) => entry.s)).toContain(selector)
+  })
+
+  test('encryptQueryBulk mixes scalar, containment, and selector operands', async () => {
+    const results = await encryptQueryBulk(client, {
+      queries: [
+        {
+          plaintext: 'bulk@example.com',
+          column: 'email',
+          table: 'v3users',
+          indexType: 'unique',
+        },
+        {
+          plaintext: { role: 'admin' },
+          column: 'profile',
+          table: 'v3users',
+          indexType: 'ste_vec',
+          queryOp: 'ste_vec_term',
+        },
+        {
+          plaintext: '$.role',
+          column: 'profile',
+          table: 'v3users',
+          indexType: 'ste_vec',
+          queryOp: 'ste_vec_selector',
+        },
+        {
+          plaintext: 42,
+          column: 'count',
+          table: 'v3users',
+          indexType: 'ore',
+        },
+      ],
     })
+
+    expect(results).toHaveLength(4)
+    expect(Object.keys(expectV3QueryOperand(results[0])).sort()).toEqual(
+      v3WireKeys<TextSearchQuery>()('v', 'i', 'hm', 'ob', 'bf'),
+    )
+    const needle = results[1] as Record<string, unknown>
+    expect(needle.v).toBeUndefined()
+    expect(Array.isArray(needle.sv)).toBe(true)
+    expect(results[2]).toBeTypeOf('string')
+    expect(Object.keys(expectV3QueryOperand(results[3])).sort()).toEqual(
+      v3WireKeys<IntegerOrdOreQuery>()('v', 'i', 'ob'),
+    )
   })
 })
 

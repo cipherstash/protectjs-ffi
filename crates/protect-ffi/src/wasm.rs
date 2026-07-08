@@ -51,11 +51,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
-    auth_failure_message, encrypted_record_from_value, find_index_for_type, into_store_ciphertext,
-    is_encrypted_value, parse_query_op, query_output, storage_output, to_query_plaintext,
-    validate_eql_version, DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions,
-    EncryptOptions, EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion,
-    Error, InferredQueryMode, QueryOutput,
+    auth_failure_message, encrypted_record_from_value, into_store_ciphertext, is_encrypted_value,
+    prepare_query_plaintext, query_output, storage_output, validate_eql_version,
+    DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -534,30 +533,15 @@ async fn do_encrypt_query(
     client: &WasmClient,
     opts: EncryptQueryOptions,
 ) -> Result<QueryOutput, Error> {
-    let ident = Identifier::new(opts.table.clone(), opts.column.clone());
-    let column_config = client
-        .encrypt_config
-        .get(&ident)
-        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-    let index = find_index_for_type(column_config, &opts.column, &opts.index_type)?;
-    let query_op = parse_query_op(&opts.query_op)?;
-    let (plaintext, inferred_mode) = to_query_plaintext(
+    let (prepared, column_config) = prepare_query_plaintext(
+        &client.encrypt_config,
+        &opts.table,
+        &opts.column,
         &opts.plaintext,
-        query_op,
-        &index.index_type,
-        column_config.cast_type,
+        &opts.index_type,
+        &opts.query_op,
+        client.eql_version,
     )?;
-    let eql_operation = match inferred_mode {
-        InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
-        InferredQueryMode::StoreMode => EqlOperation::Store,
-    };
-    let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
-    let prepared = PreparedPlaintext::new(
-        Cow::Borrowed(column_config),
-        eql_ident,
-        plaintext,
-        eql_operation,
-    );
     let eql_opts = EqlEncryptOpts {
         keyset_id: None,
         lock_context: Cow::Owned(opts.lock_context.map(Into::into).unwrap_or_default()),
@@ -566,7 +550,7 @@ async fn do_encrypt_query(
         decryption_policy: None,
     };
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    query_output(encrypted.remove(0), client.eql_version)
+    query_output(encrypted.remove(0), client.eql_version, column_config)
 }
 
 async fn do_encrypt_query_bulk(
@@ -593,35 +577,20 @@ async fn do_encrypt_query_bulk(
             .collect();
 
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut original_indices = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, &ColumnConfig)> = Vec::with_capacity(payloads.len());
 
-        for (original_idx, payload) in payloads {
-            let ident = Identifier::new(payload.table.clone(), payload.column.clone());
-            let column_config = client
-                .encrypt_config
-                .get(&ident)
-                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-            let index = find_index_for_type(column_config, &payload.column, &payload.index_type)?;
-            let query_op = parse_query_op(&payload.query_op)?;
-            let (plaintext, inferred_mode) = to_query_plaintext(
+        for (original_idx, payload) in &payloads {
+            let (prepared, column_config) = prepare_query_plaintext(
+                &client.encrypt_config,
+                &payload.table,
+                &payload.column,
                 &payload.plaintext,
-                query_op,
-                &index.index_type,
-                column_config.cast_type,
+                &payload.index_type,
+                &payload.query_op,
+                client.eql_version,
             )?;
-            let eql_operation = match inferred_mode {
-                InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
-                InferredQueryMode::StoreMode => EqlOperation::Store,
-            };
-            let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
-            let prepared = PreparedPlaintext::new(
-                Cow::Borrowed(column_config),
-                eql_ident,
-                plaintext,
-                eql_operation,
-            );
             prepared_plaintexts.push(prepared);
-            original_indices.push(original_idx);
+            payload_data.push((*original_idx, column_config));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -633,8 +602,10 @@ async fn do_encrypt_query_bulk(
         };
 
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
-        for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(query_output(eql_output, client.eql_version)?);
+        // Place results back in original order
+        for (eql_output, (original_idx, column_config)) in encrypted.into_iter().zip(payload_data) {
+            results[original_idx] =
+                Some(query_output(eql_output, client.eql_version, column_config)?);
         }
     }
 

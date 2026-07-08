@@ -1,11 +1,13 @@
 //! EQL v3 dual-format support.
 //!
 //! protect-ffi historically speaks the EQL v2.3 wire format (`{v: 2, k, i, c,
-//! …}`). The `eql_v3` PostgreSQL schema replaces the single
-//! `eql_v2_encrypted` column type with per-capability domains
-//! (`eql_v3.text_eq`, `eql_v3.integer_ord_ore`, `eql_v3.json`, …) and a new
-//! envelope: scalars are `{v: 3, i, c, <terms>}` with no `k` discriminator;
-//! SteVec (encrypted JSONB) documents keep it (`{v: 3, k: "sv", i, sv}`).
+//! …}`). The `eql_v3` schema generation replaces the single
+//! `eql_v2_encrypted` column type with per-capability column domains
+//! (`public.text_eq`, `public.integer_ord_ore`, `public.json`, …), their
+//! term-only query twins (`eql_v3.query_text_eq`, `eql_v3.query_jsonb`, …)
+//! and a new envelope: scalars are `{v: 3, i, c, <terms>}` with no `k`
+//! discriminator; SteVec (encrypted JSONB) documents keep it
+//! (`{v: 3, k: "sv", i, sv}`).
 //!
 //! Payloads are converted, not re-encrypted: cipherstash-client still emits
 //! v2, and [`eql_bindings::from_v2`] rewrites the wire shape for the target
@@ -13,11 +15,12 @@
 //! formats regardless of the client's `eqlVersion` so data can be migrated
 //! incrementally.
 
-use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload};
+use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload, SteVecQueryTerm};
 use cipherstash_client::schema::{column::ColumnType, column::IndexType, ColumnConfig};
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
 use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
 use eql_bindings::v3::jsonb::SteVecDocument;
+use eql_bindings::v3::terms::Selector;
 use eql_bindings::v3::{DomainPayload, QueryPayload};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -363,51 +366,66 @@ pub(crate) fn storage_output(
 
 /// A query payload in whichever wire format the client is configured for.
 /// Same untagged pass-through (and boxing) design as [`EncryptedOutput`].
-/// `V3` carries the typed [`QueryPayload`] (eql-bindings 0.4.1) — today only
-/// the `SteVec` containment needle exists; single-term scalar query variants
-/// (Ore / Ope / Bloom / Hm values) join the enum upstream when the v3
-/// scalar-query wire shape ships with the mapper redesign. `QueryPayload` is
+/// `V3` carries the typed [`QueryPayload`] — a term-only scalar operand
+/// (`{v, i, <terms>}`, no `c`) for the column domain's `eql_v3.query_<name>`
+/// twin, or the `eql_v3.query_jsonb` containment needle. `V3Selector` carries
+/// the bare selector hash for `ste_vec_selector` queries — v3 has no
+/// encrypted-selector envelope; the SQL `->`/`->>` operators take the
+/// [`Selector`] encoding (a string) as `text`. All variants are
 /// `#[serde(untagged)]` Serialize-only, so the wire output is exactly the
-/// needle's — value-identical to the former `Value` form (keys in schema
-/// wire order rather than alphabetical; meaningless for jsonb).
+/// inner value's (keys in schema wire order rather than alphabetical;
+/// meaningless for jsonb).
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum QueryOutput {
     V2(Box<EqlOutput>),
     V3(QueryPayload),
+    V3Selector(Selector),
 }
 
 /// Wrap an encrypt-query result in the client's configured wire format.
 ///
-/// Under v3, only the JSONB containment path converts: Store-mode containment
-/// output (the `sv` document) becomes the `eql_v3.jsonb_query` needle via
-/// [`from_v2_query_typed`]. No v3 wire shape exists for scalar query terms or
-/// selector payloads yet, so those fail closed with a typed error.
+/// Under v3 every Store-mode result — the scalar full envelope produced for
+/// Default queries and the SteVec `sv` document produced for containment —
+/// converts through the ONE seam [`from_v2_query_typed`], targeting the
+/// column's domain: scalars hoist exactly the domain's required terms into
+/// the `{v, i, <terms>}` operand (dropping `c`/`k` — the whole point: query
+/// operands must never carry a decryptable ciphertext), and ste_vec columns
+/// produce the containment needle (stripping the envelope and per-entry
+/// ciphertexts, exactly like the SQL cast eql_v3.to_ste_vec_query). The only
+/// Query-mode payload with a v3 meaning is the selector, which flattens to
+/// its bare selector hash.
 pub(crate) fn query_output(
     output: EqlOutput,
     eql_version: EqlVersion,
+    column_config: &ColumnConfig,
 ) -> Result<QueryOutput, Error> {
     match eql_version {
         EqlVersion::V2 => Ok(QueryOutput::V2(Box::new(output))),
         EqlVersion::V3 => match output {
-            // JSONB containment: Store mode always yields the sv document
-            // (that is the only plaintext shape to_query_plaintext maps to
-            // StoreMode); the needle strips the envelope and per-entry
-            // ciphertexts, exactly like the SQL cast eql_v3.to_ste_vec_query.
-            EqlOutput::Store(ciphertext @ EqlCiphertext::SteVec(_)) => {
+            EqlOutput::Store(ciphertext) => {
                 let v2_value = serde_json::to_value(&ciphertext)?;
                 Ok(QueryOutput::V3(from_v2_query_typed(
                     &v2_value,
-                    TargetDomain::Json,
+                    v3_target_for_column(column_config)?,
                 )?))
             }
-            EqlOutput::Store(EqlCiphertext::Encrypted(_)) => Err(Error::InvariantViolation(
-                "store-mode query encryption produced a scalar payload".to_string(),
+            EqlOutput::Query(EqlQueryPayload::SteVec(payload)) => match payload.term {
+                SteVecQueryTerm::Selector { selector } => {
+                    Ok(QueryOutput::V3Selector(Selector(selector)))
+                }
+                // QueryMode(SteVecSelector) is the only ste_vec query op
+                // to_query_plaintext leaves in Query mode; hm/oc/containment
+                // terms arrive via Store mode.
+                _ => Err(Error::InvariantViolation(
+                    "ste_vec query encryption produced a non-selector term".to_string(),
+                )),
+            },
+            // Under v3, scalar Default queries run Store mode (the operand
+            // needs ALL the column domain's terms, not one RootQueryTerm).
+            EqlOutput::Query(EqlQueryPayload::Encrypted(_)) => Err(Error::InvariantViolation(
+                "scalar query encryption ran in query mode under eqlVersion 3".to_string(),
             )),
-            // No v3 wire shape exists for these yet (pending the mapper
-            // redesign) — fail closed with an actionable error.
-            EqlOutput::Query(EqlQueryPayload::Encrypted(_)) => Err(Error::V3ScalarQueryUnsupported),
-            EqlOutput::Query(EqlQueryPayload::SteVec(_)) => Err(Error::V3SelectorQueryUnsupported),
         },
     }
 }
@@ -1113,10 +1131,10 @@ mod tests {
 
         #[test]
         fn v3_bigint_eq_output_carries_hm_only() {
-            // A unique-indexed bigint column maps to eql_v3.bigint_eq:
+            // A unique-indexed bigint column maps to public.bigint_eq:
             // v, i, c, hm and nothing else (the domain CHECKs in the
             // vendored eql-bindings schemas — EQL release
-            // eql-3.0.0-alpha.2 — require exactly the family terms
+            // eql-3.0.0-alpha.3 — require exactly the family terms
             // alongside v/i/c).
             let cfg = column(
                 ColumnType::BigInt,
@@ -1240,12 +1258,13 @@ mod tests {
     }
 
     mod query_output {
-        use super::support::{scalar_payload, ste_vec_payload};
+        use super::support::{column, ope_scalar_payload, scalar_payload, ste_vec_payload};
         use super::*;
         use cipherstash_client::eql::{
             EncryptedQueryPayload, EqlOutput, EqlQueryPayload, Identifier as EqlIdentifier,
             RootQueryTerm, SteVecQueryPayload, SteVecQueryTerm, EQL_SCHEMA_VERSION,
         };
+        use cipherstash_client::schema::column::{Index, IndexType, Tokenizer};
 
         fn scalar_query() -> EqlOutput {
             EqlOutput::Query(EqlQueryPayload::Encrypted(EncryptedQueryPayload {
@@ -1267,11 +1286,49 @@ mod tests {
             }))
         }
 
+        fn text_search_column() -> ColumnConfig {
+            column(
+                ColumnType::Text,
+                vec![
+                    Index::new(IndexType::Unique {
+                        token_filters: vec![],
+                    }),
+                    Index::new(IndexType::Ore),
+                    Index::new(IndexType::Match {
+                        tokenizer: Tokenizer::Standard,
+                        token_filters: vec![],
+                        k: 6,
+                        m: 2048,
+                        include_original: false,
+                    }),
+                ],
+            )
+        }
+
+        fn json_column() -> ColumnConfig {
+            column(
+                ColumnType::Json,
+                vec![Index::new(IndexType::SteVec {
+                    prefix: "users/profile".to_string(),
+                    term_filters: vec![],
+                    array_index_mode: Default::default(),
+                    mode: Default::default(),
+                })],
+            )
+        }
+
+        fn sorted_keys(value: &serde_json::Value) -> Vec<&String> {
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().collect();
+            keys.sort();
+            keys
+        }
+
         #[test]
         fn v2_output_serializes_identically_to_the_bare_eql_output() {
             let expected = serde_json::to_string(&scalar_query()).unwrap();
 
-            let output = query_output(scalar_query(), EqlVersion::V2).unwrap();
+            let output =
+                query_output(scalar_query(), EqlVersion::V2, &text_search_column()).unwrap();
 
             assert_eq!(serde_json::to_string(&output).unwrap(), expected);
         }
@@ -1280,17 +1337,27 @@ mod tests {
         fn v2_containment_output_passes_through() {
             let expected = serde_json::to_string(&EqlOutput::Store(ste_vec_payload())).unwrap();
 
-            let output = query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V2).unwrap();
+            let output = query_output(
+                EqlOutput::Store(ste_vec_payload()),
+                EqlVersion::V2,
+                &json_column(),
+            )
+            .unwrap();
 
             assert_eq!(serde_json::to_string(&output).unwrap(), expected);
         }
 
         #[test]
-        fn v3_containment_output_is_a_jsonb_query_needle() {
-            let output = query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V3).unwrap();
+        fn v3_containment_output_is_a_query_jsonb_needle() {
+            let output = query_output(
+                EqlOutput::Store(ste_vec_payload()),
+                EqlVersion::V3,
+                &json_column(),
+            )
+            .unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
-            // The eql_v3.jsonb_query needle: {sv: [{s, hm|oc}]} — no
+            // The eql_v3.query_jsonb needle: {sv: [{s, hm|oc}]} — no
             // envelope, no per-entry ciphertext or array marker.
             assert!(value.get("v").is_none(), "needle carries no envelope");
             assert!(value.get("i").is_none(), "needle carries no identifier");
@@ -1309,14 +1376,16 @@ mod tests {
         fn v3_typed_query_output_serializes_identically_to_the_from_v2_query_value() {
             // The QueryOutput::V3 wire form must be byte-identical to what
             // the shape-erased from_v2_query Value produced — protect-ffi
-            // serializes it straight across the FFI boundary.
+            // serializes it straight across the FFI boundary. Pinned for the
+            // containment needle AND a scalar term-only operand.
             use eql_bindings::from_v2::from_v2_query;
 
             let ciphertext = ste_vec_payload();
             let v2_value = serde_json::to_value(&ciphertext).unwrap();
             let erased = from_v2_query(&v2_value, TargetDomain::Json).unwrap();
 
-            let output = query_output(EqlOutput::Store(ciphertext), EqlVersion::V3).unwrap();
+            let output =
+                query_output(EqlOutput::Store(ciphertext), EqlVersion::V3, &json_column()).unwrap();
             let typed = serde_json::to_value(&output).unwrap();
 
             // Value equality: identical keys and values. Key ORDER differs
@@ -1324,48 +1393,176 @@ mod tests {
             // Value alphabetically) — semantically meaningless for jsonb,
             // same caveat as the storage-path pin above.
             assert_eq!(typed, erased);
+
+            let scalar_ct = scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]));
+            let scalar_v2 = serde_json::to_value(&scalar_ct).unwrap();
+            let scalar_target = TargetDomain::parse("text_search").unwrap();
+            let erased = from_v2_query(&scalar_v2, scalar_target).unwrap();
+
+            let output = query_output(
+                EqlOutput::Store(scalar_ct),
+                EqlVersion::V3,
+                &text_search_column(),
+            )
+            .unwrap();
+            let typed = serde_json::to_value(&output).unwrap();
+
+            assert_eq!(typed, erased);
         }
 
         #[test]
-        fn v3_scalar_query_returns_a_typed_error() {
-            let err = query_output(scalar_query(), EqlVersion::V3).unwrap_err();
+        fn v3_scalar_store_output_is_a_term_only_operand() {
+            // A scalar Store envelope hoists to the column domain's query
+            // twin (eql_v3.query_text_search): all the domain's terms, the
+            // envelope, and — the point of CIP-3423 — NO ciphertext.
+            let output = query_output(
+                EqlOutput::Store(scalar_payload(
+                    Some("aa"),
+                    Some(vec![1, 2]),
+                    Some(vec!["bb"]),
+                )),
+                EqlVersion::V3,
+                &text_search_column(),
+            )
+            .unwrap();
 
-            assert!(matches!(err, Error::V3ScalarQueryUnsupported));
-            assert_eq!(
-                err.to_string(),
-                "EQL v3 scalar query encryption is not yet supported — \
-                 encrypt_query requires eqlVersion 2 for scalar indexes"
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["v"], 3);
+            assert!(value.get("c").is_none(), "query operands carry no c");
+            assert!(value.get("k").is_none(), "query operands carry no k");
+            assert_eq!(value["i"]["t"], "users");
+            assert_eq!(value["i"]["c"], "email");
+            assert_eq!(value["hm"], "aa");
+            assert_eq!(value["ob"], serde_json::json!(["bb"]));
+            assert_eq!(value["bf"], serde_json::json!([1, 2]));
+            assert_eq!(sorted_keys(&value), ["bf", "hm", "i", "ob", "v"]);
+        }
+
+        #[test]
+        fn v3_text_eq_operand_carries_hm_only() {
+            // unique-only text column → eql_v3.query_text_eq: {v, i, hm}.
+            let cfg = column(
+                ColumnType::Text,
+                vec![Index::new(IndexType::Unique {
+                    token_filters: vec![],
+                })],
             );
-        }
-
-        #[test]
-        fn v3_selector_query_returns_a_typed_error() {
-            let err = query_output(selector_query(), EqlVersion::V3).unwrap_err();
-
-            assert!(matches!(err, Error::V3SelectorQueryUnsupported));
-            assert!(
-                err.to_string().contains("eqlVersion 2"),
-                "hints at eqlVersion 2: {err}"
-            );
-        }
-
-        #[test]
-        fn v3_store_mode_scalar_payload_is_an_invariant_violation() {
-            // to_query_plaintext only ever maps Store mode to the sv document,
-            // so a scalar Encrypted payload arriving here means an upstream
-            // invariant broke. It must fail closed (not emit a malformed
-            // needle); this is the one query_output arm otherwise untested.
-            let err = query_output(
+            let output = query_output(
                 EqlOutput::Store(scalar_payload(Some("aa"), None, None)),
                 EqlVersion::V3,
+                &cfg,
             )
-            .unwrap_err();
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["hm"], "aa");
+            assert_eq!(sorted_keys(&value), ["hm", "i", "v"]);
+        }
+
+        #[test]
+        fn v3_integer_ord_ore_operand_carries_ob_only() {
+            // ore-indexed int column → eql_v3.query_integer_ord_ore: {v, i,
+            // ob} (non-text ordering domains carry no hm).
+            let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ore)]);
+            let output = query_output(
+                EqlOutput::Store(scalar_payload(None, None, Some(vec!["bb"]))),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["ob"], serde_json::json!(["bb"]));
+            assert_eq!(sorted_keys(&value), ["i", "ob", "v"]);
+        }
+
+        #[test]
+        fn v3_integer_ord_ope_operand_carries_op_only() {
+            // ope-indexed int column → eql_v3.query_integer_ord_ope: {v, i,
+            // op} (CIP-3348's CLLW-OPE term reaches the query twin too).
+            let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ope)]);
+            let output = query_output(
+                EqlOutput::Store(ope_scalar_payload("cc")),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["op"], "cc");
+            assert_eq!(sorted_keys(&value), ["i", "op", "v"]);
+        }
+
+        #[test]
+        fn v3_match_operand_bloom_upper_half_wraps_to_signed() {
+            // match-only text column → eql_v3.query_text_match: {v, i, bf},
+            // with the same u16→i16 reinterpretation as storage conversion.
+            let cfg = column(
+                ColumnType::Text,
+                vec![Index::new(IndexType::Match {
+                    tokenizer: Tokenizer::Standard,
+                    token_filters: vec![],
+                    k: 6,
+                    m: 2048,
+                    include_original: false,
+                })],
+            );
+            let output = query_output(
+                EqlOutput::Store(scalar_payload(None, Some(vec![7, 40000]), None)),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value["bf"], serde_json::json!([7, 40000u16 as i16]));
+            assert_eq!(sorted_keys(&value), ["bf", "i", "v"]);
+        }
+
+        #[test]
+        fn v3_selector_query_returns_the_bare_selector_string() {
+            // v3 has no encrypted-selector envelope: the SQL `->`/`->>`
+            // operators take the bare selector hash as text (the same
+            // Selector encoding SteVecQuery entries carry in `s`).
+            let output = query_output(selector_query(), EqlVersion::V3, &json_column()).unwrap();
+
+            let value = serde_json::to_value(&output).unwrap();
+            assert_eq!(value, serde_json::json!("deadbeef"));
+        }
+
+        #[test]
+        fn v3_scalar_query_mode_payload_is_an_invariant_violation() {
+            // Under v3, scalar Default queries run Store mode (the operand
+            // needs ALL the column domain's terms), so a v2 Query-mode
+            // scalar payload arriving here means the mode inference broke.
+            let err =
+                query_output(scalar_query(), EqlVersion::V3, &text_search_column()).unwrap_err();
 
             assert!(matches!(err, Error::InvariantViolation(_)));
             assert!(
                 err.to_string()
-                    .contains("store-mode query encryption produced a scalar payload"),
+                    .contains("scalar query encryption ran in query mode"),
                 "names the broken invariant: {err}"
+            );
+        }
+
+        #[test]
+        fn v3_store_scalar_on_a_json_column_fails_closed() {
+            // A scalar Store envelope for a ste_vec column targets
+            // TargetDomain::Json; the conversion rejects the kind mismatch
+            // instead of emitting a malformed needle.
+            let err = query_output(
+                EqlOutput::Store(scalar_payload(Some("aa"), None, None)),
+                EqlVersion::V3,
+                &json_column(),
+            )
+            .unwrap_err();
+
+            let msg = err.to_string();
+            // Stable prefix: the TS side maps it to EQL_V3_CONVERSION_FAILED.
+            assert!(
+                msg.starts_with("EQL v3 conversion failed"),
+                "carries the conversion-failure prefix: {msg}"
             );
         }
     }

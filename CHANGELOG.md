@@ -15,6 +15,58 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **EQL v3 scalar query-term encryption (CIP-3423).** On an `eqlVersion: 3`
+  client, `encryptQuery` / `encryptQueryBulk` on a scalar index now return the
+  term-only operand for the column domain's query twin — `{v: 3, i, <terms>}`
+  with **no `c` ciphertext** — bindable as
+  `col = $1::jsonb::eql_v3.query_<name>` (and the ordering / `@>` match
+  operators). The operand always carries ALL the column domain's terms
+  (`text_search` → `hm` + `ob` + `bf`), whichever `indexType` was queried:
+  the EQL v3 operators pair each column domain only with its same-name query
+  twin, whose domain CHECK requires the full term set. Terms derive from the
+  same conversion as storage encryption, so bounds behaviour (e.g. bigint i64
+  boundary rejection) is identical. This replaces the interim
+  full-storage-envelope workaround — query operands no longer carry a
+  decryptable ciphertext through query strings and SQL logs.
+- **EQL v3 selector queries.** `queryOp: 'ste_vec_selector'` on a v3 client
+  returns the bare selector hash as a **string** (there is no
+  encrypted-selector envelope in v3) — bind it as the `text` argument of the
+  `->` / `->>` operators. It is the same `Selector` encoding SteVec entries
+  carry in `s`.
+- The vendored EQL v3 TypeScript types now include the 38 scalar query-twin
+  payload types (`TextEqQuery`, `IntegerOrdOreQuery`, …), exported alongside a
+  new `EncryptedV3ScalarQuery` union.
+
+### Changed
+
+- Bumped `eql-bindings` to `3.0.0-alpha.3` (from `0.4.2`): catalog-generated
+  scalar `QueryPayload` variants, scalar term hoisting in `from_v2_query`, and
+  the CIP-3442 domain rename — query operands are `eql_v3.query_<name>` /
+  `eql_v3.query_jsonb` (the pre-release `jsonb_query` name is gone), column
+  domains live in `public.*`.
+- The integration-test EQL v3 SQL snapshot
+  (`integration-tests/sql/cipherstash-encrypt-v3.sql`) is now extracted from
+  the locked `eql-bindings` release (`eql_bindings::sql::INSTALL_SQL`, via the
+  `print_eql_v3_sql` example) instead of a sibling checkout, and was refreshed
+  to EQL `3.0.0-alpha.3` — column domains are now `public.<name>` and the
+  `eql_v3.query_*` operand domains exist. Rebuild with `mise run eql:v3:build`
+  after bumping `eql-bindings`.
+- v3 scalar queries perform a full storage-mode encryption internally (the
+  ciphertext is computed, then dropped when the terms are hoisted) — the same
+  trade the JSON containment path already makes.
+
+### Breaking
+
+- The `EQL_V3_QUERY_UNSUPPORTED` error code is removed from
+  `ProtectErrorCode` — the scalar and selector queries that threw it now
+  succeed and return operands.
+- `EncryptedV3Query` widened from `SteVecQuery` to
+  `EncryptedV3ScalarQuery | SteVecQuery | Selector`. Code that assumed every
+  v3 query payload has an `sv` key must narrow first; selector results are
+  plain strings.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added
