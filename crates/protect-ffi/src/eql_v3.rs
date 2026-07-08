@@ -1240,7 +1240,7 @@ mod tests {
     }
 
     mod query_output {
-        use super::support::ste_vec_payload;
+        use super::support::{scalar_payload, ste_vec_payload};
         use super::*;
         use cipherstash_client::eql::{
             EncryptedQueryPayload, EqlOutput, EqlQueryPayload, Identifier as EqlIdentifier,
@@ -1346,6 +1346,26 @@ mod tests {
             assert!(
                 err.to_string().contains("eqlVersion 2"),
                 "hints at eqlVersion 2: {err}"
+            );
+        }
+
+        #[test]
+        fn v3_store_mode_scalar_payload_is_an_invariant_violation() {
+            // to_query_plaintext only ever maps Store mode to the sv document,
+            // so a scalar Encrypted payload arriving here means an upstream
+            // invariant broke. It must fail closed (not emit a malformed
+            // needle); this is the one query_output arm otherwise untested.
+            let err = query_output(
+                EqlOutput::Store(scalar_payload(Some("aa"), None, None)),
+                EqlVersion::V3,
+            )
+            .unwrap_err();
+
+            assert!(matches!(err, Error::InvariantViolation(_)));
+            assert!(
+                err.to_string()
+                    .contains("store-mode query encryption produced a scalar payload"),
+                "names the broken invariant: {err}"
             );
         }
     }

@@ -74,6 +74,21 @@ describe('withEncodedPlaintext', () => {
     expect(encoded.column).toBe('score')
     expect(opts.plaintext).toBe(42n)
   })
+
+  it('lets a null/undefined element fall through instead of throwing a raw TypeError', () => {
+    // The deliberate `opts?.` optional chaining: a null/undefined element
+    // must be returned as-is so it reaches native's own validation, rather
+    // than throwing a property-access TypeError here.
+    expect(() =>
+      withEncodedPlaintext(null as unknown as { plaintext: unknown }),
+    ).not.toThrow()
+    expect(
+      withEncodedPlaintext(null as unknown as { plaintext: unknown }),
+    ).toBeNull()
+    expect(
+      withEncodedPlaintext(undefined as unknown as { plaintext: unknown }),
+    ).toBeUndefined()
+  })
 })
 
 describe('withEncodedPlaintexts', () => {
@@ -102,5 +117,24 @@ describe('withEncodedPlaintexts', () => {
       { plaintext: BIGINT_MAX + 1n, column: 'score', table: 'users' },
     ]
     expect(() => withEncodedPlaintexts(payloads)).toThrowError(RangeError)
+  })
+
+  it('lets null/undefined elements fall through even when a sibling carries a bigint', () => {
+    // The decisive case the source comment calls out: a bad element's fate
+    // must not depend on whether a *sibling* carries a bigint (which is what
+    // triggers the `.map(withEncodedPlaintext)` encoding pass). null/undefined
+    // must fall through to native validation, not throw a raw TypeError.
+    const payloads = [
+      null,
+      { plaintext: 42n as unknown, column: 'score', table: 'users' },
+      undefined,
+    ] as unknown as { plaintext: unknown }[]
+
+    expect(() => withEncodedPlaintexts(payloads)).not.toThrow()
+
+    const encoded = withEncodedPlaintexts(payloads)
+    expect(encoded[0]).toBeNull()
+    expect(encoded[1].plaintext).toEqual({ [BIGINT_WIRE_KEY]: '42' })
+    expect(encoded[2]).toBeUndefined()
   })
 })

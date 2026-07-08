@@ -25,6 +25,22 @@ describe('inferErrorCode', () => {
     ).toBe('EQL_V3_QUERY_UNSUPPORTED')
   })
 
+  it('maps invalid eqlVersion errors', () => {
+    // Mirrors the Rust `Invalid eqlVersion {0}: expected 2 or 3` message.
+    expect(inferErrorCode('Invalid eqlVersion 4: expected 2 or 3')).toBe(
+      'INVALID_EQL_VERSION',
+    )
+  })
+
+  it('maps EQL v3 unsupported-column errors', () => {
+    // Mirrors the Rust `Column '{column}' cannot be represented in EQL v3: {reason}. {hint}` message.
+    expect(
+      inferErrorCode(
+        "Column 'users.email' cannot be represented in EQL v3: no v3 domain for this cast_as. Use eqlVersion 2.",
+      ),
+    ).toBe('EQL_V3_UNSUPPORTED_COLUMN')
+  })
+
   it('maps EQL v3 conversion failures', () => {
     expect(inferErrorCode('EQL v3 conversion failed: bad payload')).toBe(
       'EQL_V3_CONVERSION_FAILED',
