@@ -179,6 +179,34 @@ describe('encryptQuery for numeric indexes', () => {
     assertScalar(result)
     expect(Array.isArray(result.ob)).toBe(true)
   })
+
+  test('should encrypt for ORE index with a bigint query term', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // Query terms are generated from the same Plaintext as storage terms,
+    // so a bigint beyond Number.MAX_SAFE_INTEGER stays exact here too.
+    const result = await encryptQuery(client, {
+      plaintext: 2n ** 60n,
+      ...scoreColumn,
+      indexType: 'ore',
+    })
+
+    assertScalar(result)
+    expect(result).toHaveProperty('ob')
+    expect(Array.isArray(result.ob)).toBe(true)
+  })
+
+  test('should reject a bigint query term outside the i64 range', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(
+      encryptQuery(client, {
+        plaintext: 2n ** 63n,
+        ...scoreColumn,
+        indexType: 'ore',
+      }),
+    ).rejects.toThrowError(/above the maximum.*signed 64-bit integer/)
+  })
 })
 
 describe('encryptQueryBulk for query ordering and grouping', () => {
@@ -340,6 +368,51 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
     // Results should be different (different plaintexts)
     expect(results[0].hm).not.toEqual(results[1].hm)
     expect(results[1].hm).not.toEqual(results[2].hm)
+  })
+
+  test('should encrypt a bigint query term in bulk (mixed with strings)', async () => {
+    const client = await newClient({ encryptConfig })
+
+    // A bigint element exercises the clone branch of
+    // `withEncodedPlaintexts(opts.queries)` in `encryptQueryBulk` — the
+    // single-query test above covers `withEncodedPlaintext`, but the bulk
+    // wrapper's array rewrite is a separate path (mirrors what
+    // scalar-bulk.test.ts does for encryptBulk).
+    const queries: QueryPayload[] = [
+      {
+        plaintext: 'test1@example.com',
+        ...emailColumn,
+        indexType: 'unique',
+      },
+      {
+        plaintext: 2n ** 60n,
+        ...scoreColumn,
+        indexType: 'ore',
+      },
+    ]
+
+    const results = await encryptQueryBulk(client, { queries })
+
+    expect(results).toHaveLength(2)
+    expect(results[0]).toHaveProperty('hm')
+    expect(results[1]).toHaveProperty('ob')
+    assertScalar(results[1])
+  })
+
+  test('should reject an out-of-range bigint query term in bulk with a RangeError', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(
+      encryptQueryBulk(client, {
+        queries: [
+          {
+            plaintext: 2n ** 63n,
+            ...scoreColumn,
+            indexType: 'ore',
+          },
+        ],
+      }),
+    ).rejects.toThrowError(/above the maximum.*signed 64-bit integer/)
   })
 })
 

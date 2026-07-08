@@ -1,6 +1,6 @@
 {
   "name": "@cipherstash/protect-ffi",
-  "version": "0.26.0",
+  "version": "0.27.1-0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cipherstash/protectjs-ffi.git"
@@ -13,7 +13,7 @@
   "main": "./lib/index.cjs",
   "scripts": {
     "test": "npm run test:typecheck && npm run test:unit && npm run test:lint && npm run test:format && npm run test:rust",
-    "test:typecheck": "tsc",
+    "test:typecheck": "tsc && tsc -p tsconfig.test.json",
     "test:unit": "vitest run",
     "test:rust": "cargo test",
     "test:lint": "npm run test:lint:ts",

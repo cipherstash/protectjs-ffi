@@ -13,7 +13,10 @@ export type NativeCastAs =
   | 'big_int'
   | 'boolean'
   | 'date'
+  | 'decimal'
+  | 'int'
   | 'json'
+  | 'small_int'
   | 'timestamp'
 
 /**

@@ -43,6 +43,115 @@ $ node
 > console.log({ciphertext, plaintext});
 ```
 
+## EQL version selection
+
+`newClient` accepts an `eqlVersion` option selecting the wire format that
+`encrypt` / `encryptBulk` / `encryptQuery` emit:
+
+```js
+// EQL v2 (default) — the `eql_v2_encrypted` payload format
+const v2 = await addon.newClient({ encryptConfig })
+
+// EQL v3 — payloads for the per-capability `eql_v3` domains
+const v3 = await addon.newClient({ encryptConfig, eqlVersion: 3 })
+```
+
+With `eqlVersion: 3`, each column's payload targets the `eql_v3` domain
+derived from its `cast_as` and indexes:
+
+| `cast_as` | family | indexes | domain |
+|-----------|--------|---------|--------|
+| `text` | `text` | `unique` + `ore` + `match` | `text_search` |
+| `text` | `text` | `unique` + `ore` | `text_ord_ore` |
+| `text` | `text` | `match` | `text_match` |
+| `text` | `text` | `unique` | `text_eq` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `ore` (with or without `unique`) | `<family>_ord_ore` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `unique` | `<family>_eq` |
+| `number` / `decimal` / `date` / `timestamp` | `double` / `numeric` / `date` / `timestamp` | as above | as above |
+| any scalar | — | none | storage-only domain (`text`, `integer`, …) |
+| `boolean` | `boolean` | none only | `boolean` (storage-only — any index errors) |
+| `json` | `json` | `ste_vec` (required) | `json` |
+
+Notes:
+
+- The richest matching domain wins, and it must cover every configured
+  capability — a combination that would silently drop a term errors instead
+  (e.g. `unique` + `match`, `unique` + `ope` + `match`, or `ore` + `match`
+  on text: no single domain carries those term sets, so add the missing
+  index to reach `text_search`, split the capabilities across columns, or
+  use `eqlVersion: 2`).
+- Exception: dropping a *term* is fine when the *capability* survives.
+  Non-text ordering domains carry only `ob`, so `unique` + `ore` on a
+  numeric column drops `hm` — equality still works via the ORE operators.
+- Ordered text requires a `unique` index (`text_ord_ore`/`text_ord_ope`
+  carry `hm` + `ob`/`op`); `ore`-only text errors.
+- `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
+  v3 data can coexist during a migration.
+- v3 query encryption currently supports JSON containment only; scalar and
+  selector queries throw `EQL_V3_QUERY_UNSUPPORTED` and need an
+  `eqlVersion: 2` client.
+- `ope`-indexed columns map to `<family>_ord_ope` and carry the `op`
+  (CLLW-OPE) term (emitted since cipherstash-client 0.38.1).
+
+> [!NOTE]
+> **Breaking TypeScript change:** `encrypt`/`encryptBulk` now return
+> `EncryptedPayload` (`Encrypted | EncryptedV3`) instead of `Encrypted`.
+> Runtime output is unchanged for v2 clients, but code that accessed `.k`
+> or assigned the result to `Encrypted` must narrow first. v3 scalars carry
+> no `k`, so guard its presence before reading it:
+> `'k' in payload && payload.k === 'ct'` (a v2 scalar), or check
+> `payload.v === 3` to detect the v3 members. (A bare `payload.k === 'ct'`
+> does not compile against the union.)
+
+## BigInt plaintexts
+
+Encrypted `cast_as: 'bigint'` columns store signed 64-bit integers
+(PostgreSQL `bigint`). `encrypt` / `encryptBulk` / `encryptQuery` /
+`encryptQueryBulk` accept the plaintext as either a JS `number` or a JS
+`bigint`:
+
+- `bigint` inputs are exact and bounds-checked against the full i64 range:
+  **-9223372036854775808 to 9223372036854775807** (-2^63 to 2^63 - 1).
+  Values outside that range throw a `RangeError` (a plain `RangeError`, not
+  a `ProtectError`) naming the bounds and the offending direction. Search
+  index terms (`hm`, `ob`, `op`) are derived from the same value, so the
+  boundary check covers index-term generation too.
+- `number` inputs keep the existing exact-integer guard: fractional,
+  non-finite, or out-of-range values error instead of being silently
+  truncated.
+- A `bigint` is only accepted as the top-level plaintext of a scalar
+  column. JSON has no bigint, so bigints nested inside `cast_as: 'json'`
+  documents (or JSON containment query terms) are rejected with a
+  `TypeError` on both Neon and wasm. More generally, plaintexts follow
+  `JSON.stringify` semantics on both platforms: `toJSON` is honored (a
+  `Date` becomes its ISO string), `undefined` properties are dropped, and
+  non-finite numbers become `null`.
+- The internal wire form `{"__protect_ffi_bigint__": "<digits>"}` is
+  reserved: a `cast_as: 'json'` plaintext consisting of exactly that
+  single-key shape (with an in-range i64 decimal string) is read as a
+  bigint at the boundary and rejected for json columns. Nested
+  occurrences of the key inside a larger document are unaffected.
+
+```js
+const ciphertext = await addon.encrypt(client, {
+  plaintext: 9007199254740993n, // beyond Number.MAX_SAFE_INTEGER — stays exact
+  column: 'score',
+  table: 'users',
+})
+const decrypted = await addon.decrypt(client, { ciphertext })
+// decrypted === 9007199254740993n (a JS bigint)
+```
+
+> [!WARNING]
+> **Breaking change:** `decrypt` / `decryptBulk` / `decryptBulkFallible`
+> now ALWAYS return a JS `bigint` for `cast_as: 'bigint'` columns — even
+> for values that fit in a JS number. Previous releases returned a
+> `number`, silently losing precision beyond `Number.MAX_SAFE_INTEGER`
+> (2^53 - 1). Code comparing or doing arithmetic on decrypted bigint
+> columns must be updated (e.g. `decrypted === 123n` instead of
+> `decrypted === 123`, or `Number(decrypted)` when the value is known to
+> be small).
+
 ## Errors
 
 Async API calls throw `ProtectError` with a stable `code` for programmatic handling.

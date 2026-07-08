@@ -1,3 +1,4 @@
+mod eql_v3;
 mod js_plaintext;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
@@ -20,13 +21,19 @@ use cipherstash_client::{
     AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
 };
 use cts_common::Crn;
+// Shared by the Neon exports below and the wasm module (which imports these
+// via `crate::`), so both targets resolve them through this one re-export.
+pub(crate) use eql_v3::{
+    encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
+    validate_eql_version, EncryptedOutput, EqlVersion, QueryOutput,
+};
 use js_plaintext::JsPlaintext;
 #[cfg(not(target_arch = "wasm32"))]
 use neon::{
     prelude::*,
     types::{
-        extract::{Boxed, Json},
-        JsFuture,
+        extract::{self, Boxed, Json, TryFromJs, TryIntoJs},
+        JsBigInt, JsFuture,
     },
 };
 use once_cell::sync::OnceCell;
@@ -53,6 +60,9 @@ struct Client {
     cipher: Arc<ScopedZeroKMS>,
     zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// EQL wire version this client emits. Decryption accepts both formats
+    /// regardless of this setting.
+    eql_version: EqlVersion,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -72,6 +82,7 @@ pub enum ReceivedKind {
     String(String),
     Number(f64),
     Boolean(bool),
+    BigInt(i64),
     JsonObject,
     JsonArray,
     JsonScalar(String),
@@ -84,6 +95,7 @@ impl std::fmt::Display for ReceivedKind {
             Self::String(s) => write!(f, "String \"{}\"", truncate_for_error(s, 30)),
             Self::Number(n) => write!(f, "Number {}", n),
             Self::Boolean(b) => write!(f, "Boolean {}", b),
+            Self::BigInt(v) => write!(f, "BigInt {}n", v),
             Self::JsonObject => write!(f, "JSON object"),
             Self::JsonArray => write!(f, "JSON array"),
             Self::JsonScalar(s) => write!(f, "JSON scalar {}", s),
@@ -179,6 +191,7 @@ pub enum QueryInputHint {
     WrapNumberInObject,
     WrapBooleanInObject,
     UsePathOrObject,
+    BigIntNotJson,
 }
 
 impl std::fmt::Display for QueryInputHint {
@@ -189,6 +202,7 @@ impl std::fmt::Display for QueryInputHint {
             Self::WrapNumberInObject => write!(f, "Wrap the number in a JSON object to query by value: {{\"field\": <number>}}."),
             Self::WrapBooleanInObject => write!(f, "Wrap the boolean in a JSON object to query by value: {{\"field\": <boolean>}}."),
             Self::UsePathOrObject => write!(f, "Use a JSON path string like '$.field' for path queries, or a JSON object like {{\"field\": value}} for containment queries."),
+            Self::BigIntNotJson => write!(f, "BigInt values cannot appear in JSON documents; wrap a Number within the safe integer range in a JSON object instead: {{\"field\": <number>}}."),
         }
     }
 }
@@ -272,6 +286,22 @@ pub enum Error {
     },
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error("Invalid eqlVersion {0}: expected 2 or 3")]
+    InvalidEqlVersion(u8),
+    #[error("Column '{column}' cannot be represented in EQL v3: {reason}. {hint}")]
+    NoV3Domain {
+        column: String,
+        reason: String,
+        hint: String,
+    },
+    #[error("EQL v3 conversion failed: {0}")]
+    FromV2(#[from] eql_bindings::from_v2::FromV2Error),
+    #[error("EQL v3 scalar query encryption is not yet supported — encrypt_query requires eqlVersion 2 for scalar indexes")]
+    V3ScalarQueryUnsupported,
+    #[error("EQL v3 selector query encryption is not yet supported — encrypt_query with queryOp 'ste_vec_selector' requires eqlVersion 2. EQL v3 path queries pass the plain tokenized selector as text (see eql_v3.\"->\").")]
+    V3SelectorQueryUnsupported,
+    #[error("Invalid EQL ciphertext: {0}")]
+    InvalidCiphertext(#[from] zerokms::DecryptError),
 }
 
 /// JS-backed [`AuthStrategy`] for the Neon build.
@@ -359,21 +389,44 @@ fn thrown_to_string<'cx, 'h, C: Context<'cx>>(thrown: Handle<'h, JsValue>, cx: &
         .unwrap_or_else(|_| "<non-stringifiable error>".to_string())
 }
 
+/// Build an attributable message for a reconstructed auth failure. Falls back
+/// to the failure `code` (or a generic phrase when that's absent too) if the
+/// strategy supplied no `error.message`, so a reconstructed error is never
+/// blank. Codes that map to a fixed [`AuthError`] variant ignore this message;
+/// it only surfaces for the `Custom` fallthrough. Shared by the Neon and wasm
+/// seams so both reconstruct the same message.
+pub(crate) fn auth_failure_message(code: &str, message: String) -> String {
+    if !message.is_empty() {
+        message
+    } else if !code.is_empty() {
+        format!("auth failure: {code}")
+    } else {
+        "strategy.getToken failed with an unspecified auth failure".to_string()
+    }
+}
+
 /// Read `obj[key]` as a `String`, or `None` if it's absent or not a JS string.
+///
+/// The `get()` runs through `cx.try_catch` because this is called at
+/// promise-settle time on a user-controlled object: a throwing getter must have
+/// its pending N-API exception cleared (not merely discarded via `.ok()`), or
+/// it dangles on the env — the same invariant the settle closure's top-level
+/// reads uphold.
 #[cfg(not(target_arch = "wasm32"))]
 fn prop_string<'cx>(cx: &mut Cx<'cx>, obj: Handle<JsObject>, key: &str) -> Option<String> {
-    let value: Handle<JsValue> = obj.prop(cx, key).get().ok()?;
+    let value: Handle<JsValue> = cx.try_catch(|cx| obj.prop(cx, key).get()).ok()?;
     value.downcast::<JsString, _>(cx).ok().map(|s| s.value(cx))
 }
 
-/// Read `obj[key]` as an object handle, or `None` if it's absent or not a JS object.
+/// Read `obj[key]` as an object handle, or `None` if it's absent or not a JS
+/// object. Guarded with `try_catch` for the same reason as [`prop_string`].
 #[cfg(not(target_arch = "wasm32"))]
 fn prop_object<'cx>(
     cx: &mut Cx<'cx>,
     obj: Handle<JsObject>,
     key: &str,
 ) -> Option<Handle<'cx, JsObject>> {
-    let value: Handle<JsValue> = obj.prop(cx, key).get().ok()?;
+    let value: Handle<JsValue> = cx.try_catch(|cx| obj.prop(cx, key).get()).ok()?;
     value.downcast::<JsObject, _>(cx).ok()
 }
 
@@ -388,14 +441,18 @@ fn strategy_protocol_error(msg: impl Into<String>) -> AuthError {
 /// Reconstruct a [`stack_auth::AuthError`] from an `@cipherstash/auth`
 /// `AuthFailure` (`{ ...payload, type, error, help?, url? }`) via
 /// [`AuthError::from_error_code`], so a strategy failure crosses back into Rust
-/// as the real typed error (preserving its code) rather than a flattened
+/// as the real typed error — preserving its code and any structured payload
+/// (e.g. `WORKSPACE_MISMATCH`'s `expected`/`actual`) — rather than a flattened
 /// `Server`. Unknown / foreign codes fall through to `AuthError::Custom`.
 ///
-/// Unlike the WASM seam, the structured `payload` isn't threaded across the
-/// Neon boundary, so `WORKSPACE_MISMATCH` reconstructs as `Custom` here (its
-/// message still carries the workspace detail); every other code round-trips.
+/// Mirrors the wasm seam: the structured payload is threaded by JSON-serialising
+/// the whole failure object and dropping the reserved `type`/`error`/`help`/`url`
+/// keys, so both runtimes reconstruct the same variant. Every property read
+/// runs through a `try_catch` (directly, via `prop_*`, or via `Json`) so a
+/// throwing getter on the user-controlled failure object clears its pending
+/// N-API exception instead of leaving it dangling.
 #[cfg(not(target_arch = "wasm32"))]
-fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -> AuthError {
+fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<'cx, JsValue>) -> AuthError {
     let obj = match failure.downcast::<JsObject, _>(cx) {
         Ok(o) => o,
         Err(_) => return strategy_protocol_error("strategy.getToken failed"),
@@ -406,7 +463,23 @@ fn neon_failure_to_auth_error<'cx>(cx: &mut Cx<'cx>, failure: Handle<JsValue>) -
         Some(err_obj) => prop_string(cx, err_obj, "message").unwrap_or_default(),
         None => String::new(),
     };
-    AuthError::from_error_code(&code, message, &serde_json::Map::new())
+    // Thread the structured payload the same way the wasm seam does: serialise
+    // the whole failure object, then drop the reserved keys. `Json::try_from_js`
+    // goes through `JSON.stringify`, which invokes getters, so guard it with
+    // `try_catch`; a throw (or a non-serialisable field) degrades to an empty
+    // payload (i.e. `Custom`).
+    let mut payload = cx
+        .try_catch(|cx| {
+            Json::<serde_json::Map<String, serde_json::Value>>::try_from_js(cx, failure)
+        })
+        .ok()
+        .and_then(|result| result.ok())
+        .map(|Json(map)| map)
+        .unwrap_or_default();
+    for key in ["type", "error", "help", "url"] {
+        payload.remove(key);
+    }
+    AuthError::from_error_code(&code, auth_failure_message(&code, message), &payload)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -448,11 +521,13 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                             // Inner `to_future` closure: structural mismatches
                             // (wrong type for resolved value, missing/non-string
                             // `token`) are returned as `Ok(Err(...))`. The
-                            // remaining Throw risk is a property getter on the
-                            // resolved object that throws — vanishingly rare in
-                            // practice, and the existing try_catch on the outer
-                            // closure body covers throws from this same channel
-                            // dispatch path.
+                            // property reads on the resolved object (`failure`,
+                            // `data`, `token`) are user-reachable getters that
+                            // can throw, and they run at promise-settle time —
+                            // outside the outer try_catch's dynamic extent — so
+                            // each gets its own try_catch: returning `Ok(Err(..))`
+                            // on a bare `Err` would leave a pending N-API
+                            // exception in the callback context.
                             let fut = promise.to_future(cx, |mut cx, settled| {
                                 match settled {
                                     Ok(v) => {
@@ -471,11 +546,17 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                         //            `TokenResult`, with `token` at the top
                                         //            level (the documented
                                         //            `getToken(): Promise<{ token }>` contract).
-                                        let failure: Handle<JsValue> =
-                                            match obj.prop(&mut cx, "failure").get() {
-                                                Ok(v) => v,
-                                                Err(_) => cx.undefined().upcast(),
-                                            };
+                                        let failure: Handle<JsValue> = match cx
+                                            .try_catch(|cx| obj.prop(cx, "failure").get())
+                                        {
+                                            Ok(v) => v,
+                                            Err(thrown) => {
+                                                return Ok(Err(strategy_protocol_error(format!(
+                                                    "reading 'failure' field threw: {}",
+                                                    thrown_to_string(thrown, &mut cx),
+                                                ))))
+                                            }
+                                        };
                                         if !failure.is_a::<JsUndefined, _>(&mut cx)
                                             && !failure.is_a::<JsNull, _>(&mut cx)
                                         {
@@ -485,25 +566,33 @@ impl AuthStrategy for &NeonJsAuthStrategy {
                                         }
                                         // Unwrap the `data` envelope when present (0.41+);
                                         // otherwise read `token` from the bare result (<= 0.40).
-                                        let data_val: Handle<JsValue> =
-                                            match obj.prop(&mut cx, "data").get() {
-                                                Ok(v) => v,
-                                                Err(_) => cx.undefined().upcast(),
-                                            };
+                                        let data_val: Handle<JsValue> = match cx
+                                            .try_catch(|cx| obj.prop(cx, "data").get())
+                                        {
+                                            Ok(v) => v,
+                                            Err(thrown) => {
+                                                return Ok(Err(strategy_protocol_error(format!(
+                                                    "reading 'data' field threw: {}",
+                                                    thrown_to_string(thrown, &mut cx),
+                                                ))))
+                                            }
+                                        };
                                         let source = match data_val.downcast::<JsObject, _>(&mut cx)
                                         {
                                             Ok(d) => d,
                                             Err(_) => obj,
                                         };
-                                        let raw: Handle<JsValue> =
-                                            match source.prop(&mut cx, "token").get() {
-                                                Ok(v) => v,
-                                                Err(_) => {
-                                                    return Ok(Err(strategy_protocol_error(
-                                                        "could not read 'token' field",
-                                                    )))
-                                                }
-                                            };
+                                        let raw: Handle<JsValue> = match cx
+                                            .try_catch(|cx| source.prop(cx, "token").get())
+                                        {
+                                            Ok(v) => v,
+                                            Err(thrown) => {
+                                                return Ok(Err(strategy_protocol_error(format!(
+                                                    "reading 'token' field threw: {}",
+                                                    thrown_to_string(thrown, &mut cx),
+                                                ))))
+                                            }
+                                        };
                                         if raw.is_a::<JsUndefined, _>(&mut cx)
                                             || raw.is_a::<JsNull, _>(&mut cx)
                                         {
@@ -661,6 +750,10 @@ struct EnsureKeysetResult {
 struct NewClientOptions {
     encrypt_config: CanonicalEncryptionConfig,
     client_opts: Option<ClientOpts>,
+    /// EQL wire version to emit: 2 (default) or 3. Sits alongside
+    /// `encrypt_config` (not in `client_opts`, which carries credentials +
+    /// keyset) because it configures the encryption output format.
+    eql_version: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -742,7 +835,9 @@ struct QueryPayload {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecryptOptions {
-    ciphertext: Encrypted,
+    /// Raw JSON payload — parsed internally so decrypt accepts BOTH the v2
+    /// and v3 wire formats regardless of the client's `eqlVersion`.
+    ciphertext: serde_json::Value,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
 }
@@ -757,7 +852,8 @@ struct DecryptBulkOptions {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BulkDecryptPayload {
-    ciphertext: Encrypted,
+    /// Raw JSON payload — see [`DecryptOptions::ciphertext`].
+    ciphertext: serde_json::Value,
     lock_context: Option<LockContext>,
 }
 
@@ -964,6 +1060,14 @@ fn to_query_plaintext(
                         hint: QueryInputHint::WrapBooleanInObject,
                     });
                 }
+                JsPlaintext::BigInt(v) => {
+                    return Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        received: ReceivedKind::BigInt(*v),
+                        expected: ExpectedKind::JsonObjectOrArray,
+                        hint: QueryInputHint::BigIntNotJson,
+                    });
+                }
                 JsPlaintext::JsonB(_) => {
                     // This is the expected type - proceed
                 }
@@ -1005,6 +1109,12 @@ fn to_query_plaintext(
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
                     }),
+                    JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecDefault,
+                        received: ReceivedKind::BigInt(*v),
+                        expected: ExpectedKind::StringPathOrJsonObjectOrArray,
+                        hint: QueryInputHint::BigIntNotJson,
+                    }),
                     JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
                         query_op: QueryOpKind::SteVecDefault,
                         received: ReceivedKind::Boolean(*b),
@@ -1038,6 +1148,9 @@ pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
     strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
+    // Validate before any network I/O: a bad eqlVersion should fail fast,
+    // not after ZeroKMS setup.
+    let eql_version = validate_eql_version(opts.eql_version)?;
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
@@ -1056,6 +1169,7 @@ pub async fn new_client(
         cipher: Arc::new(cipher),
         zerokms,
         encrypt_config: Arc::new(opts.encrypt_config.into_config_map()?),
+        eql_version,
     };
 
     Ok(Boxed(client))
@@ -1116,7 +1230,7 @@ pub async fn ensure_keyset(
 async fn encrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptOptions>,
-) -> Result<Json<Encrypted>, neon::types::extract::Error> {
+) -> Result<Json<EncryptedOutput>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
@@ -1148,7 +1262,11 @@ async fn encrypt(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_ciphertext = into_store_ciphertext(encrypted.remove(0))?;
 
-    Ok(Json(eql_ciphertext))
+    Ok(Json(storage_output(
+        eql_ciphertext,
+        client.eql_version,
+        column_config,
+    )?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1156,7 +1274,7 @@ async fn encrypt(
 async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptBulkOptions>,
-) -> Result<Json<Vec<Encrypted>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<EncryptedOutput>>, neon::types::extract::Error> {
     // Group payloads by lock_context for batch processing
     // BTreeMap provides deterministic ordering of groups
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, PlaintextPayload)>> = BTreeMap::new();
@@ -1172,7 +1290,7 @@ async fn encrypt_bulk(
 
     // Pre-allocate results vector
     let total_count: usize = groups.values().map(|g| g.len()).sum();
-    let mut results: Vec<Option<EqlCiphertext>> = (0..total_count).map(|_| None).collect();
+    let mut results: Vec<Option<EncryptedOutput>> = (0..total_count).map(|_| None).collect();
 
     // Process each lock_context group
     for (lock_context_claims, payloads) in groups {
@@ -1220,13 +1338,21 @@ async fn encrypt_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_output, (original_idx, _ident)) in encrypted.into_iter().zip(payload_data) {
-            results[original_idx] = Some(into_store_ciphertext(eql_output)?);
+        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
+            let column_config = client
+                .encrypt_config
+                .get(&ident)
+                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            results[original_idx] = Some(storage_output(
+                into_store_ciphertext(eql_output)?,
+                client.eql_version,
+                column_config,
+            )?);
         }
     }
 
     // Unwrap all results (all should be Some)
-    let final_results: Vec<EqlCiphertext> = results
+    let final_results: Vec<EncryptedOutput> = results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -1244,7 +1370,7 @@ async fn encrypt_bulk(
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryOptions>,
-) -> Result<Json<EqlOutput>, neon::types::extract::Error> {
+) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
@@ -1291,7 +1417,7 @@ async fn encrypt_query(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_output = encrypted.remove(0);
 
-    Ok(Json(eql_output))
+    Ok(Json(query_output(eql_output, client.eql_version)?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1299,7 +1425,7 @@ async fn encrypt_query(
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryBulkOptions>,
-) -> Result<Json<Vec<EqlOutput>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<QueryOutput>>, neon::types::extract::Error> {
     // Group payloads by lock_context (same pattern as encrypt_bulk)
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, QueryPayload)>> = BTreeMap::new();
 
@@ -1313,7 +1439,7 @@ async fn encrypt_query_bulk(
     }
 
     let total_count: usize = groups.values().map(|g| g.len()).sum();
-    let mut results: Vec<Option<EqlOutput>> = (0..total_count).map(|_| None).collect();
+    let mut results: Vec<Option<QueryOutput>> = (0..total_count).map(|_| None).collect();
 
     for (lock_context_claims, payloads) in groups {
         let lock_context: Vec<zerokms::Context> = lock_context_claims
@@ -1373,11 +1499,11 @@ async fn encrypt_query_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         for (eql_output, original_idx) in encrypted.into_iter().zip(original_indices) {
-            results[original_idx] = Some(eql_output);
+            results[original_idx] = Some(query_output(eql_output, client.eql_version)?);
         }
     }
 
-    let final_results: Vec<EqlOutput> = results
+    let final_results: Vec<QueryOutput> = results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -1390,14 +1516,28 @@ async fn encrypt_query_bulk(
     Ok(Json(final_results))
 }
 
+/// Convert a decrypted [`JsPlaintext`] into a JS value on the JS thread.
+///
+/// The `Json` return path (serde_json → `JSON.parse`) cannot produce a JS
+/// `bigint`, so the BigInt variant is constructed directly with
+/// [`JsBigInt::from_i64`]; every other variant keeps the JSON path
+/// unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+fn js_plaintext_into_js<'cx>(cx: &mut Cx<'cx>, plaintext: JsPlaintext) -> JsResult<'cx, JsValue> {
+    match plaintext {
+        JsPlaintext::BigInt(v) => Ok(JsBigInt::from_i64(cx, v).upcast()),
+        other => Json(other).try_into_js(cx),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
-) -> Result<Json<JsPlaintext>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
-    let encrypted_record = encrypted_record_from_mp_base85(opts.ciphertext, lock_context)?;
+    let encrypted_record = encrypted_record_from_value(opts.ciphertext, lock_context)?;
 
     let plaintext = client
         .zerokms
@@ -1411,9 +1551,10 @@ async fn decrypt(
         .map_err(Error::from)
         .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from))?;
 
-    JsPlaintext::try_from(plaintext)
-        .map(Json)
-        .map_err(From::from)
+    let js_plaintext = JsPlaintext::try_from(plaintext).map_err(Error::from)?;
+    Ok(extract::with(move |cx| -> NeonResult<_> {
+        js_plaintext_into_js(cx, js_plaintext)
+    }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1421,20 +1562,13 @@ async fn decrypt(
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<Json<Vec<JsPlaintext>>, neon::types::extract::Error> {
-    let ciphertexts: Vec<(Encrypted, Vec<zerokms::Context>)> = opts
+) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
+    let encrypted_records: Vec<WithContext<'static>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
             let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            (payload.ciphertext, lock_context)
-        })
-        .collect();
-
-    let encrypted_records: Vec<WithContext<'static>> = ciphertexts
-        .into_iter()
-        .map(|(ciphertext, encryption_context)| {
-            encrypted_record_from_mp_base85(ciphertext, encryption_context)
+            encrypted_record_from_value(payload.ciphertext, lock_context)
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -1453,7 +1587,14 @@ async fn decrypt_bulk(
         .map(|bytes| Plaintext::from_slice(&bytes).and_then(JsPlaintext::try_from))
         .collect::<Result<Vec<JsPlaintext>, TypeParseError>>()?;
 
-    Ok(Json(plaintexts))
+    Ok(extract::with(move |cx| -> NeonResult<_> {
+        let arr = cx.empty_array();
+        for (i, plaintext) in plaintexts.into_iter().enumerate() {
+            let value = js_plaintext_into_js(cx, plaintext)?;
+            arr.set(cx, i as u32, value)?;
+        }
+        Ok(arr)
+    }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1461,7 +1602,7 @@ async fn decrypt_bulk(
 async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<Json<Vec<DecryptResult>>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
     // Decode each ciphertext independently so a single invalid payload turns
     // into a per-item `DecryptResult::Error` rather than aborting the whole
     // batch — matches the `*Fallible` contract.
@@ -1470,7 +1611,7 @@ async fn decrypt_bulk_fallible(
         .into_iter()
         .map(|payload| {
             let lock_context = payload.lock_context.map(Into::into).unwrap_or_default();
-            encrypted_record_from_mp_base85(payload.ciphertext, lock_context)
+            encrypted_record_from_value(payload.ciphertext, lock_context)
         })
         .collect();
 
@@ -1524,14 +1665,30 @@ async fn decrypt_bulk_fallible(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Json(results))
+    Ok(extract::with(move |cx| -> NeonResult<_> {
+        let arr = cx.empty_array();
+        for (i, result) in results.into_iter().enumerate() {
+            let obj = cx.empty_object();
+            match result {
+                DecryptResult::Success { data } => {
+                    let value = js_plaintext_into_js(cx, data)?;
+                    obj.set(cx, "data", value)?;
+                }
+                DecryptResult::Error { error } => {
+                    let message = cx.string(error);
+                    obj.set(cx, "error", message)?;
+                }
+            }
+            arr.set(cx, i as u32, obj)?;
+        }
+        Ok(arr)
+    }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 fn is_encrypted(Json(raw): Json<serde_json::Value>) -> bool {
-    let result: Result<EqlCiphertext, _> = serde_json::from_value(raw);
-    result.is_ok()
+    is_encrypted_value(&raw)
 }
 
 fn encrypted_record_from_mp_base85(
@@ -2039,6 +2196,81 @@ mod tests {
                 "Error message should mention invalid input: {}",
                 err_msg
             );
+        }
+
+        #[test]
+        fn test_ste_vec_default_with_bigint_returns_error() {
+            let js_plaintext = JsPlaintext::BigInt(42);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::Json,
+            );
+
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("BigInt"),
+                "error should name the received BigInt: {}",
+                err_msg
+            );
+        }
+
+        #[test]
+        fn test_ste_vec_term_with_bigint_returns_error() {
+            let js_plaintext = JsPlaintext::BigInt(42);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecTerm,
+                &index_type,
+                ColumnType::Json,
+            );
+
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("BigInt") && err_msg.contains("JSON"),
+                "error should explain BigInt cannot appear in JSON documents: {}",
+                err_msg
+            );
+        }
+
+        #[test]
+        fn test_non_ste_vec_default_with_bigint_uses_column_type() {
+            // An ore/unique query term on a bigint column accepts a bigint
+            // and converts it via the column's cast type — the same path
+            // index-term generation uses on the storage side, so the
+            // boundary i64 bounds check covers both.
+            let js_plaintext = JsPlaintext::BigInt(i64::MAX);
+            let index_type = IndexType::Ore;
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::Default,
+                &index_type,
+                ColumnType::BigInt,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::BigInt(Some(i64::MAX)),
+                    InferredQueryMode::QueryMode(QueryOp::Default)
+                ))
+            ));
         }
 
         #[test]
