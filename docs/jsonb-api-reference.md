@@ -316,10 +316,11 @@ encrypted-selector envelope in v3. Bind it as the `text` argument of the
 `->` / `->>` operators (`SELECT doc -> $1::text`); it is the same
 `Selector` encoding SteVec entries carry in `s`.
 
-**Scalar queries:** supported under `eqlVersion: 3` since protect-ffi 0.29 —
-`encryptQuery` on a scalar column returns the term-only operand
-(`{v, i, <terms>}`, no `c`) for the column domain's `eql_v3.query_<name>`
-twin. See the README's EQL v3 section for the domain/operator matrix.
+**Scalar queries:** supported under `eqlVersion: 3` since the release that
+shipped CIP-3423 (see the CHANGELOG) — `encryptQuery` on a scalar column
+returns the term-only operand (`{v, i, <terms>}`, no `c`) for the column
+domain's `eql_v3.query_<name>` twin. See the README's EQL v3 section for
+the domain/operator matrix.
 
 ---
 
