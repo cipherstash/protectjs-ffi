@@ -77,6 +77,47 @@ describe.skipIf(missingEnv.length > 0)('opts.strategy (JsBacked)', () => {
     expect(callCount).toBeGreaterThan(beforeDecrypt)
   })
 
+  test('unwraps the 0.41 Result success envelope ({ data: { token } })', async () => {
+    const inner = buildAccessKeyStrategy()
+    const strategy: AuthStrategy = {
+      // Wrap the real token in `@cipherstash/auth` 0.41's `@byteslice/result`
+      // success envelope; protect-ffi must unwrap `data.token` and still
+      // complete a round-trip.
+      getToken: (async () => {
+        const { token } = await inner.getToken()
+        return { data: { token } }
+      }) as unknown as AuthStrategy['getToken'],
+    }
+
+    const client = await newClient({ encryptConfig, clientOpts, strategy })
+    const ciphertext = await encrypt(client, {
+      plaintext: 'alice@example.com',
+      table: 'users',
+      column: 'email',
+    })
+    expect(await decrypt(client, { ciphertext })).toBe('alice@example.com')
+  })
+
+  test('reconstructs a 0.41 Result failure envelope ({ failure }) as a typed auth error', async () => {
+    const strategy: AuthStrategy = {
+      // 0.41's failure envelope. protect-ffi reconstructs it via
+      // `stack_auth::AuthError::from_error_code`, so a `NOT_AUTHENTICATED`
+      // failure surfaces as the typed "Not authenticated" error rather than
+      // being mis-read as a missing/invalid token.
+      getToken: (async () => ({
+        failure: {
+          type: 'NOT_AUTHENTICATED',
+          error: new Error('test: strategy has no credentials'),
+        },
+      })) as unknown as AuthStrategy['getToken'],
+    }
+
+    // getToken is called during newClient (load_keyset), so it rejects there.
+    await expect(
+      newClient({ encryptConfig, clientOpts, strategy }),
+    ).rejects.toThrow(/not authenticated/i)
+  })
+
   test('propagates a rejected getToken Promise to the client error', async () => {
     const strategy: AuthStrategy = {
       async getToken() {

@@ -107,10 +107,27 @@ jobs:
       - name: Update Version
         if: ${{ inputs.update-version }}
         shell: bash
+        env:
+          # Bind the input to an env var so it never expands into the shell
+          # body — guards against template-injection via `${{ }}` in `run:`.
+          # Keep this guard in sync with the `wasm` job and release.yml's Tag
+          # Release step.
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           git config --global user.name $ACTIONS_USER
           git config --global user.email $ACTIONS_EMAIL
-          npm version ${{ inputs.version }} -m "v%s"
+          # Allowlist gate: only npm `version` bump keywords or strict semver
+          # (with optional `v` prefix and pre-release suffix) get through.
+          case "$VERSION_INPUT" in
+            patch|minor|major|prepatch|preminor|premajor|prerelease) ;;
+            v[0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*) ;;
+            v[0-9]*.[0-9]*.[0-9]*-*|[0-9]*.[0-9]*.[0-9]*-*) ;;
+            *)
+              echo "Invalid version input: '$VERSION_INPUT' (expected an npm bump keyword or semver)" >&2
+              exit 1
+              ;;
+          esac
+          npm version "$VERSION_INPUT" -m "v%s"
       - name: Build
         shell: bash
         env:
@@ -175,12 +192,14 @@ jobs:
         env:
           # Bind the input to an env var so it never expands into the shell
           # body — guards against template-injection via `${{ }}` in `run:`.
+          # Keep this guard in sync with the `binaries` job and release.yml's Tag
+          # Release step.
           VERSION_INPUT: ${{ inputs.version }}
         run: |
           git config --global user.name $ACTIONS_USER
           git config --global user.email $ACTIONS_EMAIL
           # Allowlist gate: only npm `version` bump keywords or strict semver
-          # (with optional `v` prefix and pre-release / build metadata) get through.
+          # (with optional `v` prefix and pre-release suffix) get through.
           case "$VERSION_INPUT" in
             patch|minor|major|prepatch|preminor|premajor|prerelease) ;;
             v[0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*) ;;
@@ -226,9 +245,29 @@ jobs:
         run: |
           mkdir -p dist
           echo "filename=$(npm pack --silent --pack-destination=./dist)" | tee -a $GITHUB_OUTPUT
+      - name: Extract release notes
+        if: ${{ inputs.github-release }}
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          # A release with no tag is a misconfiguration — fail fast with a
+          # clear message rather than emitting an empty version and a broken
+          # `blob//CHANGELOG.md` fallback link.
+          if [ -z "$TAG" ]; then
+            echo "Extract release notes: inputs.tag is empty but github-release is true" >&2
+            exit 1
+          fi
+          # Source the GitHub release body from the matching CHANGELOG section.
+          # Fall back to a pointer rather than failing the release if it's absent.
+          if ! node scripts/changelog-extract.mjs "${TAG#v}" > RELEASE_NOTES.md; then
+            echo "See [CHANGELOG.md](https://github.com/cipherstash/protectjs-ffi/blob/${TAG}/CHANGELOG.md)." > RELEASE_NOTES.md
+          fi
+          cat RELEASE_NOTES.md
       - name: Release
         if: ${{ inputs.github-release }}
         uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564 # v2.0.4
         with:
           files: ./dist/${{ steps.pack.outputs.filename }}
           tag_name: ${{ inputs.tag }}
+          body_path: RELEASE_NOTES.md

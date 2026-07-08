@@ -25,6 +25,6 @@
     "arch": "arm64",
     "abi": "gnu"
   },
-  "author": "",
-  "license": "ISC"
+  "author": "CipherStash <humans@cipherstash.com>",
+  "license": "MIT"
 }

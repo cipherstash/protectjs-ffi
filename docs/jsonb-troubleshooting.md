@@ -195,7 +195,7 @@ await encryptQuery(client, {
 
 ### "Path + Value" Uses Containment Semantics
 
-**Important:** When using Protect.js with `{ path: "user.role", value: "admin" }`, this is converted to a containment query (`{ user: { role: "admin" } }`) with `sv` output, **not** a selector+value comparison.
+**Important:** When using [`@cipherstash/stack`](https://github.com/cipherstash/stack) with `{ path: "user.role", value: "admin" }`, this is converted to a containment query (`{ user: { role: "admin" } }`) with `sv` output, **not** a selector+value comparison.
 
 This is intentional behavior. The path+value syntax is syntactic sugar for containment queries.
 

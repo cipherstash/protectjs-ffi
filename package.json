@@ -9,7 +9,7 @@
     "url": "https://github.com/cipherstash/protectjs-ffi/issues"
   },
   "homepage": "https://github.com/cipherstash/protectjs-ffi#readme",
-  "description": "",
+  "description": "Native FFI bindings to the CipherStash Client SDK — powers @cipherstash/stack",
   "main": "./lib/index.cjs",
   "scripts": {
     "test": "npm run test:typecheck && npm run test:unit && npm run test:lint && npm run test:format && npm run test:rust",
@@ -32,14 +32,14 @@
     "cross": "npm run cross-build -- --release",
     "zigbuild": "npm run zig-build -- --release",
     "prepack": "tsc &&neon update",
-    "version": "neon bump --binaries platforms && git add .",
+    "version": "neon bump --binaries platforms && node scripts/changelog-release.mjs && git add .",
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
     "dryrun": "gh workflow run release.yml -f dryrun=true -f version=patch",
     "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack",
     "postbuild:wasm": "node scripts/inline-wasm.mjs"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "CipherStash <humans@cipherstash.com>",
+  "license": "MIT",
   "exports": {
     ".": {
       "node": {
