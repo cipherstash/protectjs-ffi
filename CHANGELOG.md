@@ -15,6 +15,8 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-08
+
 ### Added
 
 - Support for `@cipherstash/auth` `0.41`'s `@byteslice/result` `Result`-shaped
@@ -134,7 +136,8 @@ uses the promoted section as the GitHub release notes.
   changes).
 - Upgrade `cipherstash-client` to `0.35.0`.
 
-[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.26.0...v0.28.0
 [0.26.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.23.0...v0.24.0
