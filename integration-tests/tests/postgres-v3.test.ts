@@ -51,12 +51,19 @@ const textEqKeys = v3WireKeys<TextEq>()('v', 'i', 'c', 'hm')
 const integerOrdOreKeys = v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob')
 const integerOrdOpeKeys = v3WireKeys<IntegerOrdOpe>()('v', 'i', 'c', 'op')
 
-describe('postgres eql_v3', async () => {
-  const protectClient = await newClient({ encryptConfig, eqlVersion: 3 })
+describe('postgres eql_v3', () => {
+  // Vitest does not await the `describe` callback, so an `async describe` with
+  // top-level `await`s can finish collection before they resolve — leaving the
+  // hooks and tests below unregistered. Client + connection setup therefore
+  // lives in `beforeAll` (an async lifecycle hook), with teardown returned
+  // from it (Vitest runs the returned fn as `afterAll`).
   const pg = new Client()
-  await pg.connect()
+  let protectClient: Awaited<ReturnType<typeof newClient>>
 
   beforeAll(async () => {
+    protectClient = await newClient({ encryptConfig, eqlVersion: 3 })
+    await pg.connect()
+
     await pg.query('DROP TABLE IF EXISTS encrypted_v3')
 
     await pg.query(`

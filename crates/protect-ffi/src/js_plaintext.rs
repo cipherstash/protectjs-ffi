@@ -410,6 +410,55 @@ mod tests {
         }
     }
 
+    /// Deserialization discrimination for the `#[serde(untagged)]` enum. The
+    /// variant order is load-bearing: `BigInt` must precede `JsonB` (which
+    /// accepts any map), or the tagged bigint wire form would match `JsonB`
+    /// first and a bigint plaintext would be silently mis-read as JSON. These
+    /// pin the current behaviour so a future reorder fails loudly here.
+    mod wire_deserialization {
+        use super::*;
+
+        #[test]
+        fn tagged_map_deserializes_as_bigint_not_jsonb() {
+            let wire = format!(r#"{{"{BIGINT_WIRE_KEY}":"42"}}"#);
+            let js: JsPlaintext = serde_json::from_str(&wire).unwrap();
+            assert_eq!(
+                js,
+                JsPlaintext::BigInt(42),
+                "the tagged bigint map must match BigInt before the catch-all JsonB variant"
+            );
+        }
+
+        #[test]
+        fn tagged_map_deserializes_at_the_i64_extremes() {
+            for v in [i64::MIN, i64::MAX] {
+                let wire = format!(r#"{{"{BIGINT_WIRE_KEY}":"{v}"}}"#);
+                let js: JsPlaintext = serde_json::from_str(&wire).unwrap();
+                assert_eq!(js, JsPlaintext::BigInt(v));
+            }
+        }
+
+        #[test]
+        fn a_plain_object_deserializes_as_jsonb() {
+            let js: JsPlaintext = serde_json::from_str(r#"{"key":"value"}"#).unwrap();
+            assert_eq!(js, JsPlaintext::JsonB(serde_json::json!({"key": "value"})));
+        }
+
+        #[test]
+        fn a_non_i64_tagged_value_falls_through_to_jsonb() {
+            // The BigInt variant's own docs promise this: a tagged map whose
+            // value isn't an i64 decimal string fails the BigInt match and
+            // lands in JsonB (where `to_plaintext_with_type` later rejects it
+            // as a Json -> numeric-column mismatch).
+            let wire = format!(r#"{{"{BIGINT_WIRE_KEY}":"not-a-number"}}"#);
+            let js: JsPlaintext = serde_json::from_str(&wire).unwrap();
+            assert!(
+                matches!(js, JsPlaintext::JsonB(_)),
+                "a non-i64 tagged value must fall through to JsonB, got {js:?}"
+            );
+        }
+    }
+
     mod plaintext_to_js_plaintext {
         use super::*;
 
