@@ -14,17 +14,6 @@ describe('inferErrorCode', () => {
     )
   })
 
-  it('maps EQL v3 query errors', () => {
-    expect(
-      inferErrorCode(
-        'EQL v3 scalar query wire shape is not defined; use eqlVersion 2',
-      ),
-    ).toBe('EQL_V3_QUERY_UNSUPPORTED')
-    expect(
-      inferErrorCode('EQL v3 selector query wire shape is not defined'),
-    ).toBe('EQL_V3_QUERY_UNSUPPORTED')
-  })
-
   it('maps invalid eqlVersion errors', () => {
     // Mirrors the Rust `Invalid eqlVersion {0}: expected 2 or 3` message.
     expect(inferErrorCode('Invalid eqlVersion 4: expected 2 or 3')).toBe(

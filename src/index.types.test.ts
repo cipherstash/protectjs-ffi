@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type {
+  EncryptedV3Query,
   EncryptQueryOptions,
   IndexTypeName,
   Indexes,
   QueryPayload,
+  TextSearchQuery,
 } from './index.cjs'
 
 // Every index that can be configured via `Indexes` must also be targetable
@@ -43,5 +45,37 @@ describe('IndexTypeName', () => {
     }
     expect(opts.indexType).toBe('ope')
     expect(payload.indexType).toBe('ope')
+  })
+})
+
+describe('EncryptedV3Query', () => {
+  it('spans scalar operands, the containment needle, and bare selectors', () => {
+    // Type-level assertions: each v3 encryptQuery output shape must be
+    // assignable to the union (enforced by `npm run test:typecheck`).
+    const scalar: EncryptedV3Query = {
+      v: 3,
+      i: { t: 'users', c: 'email' },
+      hm: 'aa',
+      ob: ['bb'],
+      bf: [1, 2],
+    } satisfies TextSearchQuery
+    const needle: EncryptedV3Query = { sv: [{ s: 'aa', hm: 'bb' }] }
+    const selector: EncryptedV3Query = 'deadbeef'
+
+    // Scalar operands are term-only: `c` must not typecheck.
+    const withCiphertext: TextSearchQuery = {
+      v: 3,
+      i: { t: 'users', c: 'email' },
+      hm: 'aa',
+      ob: ['bb'],
+      bf: [1, 2],
+      // @ts-expect-error — a query operand carries no ciphertext
+      c: 'nope',
+    }
+
+    expect(scalar).toBeDefined()
+    expect(needle).toBeDefined()
+    expect(selector).toBe('deadbeef')
+    expect(withCiphertext).toBeDefined()
   })
 })

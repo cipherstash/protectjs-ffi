@@ -6,7 +6,7 @@ import type { Identifier } from "./Identifier";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.text` — storage-only domain.
+ * `public.text` — storage-only domain.
  *
  * Operators: none. Required keys: `v` `i` `c`.
  */

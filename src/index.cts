@@ -162,12 +162,17 @@ export async function decryptBulkFallible(
  * Under `eqlVersion: 2` (default) this returns the v2 shapes ({@link
  * Encrypted} for JSON containment, {@link EncryptedQuery} otherwise).
  *
- * Under `eqlVersion: 3` only JSON containment queries are supported and
- * return the `eql_v3.jsonb_query` needle ({@link EncryptedV3Query}). Scalar
- * index queries (`unique` / `ore` / `ope` / `match`) and `ste_vec_selector`
- * queries
- * throw `EQL_V3_QUERY_UNSUPPORTED` — no EQL v3 scalar/selector query wire
- * shape exists yet, so those queries require an `eqlVersion: 2` client.
+ * Under `eqlVersion: 3` this returns an {@link EncryptedV3Query}:
+ *
+ * - Scalar index queries (`unique` / `ore` / `ope` / `match`) produce the
+ *   term-only operand for the column domain's query twin (`{v, i, <terms>}`,
+ *   no `c` ciphertext) — bind with `col = $1::jsonb::eql_v3.query_<name>`.
+ *   The operand always carries ALL the column domain's terms, whichever
+ *   `indexType` was queried.
+ * - JSON containment queries produce the `eql_v3.query_jsonb` needle — bind
+ *   with `doc @> $1::jsonb::eql_v3.query_jsonb`.
+ * - `ste_vec_selector` queries produce the bare selector hash (a string) —
+ *   bind as the `text` argument of `->` / `->>`.
  */
 export function encryptQuery(
   client: Client,
@@ -178,7 +183,7 @@ export function encryptQuery(
   )
 }
 
-/** Bulk variant of {@link encryptQuery} — same EQL v3 restrictions apply. */
+/** Bulk variant of {@link encryptQuery} — same EQL v3 shapes apply. */
 export function encryptQueryBulk(
   client: Client,
   opts: EncryptQueryBulkOptions,
@@ -437,14 +442,14 @@ export type NewClientOptions = {
    * `eql_v2_encrypted` payload format).
    *
    * With `3`, {@link encrypt} / {@link encryptBulk} return {@link
-   * EncryptedV3} payloads for the `eql_v3` per-capability domains
-   * (`eql_v3.text_eq`, `eql_v3.integer_ord_ore`, `eql_v3.json`, …), derived
-   * from each column's `cast_as` + indexes. {@link decrypt} accepts BOTH
-   * formats regardless of this setting.
-   *
-   * v3 limitation: {@link encryptQuery} supports only JSON containment
-   * queries — scalar-index and selector queries throw
-   * `EQL_V3_QUERY_UNSUPPORTED` until a v3 scalar query wire shape exists.
+   * EncryptedV3} payloads for the `eql_v3` per-capability column domains
+   * (`public.text_eq`, `public.integer_ord_ore`, `public.json`, …), derived
+   * from each column's `cast_as` + indexes, and {@link encryptQuery} /
+   * {@link encryptQueryBulk} return {@link EncryptedV3Query} operands:
+   * term-only scalar operands for the `eql_v3.query_<name>` twins, the
+   * `eql_v3.query_jsonb` containment needle, and bare selector-hash strings
+   * for path queries. {@link decrypt} accepts BOTH formats regardless of
+   * this setting.
    */
   eqlVersion?: 2 | 3
 }
