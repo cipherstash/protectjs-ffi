@@ -1145,6 +1145,60 @@ fn to_query_plaintext(
     }
 }
 
+/// Resolve a query payload's column config and build its [`PreparedPlaintext`]:
+/// column lookup, index resolution, query-op parsing, plaintext conversion +
+/// mode inference ([`to_query_plaintext`]), and `EqlOperation` selection.
+///
+/// The single seam shared by all four encrypt-query entry points (Neon +
+/// wasm, single + bulk), so the version-dependent mode logic can never
+/// diverge between builds. Returns the resolved `&ColumnConfig` alongside the
+/// prepared plaintext — the caller needs it again for [`query_output`], and
+/// returning the borrow avoids a second map lookup after encryption.
+fn prepare_query_plaintext<'a>(
+    encrypt_config: &'a HashMap<Identifier, ColumnConfig>,
+    table: &str,
+    column: &str,
+    js_plaintext: &JsPlaintext,
+    index_type_name: &str,
+    query_op_name: &str,
+    eql_version: EqlVersion,
+) -> Result<(PreparedPlaintext<'a>, &'a ColumnConfig), Error> {
+    let ident = Identifier::new(table.to_string(), column.to_string());
+    let column_config = encrypt_config
+        .get(&ident)
+        .ok_or(Error::UnknownColumn(ident))?;
+
+    let index = find_index_for_type(column_config, column, index_type_name)?;
+    let query_op = parse_query_op(query_op_name)?;
+
+    // Infer type and operation mode from plaintext
+    // - String on SteVec → QueryMode with SteVecSelector (path queries)
+    // - Object/Array on SteVec → StoreMode (containment queries need sv array)
+    // - Scalar Default under eqlVersion 3 → StoreMode (term-only operands)
+    let (plaintext, inferred_mode) = to_query_plaintext(
+        js_plaintext,
+        query_op,
+        &index.index_type,
+        column_config.cast_type,
+        eql_version,
+    )?;
+
+    let eql_operation = match inferred_mode {
+        InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
+        InferredQueryMode::StoreMode => EqlOperation::Store,
+    };
+
+    Ok((
+        PreparedPlaintext::new(
+            Cow::Borrowed(column_config),
+            EqlIdentifier::new(table, column),
+            plaintext,
+            eql_operation,
+        ),
+        column_config,
+    ))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 pub async fn new_client(
@@ -1379,41 +1433,15 @@ async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryOptions>,
 ) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
-    let ident = Identifier::new(opts.table.clone(), opts.column.clone());
-
-    let column_config = client
-        .encrypt_config
-        .get(&ident)
-        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-
-    // Find the requested index type from column config
-    let index = find_index_for_type(column_config, &opts.column, &opts.index_type)?;
-    let query_op = parse_query_op(&opts.query_op)?;
-
-    // Infer type and operation mode from plaintext
-    // - String on SteVec → QueryMode with SteVecSelector (path queries)
-    // - Object/Array on SteVec → StoreMode (containment queries need sv array)
-    let (plaintext, inferred_mode) = to_query_plaintext(
+    let (prepared, column_config) = prepare_query_plaintext(
+        &client.encrypt_config,
+        &opts.table,
+        &opts.column,
         &opts.plaintext,
-        query_op,
-        &index.index_type,
-        column_config.cast_type,
+        &opts.index_type,
+        &opts.query_op,
         client.eql_version,
     )?;
-
-    // Select the appropriate EqlOperation based on inferred mode
-    let eql_operation = match inferred_mode {
-        InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
-        InferredQueryMode::StoreMode => EqlOperation::Store,
-    };
-
-    let eql_ident = EqlIdentifier::new(&opts.table, &opts.column);
-    let prepared = PreparedPlaintext::new(
-        Cow::Borrowed(column_config),
-        eql_ident,
-        plaintext,
-        eql_operation,
-    );
 
     let eql_opts = EqlEncryptOpts {
         keyset_id: None,
@@ -1461,45 +1489,21 @@ async fn encrypt_query_bulk(
             .collect();
 
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, &ColumnConfig)> = Vec::with_capacity(payloads.len());
 
-        for (original_idx, payload) in payloads {
-            let ident = Identifier::new(payload.table.clone(), payload.column.clone());
-            let column_config = client
-                .encrypt_config
-                .get(&ident)
-                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-
-            let index = find_index_for_type(column_config, &payload.column, &payload.index_type)?;
-            let query_op = parse_query_op(&payload.query_op)?;
-
-            // Infer type and operation mode from plaintext
-            // - String on SteVec → QueryMode with SteVecSelector (path queries)
-            // - Object/Array on SteVec → StoreMode (containment queries need sv array)
-            let (plaintext, inferred_mode) = to_query_plaintext(
+        for (original_idx, payload) in &payloads {
+            let (prepared, column_config) = prepare_query_plaintext(
+                &client.encrypt_config,
+                &payload.table,
+                &payload.column,
                 &payload.plaintext,
-                query_op,
-                &index.index_type,
-                column_config.cast_type,
+                &payload.index_type,
+                &payload.query_op,
                 client.eql_version,
             )?;
 
-            // Select the appropriate EqlOperation based on inferred mode
-            let eql_operation = match inferred_mode {
-                InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
-                InferredQueryMode::StoreMode => EqlOperation::Store,
-            };
-
-            let eql_ident = EqlIdentifier::new(&payload.table, &payload.column);
-            let prepared = PreparedPlaintext::new(
-                Cow::Borrowed(column_config),
-                eql_ident,
-                plaintext,
-                eql_operation,
-            );
-
             prepared_plaintexts.push(prepared);
-            payload_data.push((original_idx, ident));
+            payload_data.push((*original_idx, column_config));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -1513,11 +1517,7 @@ async fn encrypt_query_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
-            let column_config = client
-                .encrypt_config
-                .get(&ident)
-                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+        for (eql_output, (original_idx, column_config)) in encrypted.into_iter().zip(payload_data) {
             results[original_idx] =
                 Some(query_output(eql_output, client.eql_version, column_config)?);
         }
