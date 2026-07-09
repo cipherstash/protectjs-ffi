@@ -362,9 +362,13 @@ describe('eql v3 ste_vec round-trip', async () => {
       const term = entry as unknown as Record<string, unknown>
       expect(
         ('hm' in term && term.hm !== undefined) !==
-          ('oc' in term && term.oc !== undefined),
-        'exactly one of hm/oc per entry',
+          ('op' in term && term.op !== undefined),
+        'exactly one of hm/op per entry',
       ).toBe(true)
+      expect(
+        'oc' in term && term.oc !== undefined,
+        'EQL v3 rejects the legacy CLLW-ORE `oc` term',
+      ).toBe(false)
     }
 
     const decrypted = await decrypt(client, { ciphertext })
@@ -403,7 +407,8 @@ describe('eql v3 query encryption', async () => {
       expect(entry.s).toBeTypeOf('string')
       const e = entry as unknown as Record<string, unknown>
       expect(e.c).toBeUndefined()
-      expect(e.hm !== undefined || e.oc !== undefined).toBe(true)
+      expect(e.hm !== undefined || e.op !== undefined).toBe(true)
+      expect(e.oc).toBeUndefined()
     }
   })
 

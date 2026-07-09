@@ -95,12 +95,13 @@ describe('encryptBulk output structure for nested JSON', () => {
     const sv = encrypted.sv
     if (!sv) throw new Error('sv should be defined')
 
-    // Count entries by field presence. Under SteVec Standard mode (the
-    // cipherstash-client 0.34.1-alpha.7 default) numeric and string values
-    // share a single orderable field `oc`, and non-orderable values
-    // (booleans, null, arrays, objects) carry an `hm` HMAC.
+    // Count entries by field presence. Under SteVec Compat mode (the
+    // cipherstash-client default since 0.40.0) numeric and string values
+    // share a single orderable field `op` (CLLW-OPE), and non-orderable
+    // values (booleans, null, arrays, objects) carry an `hm` HMAC.
     const withSelector = sv.filter((e) => e.s !== undefined)
     const withHmac = sv.filter((e) => e.hm !== undefined)
+    const withOpeCllw = sv.filter((e) => e.op !== undefined)
     const withOreCllw = sv.filter((e) => e.oc !== undefined)
     const withArrayFlag = sv.filter((e) => e.a === true)
 
@@ -108,14 +109,17 @@ describe('encryptBulk output structure for nested JSON', () => {
     console.log(`  Total entries: ${sv.length}`)
     console.log(`  With selector (s): ${withSelector.length}`)
     console.log(`  With HMAC (hm): ${withHmac.length}`)
-    console.log(`  With ORE CLLW (oc): ${withOreCllw.length}`)
+    console.log(`  With OPE CLLW (op): ${withOpeCllw.length}`)
     console.log(`  With array flag (a): ${withArrayFlag.length}`)
 
     // All entries should have selectors
     expect(withSelector.length).toBe(sv.length)
 
-    // Scalar string and numeric values produce ORE CLLW (`oc`) entries
-    expect(withOreCllw.length).toBeGreaterThan(0)
+    // Scalar string and numeric values produce CLLW-OPE (`op`) entries
+    expect(withOpeCllw.length).toBeGreaterThan(0)
+
+    // The legacy CLLW-ORE key never appears in Compat mode
+    expect(withOreCllw.length).toBe(0)
 
     // Non-orderable values (root object, booleans, arrays) produce HMAC (`hm`) entries
     expect(withHmac.length).toBeGreaterThan(0)

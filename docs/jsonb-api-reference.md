@@ -197,20 +197,21 @@ type SteVecEntry = {
   c: string       // Per-entry ciphertext (mp_base85) — required
   a?: boolean     // Array marker
   hm?: string     // HMAC term — non-orderable leaves (objects, arrays, booleans, null)
-  oc?: string     // CLLW ORE term — orderable leaves (strings, numbers), Standard mode
+  op?: string     // CLLW OPE term — orderable leaves (strings, numbers), Compat mode (default)
+  oc?: string     // CLLW ORE term — orderable leaves, Standard mode (EQL v2 only)
 }
 ```
 
 Query payloads share the same `{ k, v, i, ... }` shape but omit `c` at the root (queries do not encrypt for storage). For `k = "ct"` queries, the payload carries exactly one of `hm`, `bf`, or `ob`. For `k = "sv"` queries, the FFI emits two shapes: selector queries (`ste_vec_selector`) carry a single tokenized `s`; containment queries (`ste_vec_term`) are emitted as full SteVec storage payloads with an `sv` array — see the *Output by Operation* table below.
 
-Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-alpha.7), each `sv` entry carries either `hm` or `oc` depending on the underlying JSON value:
+Under SteVec **Compat** mode (the default since `cipherstash-client` 0.40.0), each `sv` entry carries either `hm` or `op` depending on the underlying JSON value. EQL v3 accepts `hm` XOR `op` and rejects `oc`; Standard mode still emits `oc` (CLLW ORE) for EQL v2 / Proxy consumers.
 
 | JSON value type | SteVec entry field |
 |-----------------|--------------------|
 | Object, array, boolean, null | `hm` (HMAC-SHA256) |
-| String, number | `oc` (CLLW ORE, tagged-plaintext) |
+| String, number | `op` (CLLW OPE, tagged-plaintext) |
 
-Numeric and string values share the single `oc` orderable field — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
+Numeric and string values share the single `op` orderable field — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts. CLLW-OPE ciphertexts compare in plain byte order, so no ORE-aware operator class is needed.
 
 ### Output by Operation
 
@@ -245,7 +246,7 @@ Numeric and string values share the single `oc` orderable field — domain separ
   "sv": [
     { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
     { "s": "abc123", "hm": "def456", "c": "..." },
-    { "s": "jkl012", "oc": "pqr678", "c": "..." }
+    { "s": "jkl012", "op": "pqr678", "c": "..." }
   ]
 }
 ```
@@ -267,7 +268,7 @@ Numeric and string values share the single `oc` orderable field — domain separ
   "v": 2,
   "i": { "t": "users", "c": "profile" },
   "sv": [
-    { "s": "abc123", "oc": "ghi789", "c": "..." }
+    { "s": "abc123", "op": "ghi789", "c": "..." }
   ]
 }
 ```
@@ -287,7 +288,7 @@ envelope is `{ v: 3, i, ... }` with the shape determined by the column's
   "i": { "t": "users", "c": "profile" },
   "sv": [
     { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
-    { "s": "abc123", "oc": "ghi789", "c": "..." }
+    { "s": "abc123", "op": "ghi789", "c": "..." }
   ]
 }
 ```
@@ -300,13 +301,13 @@ entries breaks decryption.
 ```json
 {
   "sv": [
-    { "s": "abc123", "oc": "ghi789" }
+    { "s": "abc123", "op": "ghi789" }
   ]
 }
 ```
 
 The needle carries no envelope (`v`/`i`) and no per-entry ciphertexts —
-each entry is the selector plus exactly one of `hm`/`oc`, mirroring the SQL
+each entry is the selector plus exactly one of `hm`/`op`, mirroring the SQL
 cast `eql_v3.to_ste_vec_query`. Use it with the `@>`/`<@` operators against
 a `public.json` column (`WHERE doc @> $1::jsonb::eql_v3.query_jsonb`).
 
