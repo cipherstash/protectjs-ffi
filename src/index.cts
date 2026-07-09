@@ -470,7 +470,7 @@ export type TokenResultEnvelope =
  * `AccessKeyStrategy`, `OidcFederationStrategy`). Only `getToken` is required.
  *
  * `getToken` may resolve either shape — the native and WASM clients accept both
- * (see `crates/protect-ffi/src/lib.rs` and `src/wasm.rs`):
+ * (see `crates/protect-ffi/src/lib.rs` and `crates/protect-ffi/src/wasm.rs`):
  *
  * - `{ token }` — the bare payload, used by `@cipherstash/auth` <= 0.40 and by
  *   custom strategies.
