@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type {
+  AuthStrategy,
   EncryptedV3Query,
   EncryptQueryOptions,
   IndexTypeName,
@@ -77,5 +78,33 @@ describe('EncryptedV3Query', () => {
     expect(needle).toBeDefined()
     expect(selector).toBe('deadbeef')
     expect(withCiphertext).toBeDefined()
+  })
+})
+
+// `AuthStrategy` must describe the contract the native and WASM clients
+// actually implement. Since 0.28.0 both accept either a bare `{ token }` or a
+// `@byteslice/result` envelope; `@cipherstash/auth` >= 0.41 returns the latter.
+// Declaring only the bare payload made real auth strategies unassignable.
+describe('AuthStrategy', () => {
+  it('accepts the bare { token } payload (auth <= 0.40, custom strategies)', () => {
+    const strategy: AuthStrategy = {
+      getToken: async () => ({ token: 'service-token' }),
+    }
+
+    expect(typeof strategy.getToken).toBe('function')
+  })
+
+  it('accepts the Result envelope returned by @cipherstash/auth >= 0.41', () => {
+    const success: AuthStrategy = {
+      getToken: async () => ({ data: { token: 'service-token' } }),
+    }
+    const failure: AuthStrategy = {
+      getToken: async () => ({
+        failure: { type: 'NOT_AUTHENTICATED', error: new Error('nope') },
+      }),
+    }
+
+    expect(typeof success.getToken).toBe('function')
+    expect(typeof failure.getToken).toBe('function')
   })
 })
