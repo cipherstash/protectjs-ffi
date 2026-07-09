@@ -255,9 +255,16 @@ struct NewClientOpts {
 
 /// Construct a [`WasmClient`].
 ///
-/// `opts.strategy` must be an `@cipherstash/auth`-shaped object — anything
-/// with a `getToken(): Promise<{ token: string, ... }>` method works. It is
-/// required: wasm has no env / filesystem fallback path.
+/// `opts.strategy` must be an `@cipherstash/auth`-shaped object — anything with
+/// a `getToken()` method returning a `Promise` works. A non-`Promise` return is
+/// rejected with `strategy.getToken() did not return a Promise`.
+///
+/// The promise may resolve either the bare `{ token: string, ... }` payload
+/// (`@cipherstash/auth` <= 0.40 and custom strategies) or a `@byteslice/result`
+/// envelope — `{ data: { token, ... } }` on success, `{ failure }` on error
+/// (`@cipherstash/auth` >= 0.41). Both are accepted.
+///
+/// `strategy` is required: wasm has no env / filesystem fallback path.
 #[wasm_bindgen(js_name = newClient)]
 pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     // Extract `strategy` before serde — the JS function on it can't survive
