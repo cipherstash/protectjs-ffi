@@ -12,8 +12,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
+# CIP-3469: needs the first release carrying sv-level `op` (CLLW-OPE) SteVec
+# term emission (SteVecEntryTerm::Ope) + SteVecMode default Compat — bump this
+# pin to that release; the branch does not compile against 0.39.1.
 cipherstash-client = { version = "=0.39.1", features = ["tokio"] }
 cts-common = { version = "=0.39.1", default-features = false }
+# CIP-3469: needs the first eql-bindings release carrying SteVecTerm::OpeCllw
+# {op} + from_v2 `oc` rejection (UnconvertibleOreTerm) — bump this pin to that
+# release (3.0.0-alpha.4 or later).
 eql-bindings = { version = "=3.0.0-alpha.3" }
 stack-auth = { version = "=0.39.1" }
 hex = "0.4.3"

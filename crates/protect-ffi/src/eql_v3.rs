@@ -579,8 +579,8 @@ mod tests {
                         selector: "leaf".into(),
                         ciphertext: dummy_encrypted_record(),
                         is_array: Some(true),
-                        term: SteVecEntryTerm::OreCllw {
-                            ore_cllw_8: "deadbeef".into(),
+                        term: SteVecEntryTerm::Ope {
+                            ope_cllw: "deadbeef".into(),
                         },
                     },
                 ],
@@ -1233,7 +1233,7 @@ mod tests {
             assert_eq!(sv[0]["hm"], "feedface");
             assert!(sv[0]["c"].is_string());
             assert_eq!(sv[1]["s"], "leaf");
-            assert_eq!(sv[1]["oc"], "deadbeef");
+            assert_eq!(sv[1]["op"], "deadbeef");
             assert_eq!(sv[1]["a"], true);
         }
 
@@ -1368,7 +1368,7 @@ mod tests {
             assert_eq!(sv[0]["hm"], "feedface");
             assert!(sv[0].get("c").is_none(), "c is stripped from entries");
             assert_eq!(sv[1]["s"], "leaf");
-            assert_eq!(sv[1]["oc"], "deadbeef");
+            assert_eq!(sv[1]["op"], "deadbeef");
             assert!(sv[1].get("a").is_none(), "a is stripped from entries");
         }
 
