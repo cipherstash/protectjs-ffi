@@ -15,6 +15,8 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-09
+
 ### Added
 
 - **EQL v3 scalar query-term encryption (CIP-3423).** On an `eqlVersion: 3`
@@ -242,7 +244,8 @@ uses the promoted section as the GitHub release notes.
   changes).
 - Upgrade `cipherstash-client` to `0.35.0`.
 
-[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.26.0...v0.28.0
 [0.26.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.24.0...v0.25.0
