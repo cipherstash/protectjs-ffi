@@ -174,7 +174,7 @@ describe('postgres eql_v3', () => {
     await pg.query('BEGIN')
   })
 
-  test('ORDER BY the ord extractor sorts by plaintext order', async () => {
+  test('ORDER BY the ord_term_ore extractor sorts by plaintext order', async () => {
     const ciphertexts = await encryptBulk(protectClient, {
       plaintexts: [
         { plaintext: 30, column: 'score', table: 'v3pg' },
@@ -194,7 +194,7 @@ describe('postgres eql_v3', () => {
 
     const res: QueryResult<{ score: EncryptedPayload }> = await pg.query(`
       SELECT score::jsonb FROM encrypted_v3
-      ORDER BY eql_v3.ord_term(score) ASC
+      ORDER BY eql_v3.ord_term_ore(score) ASC
     `)
 
     const decrypted = await decryptBulk(protectClient, {
@@ -205,8 +205,9 @@ describe('postgres eql_v3', () => {
 
   // Real-ciphertext _ord_ope coverage (CIP-3348): cipherstash-client 0.38.1
   // emits the scalar `op` (CLLW-OPE) term, so an `ope`-indexed column can be
-  // produced end-to-end (0.38.0 dropped the term at encrypt time).
-  test('ORDER BY the ord_ope extractor sorts by plaintext order', async () => {
+  // produced end-to-end (0.38.0 dropped the term at encrypt time). The OPE
+  // extractor is the unsuffixed `ord_term`; ORE carries the `_ore` suffix.
+  test('ORDER BY the ord_term extractor sorts an ope column by plaintext order', async () => {
     const ciphertexts = await encryptBulk(protectClient, {
       plaintexts: [
         { plaintext: 30, column: 'rank', table: 'v3pg' },
@@ -226,7 +227,7 @@ describe('postgres eql_v3', () => {
 
     const res: QueryResult<{ rank: EncryptedPayload }> = await pg.query(`
       SELECT rank::jsonb FROM encrypted_v3
-      ORDER BY eql_v3.ord_ope_term(rank) ASC
+      ORDER BY eql_v3.ord_term(rank) ASC
     `)
 
     const decrypted = await decryptBulk(protectClient, {
@@ -304,7 +305,7 @@ describe('postgres eql_v3', () => {
       `
       SELECT score::jsonb FROM encrypted_v3
       WHERE score > $1::jsonb::eql_v3.query_integer_ord_ore
-      ORDER BY eql_v3.ord_term(score) ASC
+      ORDER BY eql_v3.ord_term_ore(score) ASC
       `,
       [operand],
     )
@@ -343,7 +344,7 @@ describe('postgres eql_v3', () => {
       `
       SELECT rank::jsonb FROM encrypted_v3
       WHERE rank < $1::jsonb::eql_v3.query_integer_ord_ope
-      ORDER BY eql_v3.ord_ope_term(rank) ASC
+      ORDER BY eql_v3.ord_term(rank) ASC
       `,
       [operand],
     )
