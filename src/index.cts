@@ -454,12 +454,36 @@ export type NewClientOptions = {
   eqlVersion?: 2 | 3
 }
 
+/** The token payload the native side ultimately reads. */
+export type TokenResult = { token: string }
+
+/**
+ * A `@byteslice/result` `Result` envelope, as returned by
+ * `@cipherstash/auth` >= 0.41's `getToken()`.
+ */
+export type TokenResultEnvelope =
+  | { data: TokenResult; failure?: undefined }
+  | { failure: { type?: string; error?: Error }; data?: undefined }
+
 /**
  * Auth strategy shape compatible with `@cipherstash/auth` strategies (e.g.
- * `AccessKeyStrategy`). Only `getToken` is required.
+ * `AccessKeyStrategy`, `OidcFederationStrategy`). Only `getToken` is required.
+ *
+ * `getToken` may resolve either shape — the native and WASM clients accept both
+ * (see `crates/protect-ffi/src/lib.rs` and `src/wasm.rs`):
+ *
+ * - `{ token }` — the bare payload, used by `@cipherstash/auth` <= 0.40 and by
+ *   custom strategies.
+ * - `{ data: { token } }` / `{ failure }` — the `Result` envelope, used by
+ *   `@cipherstash/auth` >= 0.41. A `failure` is reconstructed into the
+ *   corresponding `AuthError`.
+ *
+ * Both have been accepted at runtime since 0.28.0; this type previously
+ * declared only the bare payload, so a real `@cipherstash/auth` >= 0.41
+ * strategy could not be assigned to it.
  */
 export type AuthStrategy = {
-  getToken: () => Promise<{ token: string }>
+  getToken: () => Promise<TokenResult | TokenResultEnvelope>
 }
 
 /** Options passed to the native `newClient` after vocabulary normalization. */

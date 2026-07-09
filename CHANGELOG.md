@@ -67,6 +67,26 @@ uses the promoted section as the GitHub release notes.
   v3 query payload has an `sv` key must narrow first; selector results are
   plain strings.
 
+### Fixed
+
+- **`AuthStrategy` now types the contract the runtime already implements.** Both
+  the Node (Neon) and WASM clients have accepted either a bare `{ token }` or a
+  `@byteslice/result` envelope (`{ data: { token } }` / `{ failure }`) since
+  `0.28.0`, but the exported `AuthStrategy` type still declared only
+  `getToken: () => Promise<{ token: string }>`. That made every
+  `@cipherstash/auth` `>= 0.41` strategy — whose `getToken()` resolves the
+  envelope — unassignable to `newClient`'s `opts.strategy`, so downstream
+  consumers hit `TS2322` on code that runs correctly. `getToken` may now resolve
+  `TokenResult | TokenResultEnvelope`; both are exported. The bare shape is
+  unchanged, so this is backward compatible.
+
+  The WASM `newClient` doc comment said the same thing and has been corrected.
+
+  Nothing here exercised the mismatch: `integration-tests` pins
+  `@cipherstash/auth ^0.39.0` (pre-`Result`), so `oidc-federation.test.ts`
+  compiled against the old shape. Added type-level coverage in
+  `src/index.types.test.ts` asserting both shapes assign.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added
