@@ -3,8 +3,10 @@
 //! protect-ffi historically speaks the EQL v2.3 wire format (`{v: 2, k, i, c,
 //! …}`). The `eql_v3` schema generation replaces the single
 //! `eql_v2_encrypted` column type with per-capability column domains
-//! (`public.text_eq`, `public.integer_ord_ore`, `public.json`, …), their
-//! term-only query twins (`eql_v3.query_text_eq`, `eql_v3.query_jsonb`, …)
+//! (`public.eql_v3_text_eq`, `public.eql_v3_integer_ord_ore`,
+//! `public.eql_v3_json`, …), their term-only query twins
+//! (`eql_v3.query_text_eq`, `eql_v3.query_jsonb`, …) — unprefixed, since the
+//! `eql_v3` schema already versions them —
 //! and a new envelope: scalars are `{v: 3, i, c, <terms>}` with no `k`
 //! discriminator; SteVec (encrypted JSONB) documents keep it
 //! (`{v: 3, k: "sv", i, sv}`).
@@ -16,9 +18,12 @@
 //! incrementally.
 
 use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload, SteVecQueryTerm};
-use cipherstash_client::schema::{column::ColumnType, column::IndexType, ColumnConfig};
+use cipherstash_client::schema::{
+    column::ColumnType, column::IndexType, column::SteVecMode, ColumnConfig,
+};
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
 use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
+use eql_bindings::v3::domain_type::PUBLIC_TYPNAME_PREFIX;
 use eql_bindings::v3::jsonb::SteVecDocument;
 use eql_bindings::v3::terms::Selector;
 use eql_bindings::v3::{DomainPayload, QueryPayload};
@@ -79,6 +84,11 @@ struct ConfiguredTerms {
     op: bool,
     bf: bool,
     sv: bool,
+    /// The orderable-term primitive the `ste_vec` index emits, when `sv`.
+    /// `Compat` (the config default) emits CLLW-OPE `op`; the legacy
+    /// `Standard` emits CLLW-ORE `oc`. Only `op` is convertible to v3 — see
+    /// [`target_domain_for_column`].
+    sv_mode: Option<SteVecMode>,
 }
 
 impl ConfiguredTerms {
@@ -90,7 +100,10 @@ impl ConfiguredTerms {
                 IndexType::Ore => terms.ob = true,
                 IndexType::Ope => terms.op = true,
                 IndexType::Match { .. } => terms.bf = true,
-                IndexType::SteVec { .. } => terms.sv = true,
+                IndexType::SteVec { mode, .. } => {
+                    terms.sv = true;
+                    terms.sv_mode = Some(mode);
+                }
             }
         }
         terms
@@ -119,6 +132,14 @@ fn v3_family(cast_type: ColumnType) -> Option<&'static str> {
     }
 }
 
+/// Qualify a bare family/suffix name with the version prefix every
+/// public-schema column domain's typname carries (`text_eq` →
+/// `eql_v3_text_eq`). Query twins stay unprefixed — eql-bindings strips it
+/// back off when it derives `query_<name>` from the stored domain.
+fn v3_domain(bare: &str) -> String {
+    format!("{PUBLIC_TYPNAME_PREFIX}{bare}")
+}
+
 fn no_v3_domain(column: &str, reason: impl Into<String>, hint: impl Into<String>) -> Error {
     Error::NoV3Domain {
         column: column.to_string(),
@@ -127,12 +148,12 @@ fn no_v3_domain(column: &str, reason: impl Into<String>, hint: impl Into<String>
     }
 }
 
-/// Select the (unqualified) `eql_v3` domain for a column.
+/// Select the `eql_v3` column domain for a column, prefixed (`eql_v3_text_eq`).
 ///
 /// Every v2 index term is optional on the wire, so eql-bindings requires the
 /// caller to name the target domain — this derives it from the column
-/// configuration. Candidates are tried richest-first (`search` > `ord_ore` >
-/// `ord_ope` > `match` > `eq` > storage-only), and the winner must then cover
+/// configuration. Candidates are tried richest-first (`search_ore` > `search` >
+/// `ord_ore` > `ord_ope` > `match` > `eq` > storage-only), and the winner must then cover
 /// every configured CAPABILITY or the column errors ([`Error::NoV3Domain`])
 /// rather than silently stripping a term from stored rows:
 ///
@@ -144,9 +165,9 @@ fn no_v3_domain(column: &str, reason: impl Into<String>, hint: impl Into<String>
 ///   `unique` + `ore` + `ope` selects `_ord_ore` (ordering survives via
 ///   `ob`);
 /// - match (`bf`) is covered only by a domain carrying `bf`, so text
-///   combinations no single domain spans (`unique` + `match`,
-///   `unique` + `ope` + `match`, `ore` + `match`, …) error instead of
-///   dropping a term;
+///   combinations no single domain spans (`unique` + `match`, `ore` + `match`,
+///   …) error instead of dropping a term; `unique` + `ore` + `match` reaches
+///   `text_search_ore` and `unique` + `ope` + `match` reaches `text_search`;
 /// - text ordering domains require `hm` alongside `ob`/`op`, so ordered text
 ///   without a `unique` index cannot be represented and errors;
 /// - a column whose configured terms would ALL be dropped (bool with any
@@ -167,26 +188,41 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
     })?;
 
     if family == "json" {
-        // eql_v3.json carries only sv. Upstream config accepts unique/ore/ope
+        // eql_v3_json carries only sv. Upstream config accepts unique/ore/ope
         // alongside ste_vec on a JSON column, so selecting the domain anyway
         // would silently drop those terms — fail closed instead.
         if terms.hm || terms.ob || terms.op || terms.bf {
             return Err(no_v3_domain(
                 column,
-                "eql_v3.json carries only ste_vec terms; the other configured \
+                "eql_v3_json carries only ste_vec terms; the other configured \
                  indexes would be silently dropped",
                 "Remove the non-ste_vec indexes from this JSON column or use \
                  eqlVersion 2.",
             ));
         }
-        return if terms.sv {
-            Ok("json".to_string())
-        } else {
-            Err(no_v3_domain(
+        if !terms.sv {
+            return Err(no_v3_domain(
                 column,
                 "EQL v3 has no scalar jsonb domain for an index-less JSON column",
                 "Add a 'ste_vec' index or use eqlVersion 2.",
-            ))
+            ));
+        }
+        // v3 orders SteVec entries by the CLLW-OPE `op` term under native byte
+        // comparison. A `Standard`-mode (legacy v2) ste_vec emits
+        // CLLW-ORE `oc`, whose ciphertext bytes do not order bytewise —
+        // eql-bindings refuses to convert it rather than silently misorder, and
+        // no mechanical conversion exists. Catch it here, where the column name
+        // and a fix are in hand, instead of at encrypt time.
+        return match terms.sv_mode {
+            Some(SteVecMode::Compat) => Ok(v3_domain("json")),
+            _ => Err(no_v3_domain(
+                column,
+                "eql_v3_json orders ste_vec entries by the CLLW-OPE 'op' term, but a \
+                 'standard' mode ste_vec index emits CLLW-ORE 'oc' terms, which cannot \
+                 be converted",
+                "Set the ste_vec index mode to 'compat' (existing rows must be \
+                 re-encrypted) or use eqlVersion 2.",
+            )),
         };
     }
 
@@ -198,7 +234,7 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
                 "Remove the indexes or use eqlVersion 2.",
             ))
         } else {
-            Ok("boolean".to_string())
+            Ok(v3_domain("boolean"))
         };
     }
 
@@ -218,13 +254,26 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
              eqlVersion 2.",
         ));
     }
-    // The richest candidate domain and the terms it actually carries.
+    // The richest candidate domain and the terms it actually carries. The two
+    // search domains differ only in their ordering primitive — `_search_ore`
+    // carries `ob`, `_search` carries `op` — so ORE is preferred when both are
+    // configured, matching the `_ord_ore` over `_ord_ope` preference below.
     let (suffix, carried) = if is_text && terms.hm && terms.ob && terms.bf {
+        (
+            "_search_ore",
+            ConfiguredTerms {
+                hm: true,
+                ob: true,
+                bf: true,
+                ..Default::default()
+            },
+        )
+    } else if is_text && terms.hm && terms.op && terms.bf {
         (
             "_search",
             ConfiguredTerms {
                 hm: true,
-                ob: true,
+                op: true,
                 bf: true,
                 ..Default::default()
             },
@@ -275,7 +324,7 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
              or use eqlVersion 2.",
         ));
     } else {
-        return Ok(family.to_string());
+        return Ok(v3_domain(family));
     };
 
     // Fail closed if the candidate would DROP a configured capability.
@@ -316,12 +365,13 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
                 dropped.join(", ")
             ),
             "No single eql_v3 domain covers this index combination — for \
-             text, 'unique' + 'ore' + 'match' reaches text_search (the \
-             richest domain). Adjust the indexes to fit one domain, split \
+             text, 'unique' + 'ore' + 'match' reaches text_search_ore and \
+             'unique' + 'ope' + 'match' reaches text_search (the richest \
+             domains). Adjust the indexes to fit one domain, split \
              the capabilities across separate columns, or use eqlVersion 2.",
         ));
     }
-    Ok(format!("{family}{suffix}"))
+    Ok(v3_domain(&format!("{family}{suffix}")))
 }
 
 /// A stored payload in whichever wire format the client is configured for.
@@ -579,11 +629,29 @@ mod tests {
                         selector: "leaf".into(),
                         ciphertext: dummy_encrypted_record(),
                         is_array: Some(true),
-                        term: SteVecEntryTerm::OreCllw {
-                            ore_cllw_8: "deadbeef".into(),
+                        // CLLW-OPE: the only sv ordering term v3 can carry.
+                        term: SteVecEntryTerm::Ope {
+                            ope_cllw: "deadbeef".into(),
                         },
                     },
                 ],
+            })
+        }
+
+        /// The same document with a CLLW-ORE (`oc`) ordering term, as a
+        /// `standard`-mode ste_vec index emits. Unconvertible to v3.
+        pub(super) fn ore_ste_vec_payload() -> EqlCiphertext {
+            EqlCiphertext::SteVec(SteVecPayload {
+                version: EQL_SCHEMA_VERSION,
+                identifier: EqlIdentifier::new("users", "profile"),
+                ste_vec: vec![SteVecEntry {
+                    selector: "leaf".into(),
+                    ciphertext: dummy_encrypted_record(),
+                    is_array: Some(true),
+                    term: SteVecEntryTerm::OreCllw {
+                        ore_cllw_8: "deadbeef".into(),
+                    },
+                }],
             })
         }
 
@@ -676,16 +744,32 @@ mod tests {
         }
 
         fn ste_vec() -> Index {
+            ste_vec_with_mode(SteVecMode::Compat)
+        }
+
+        fn ste_vec_with_mode(mode: SteVecMode) -> Index {
             Index::new(IndexType::SteVec {
                 prefix: "t/c".to_string(),
                 term_filters: vec![],
                 array_index_mode: Default::default(),
-                mode: Default::default(),
+                mode,
             })
         }
 
+        /// The selected domain with the `eql_v3_` typname prefix stripped, so
+        /// the cases below assert the family/suffix SELECTION and nothing
+        /// else. That every name carries the prefix is pinned separately by
+        /// [`selected_domains_carry_the_public_typname_prefix`], and that the
+        /// prefixed names resolve upstream by
+        /// [`every_selected_domain_resolves_in_the_v3_inventory`].
         fn domain(cast_type: ColumnType, indexes: Vec<Index>) -> String {
-            target_domain_for_column(&column(cast_type, indexes)).unwrap()
+            let selected = target_domain_for_column(&column(cast_type, indexes)).unwrap();
+            selected
+                .strip_prefix(PUBLIC_TYPNAME_PREFIX)
+                .unwrap_or_else(|| {
+                    panic!("domain {selected:?} lacks the {PUBLIC_TYPNAME_PREFIX} prefix")
+                })
+                .to_string()
         }
 
         fn domain_err(cast_type: ColumnType, indexes: Vec<Index>) -> String {
@@ -726,10 +810,34 @@ mod tests {
         }
 
         #[test]
-        fn text_unique_ore_match_is_search() {
+        fn text_unique_ore_match_is_search_ore() {
+            // The ORE search domain is the `_ore`-suffixed one; the bare
+            // `text_search` carries the OPE `op` term instead.
             assert_eq!(
                 domain(ColumnType::Text, vec![unique(), ore(), match_index()]),
+                "text_search_ore"
+            );
+        }
+
+        #[test]
+        fn text_unique_ope_match_is_search() {
+            assert_eq!(
+                domain(ColumnType::Text, vec![unique(), ope(), match_index()]),
                 "text_search"
+            );
+        }
+
+        #[test]
+        fn text_unique_ore_ope_match_prefers_search_ore() {
+            // Both ordering terms configured: ORE wins, mirroring the
+            // `_ord_ore` over `_ord_ope` preference. Dropping `op` is allowed
+            // because the ordering capability survives through `ob`.
+            assert_eq!(
+                domain(
+                    ColumnType::Text,
+                    vec![unique(), ore(), ope(), match_index()]
+                ),
+                "text_search_ore"
             );
         }
 
@@ -753,15 +861,6 @@ mod tests {
             assert!(err.contains("test_column"), "names the column: {err}");
             assert!(err.contains("hm"), "names the dropped term: {err}");
             assert!(err.contains("eqlVersion 2"), "offers a way out: {err}");
-        }
-
-        #[test]
-        fn text_unique_ope_and_match_is_an_error() {
-            // text_ord_ope carries hm + op but not bf — the configured match
-            // capability would be silently dropped.
-            let err = domain_err(ColumnType::Text, vec![unique(), ope(), match_index()]);
-            assert!(err.contains("test_column"), "names the column: {err}");
-            assert!(err.contains("bf"), "names the dropped term: {err}");
         }
 
         #[test]
@@ -916,8 +1015,40 @@ mod tests {
         }
 
         #[test]
-        fn json_with_ste_vec_is_json() {
+        fn json_with_compat_mode_ste_vec_is_json() {
             assert_eq!(domain(ColumnType::Json, vec![ste_vec()]), "json");
+        }
+
+        #[test]
+        fn json_with_standard_mode_ste_vec_is_an_error() {
+            // `standard` (the legacy v2 mode) emits CLLW-ORE `oc`
+            // sv terms. v3 orders sv entries by the CLLW-OPE `op` term under
+            // native byte comparison, and ORE ciphertext bytes do not order
+            // that way — converting would silently misorder every entry, so
+            // eql-bindings refuses. Fail at config time, not encrypt time.
+            let err = domain_err(
+                ColumnType::Json,
+                vec![ste_vec_with_mode(SteVecMode::Standard)],
+            );
+            assert!(err.contains("test_column"), "names the column: {err}");
+            assert!(err.contains("compat"), "names the fix: {err}");
+        }
+
+        #[test]
+        fn ste_vec_mode_default_is_compat_so_json_v3_works_unconfigured() {
+            // cipherstash-config 0.40.0 flipped this default from `standard`
+            // (CLLW-ORE) to `compat` (CLLW-OPE) — the mode v3 requires. A
+            // JSON column that names no mode therefore converts. If the
+            // default ever flips back, the guard above turns v3 JSON into a
+            // config error, so pin it here rather than discover it downstream.
+            assert_eq!(SteVecMode::default(), SteVecMode::Compat);
+            assert_eq!(
+                domain(
+                    ColumnType::Json,
+                    vec![ste_vec_with_mode(Default::default())]
+                ),
+                "json"
+            );
         }
 
         #[test]
@@ -994,17 +1125,39 @@ mod tests {
                 (ColumnType::Json, vec![ste_vec()]),
             ];
             for (cast_type, indexes) in cases {
-                let name = domain(cast_type, indexes);
+                // The prefixed name as emitted, NOT the stripped `domain()`
+                // helper: it is the qualified typname that must resolve.
+                let name = target_domain_for_column(&column(cast_type, indexes)).unwrap();
                 assert!(
                     TargetDomain::parse(&name).is_ok(),
                     "domain {name:?} must resolve in the eql-bindings inventory"
                 );
             }
         }
+
+        #[test]
+        fn selected_domains_carry_the_public_typname_prefix() {
+            // Every public-schema column domain is versioned (`eql_v3_text_eq`,
+            // `eql_v3_json`); the query twins eql-bindings derives from them
+            // are not. Storage-only, suffixed and json domains all take it.
+            for (cast_type, indexes, expected) in [
+                (ColumnType::Text, vec![], "eql_v3_text"),
+                (ColumnType::Text, vec![unique()], "eql_v3_text_eq"),
+                (ColumnType::Boolean, vec![], "eql_v3_boolean"),
+                (ColumnType::Json, vec![ste_vec()], "eql_v3_json"),
+            ] {
+                assert_eq!(
+                    target_domain_for_column(&column(cast_type, indexes)).unwrap(),
+                    expected
+                );
+            }
+        }
     }
 
     mod storage_output {
-        use super::support::{column, ope_scalar_payload, scalar_payload, ste_vec_payload};
+        use super::support::{
+            column, ope_scalar_payload, ore_ste_vec_payload, scalar_payload, ste_vec_payload,
+        };
         use super::*;
         use cipherstash_client::schema::column::{Index, IndexType, Tokenizer};
 
@@ -1058,7 +1211,10 @@ mod tests {
             let scalar_cfg = text_search_column();
             let scalar_ct = scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]));
             let scalar_v2 = serde_json::to_value(&scalar_ct).unwrap();
-            let scalar_target = TargetDomain::parse("text_search").unwrap();
+            // Derived, not spelled: the point is that the typed and
+            // shape-erased conversions agree on the SAME domain.
+            let scalar_target =
+                TargetDomain::parse(&target_domain_for_column(&scalar_cfg).unwrap()).unwrap();
 
             let output = storage_output(scalar_ct, EqlVersion::V3, &scalar_cfg).unwrap();
             assert_eq!(
@@ -1072,7 +1228,7 @@ mod tests {
                     prefix: "users/profile".to_string(),
                     term_filters: vec![],
                     array_index_mode: Default::default(),
-                    mode: Default::default(),
+                    mode: SteVecMode::Compat,
                 })],
             );
             let sv_v2 = serde_json::to_value(ste_vec_payload()).unwrap();
@@ -1215,7 +1371,7 @@ mod tests {
                     prefix: "users/profile".to_string(),
                     term_filters: vec![],
                     array_index_mode: Default::default(),
-                    mode: Default::default(),
+                    mode: SteVecMode::Compat,
                 })],
             );
             let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
@@ -1233,13 +1389,39 @@ mod tests {
             assert_eq!(sv[0]["hm"], "feedface");
             assert!(sv[0]["c"].is_string());
             assert_eq!(sv[1]["s"], "leaf");
-            assert_eq!(sv[1]["oc"], "deadbeef");
+            assert_eq!(sv[1]["op"], "deadbeef");
             assert_eq!(sv[1]["a"], true);
         }
 
         #[test]
+        fn v3_ste_vec_conversion_fails_closed_on_an_ore_entry_term() {
+            // Defense in depth: target_domain_for_column already rejects a
+            // `standard`-mode column, so this payload should be unreachable.
+            // If an `oc` entry ever does arrive (a mode change with rows
+            // already written under the old mode), conversion must still
+            // refuse rather than emit a v3 document ordered by ORE bytes.
+            let cfg = column(
+                ColumnType::Json,
+                vec![Index::new(IndexType::SteVec {
+                    prefix: "users/profile".to_string(),
+                    term_filters: vec![],
+                    array_index_mode: Default::default(),
+                    mode: SteVecMode::Compat,
+                })],
+            );
+            let err = storage_output(ore_ste_vec_payload(), EqlVersion::V3, &cfg)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.starts_with("EQL v3 conversion failed"),
+                "carries the conversion-failure prefix: {err}"
+            );
+            assert!(err.contains("re-encrypt"), "names the remedy: {err}");
+        }
+
+        #[test]
         fn v3_conversion_fails_closed_when_a_required_term_is_missing() {
-            // text_search requires hm + ob + bf; a payload missing bf must
+            // text_search_ore requires hm + ob + bf; a payload missing bf must
             // not silently degrade.
             let result = storage_output(
                 scalar_payload(Some("aa"), None, Some(vec!["bb"])),
@@ -1312,7 +1494,7 @@ mod tests {
                     prefix: "users/profile".to_string(),
                     term_filters: vec![],
                     array_index_mode: Default::default(),
-                    mode: Default::default(),
+                    mode: SteVecMode::Compat,
                 })],
             )
         }
@@ -1368,7 +1550,7 @@ mod tests {
             assert_eq!(sv[0]["hm"], "feedface");
             assert!(sv[0].get("c").is_none(), "c is stripped from entries");
             assert_eq!(sv[1]["s"], "leaf");
-            assert_eq!(sv[1]["oc"], "deadbeef");
+            assert_eq!(sv[1]["op"], "deadbeef");
             assert!(sv[1].get("a").is_none(), "a is stripped from entries");
         }
 
@@ -1396,7 +1578,11 @@ mod tests {
 
             let scalar_ct = scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]));
             let scalar_v2 = serde_json::to_value(&scalar_ct).unwrap();
-            let scalar_target = TargetDomain::parse("text_search").unwrap();
+            // from_v2_query takes the STORED domain and derives the query twin
+            // (`eql_v3_text_search_ore` → `query_text_search_ore`) itself.
+            let scalar_target =
+                TargetDomain::parse(&target_domain_for_column(&text_search_column()).unwrap())
+                    .unwrap();
             let erased = from_v2_query(&scalar_v2, scalar_target).unwrap();
 
             let output = query_output(
@@ -1601,7 +1787,7 @@ mod tests {
                     prefix: "users/profile".to_string(),
                     term_filters: vec![],
                     array_index_mode: Default::default(),
-                    mode: Default::default(),
+                    mode: SteVecMode::Compat,
                 })],
             );
             let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();

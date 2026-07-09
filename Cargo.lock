@@ -516,9 +516,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-client"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edb995ea7c946bb04240b1bb91544a634a0ac6621a877d17a5fe5ae73cead550"
+checksum = "1d1c75d9ba026320879f9d6ff47f8e01fefc86598a749844b253d8323deaa30d"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -577,9 +577,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-config"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edf90f16982a22dd730faa559ecc6008316a7ead3793565299efaa0176f3952a"
+checksum = "cb6be4e774d3f59f416ec6afc18573f1b826a0cee4beb2051c915a08c9fb2a00"
 dependencies = [
  "bitflags",
  "serde",
@@ -589,9 +589,9 @@ dependencies = [
 
 [[package]]
 name = "cipherstash-core"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16ab771158a6112d26dcc958ec9d8489827d371b79b8f0689800d561927e78db"
+checksum = "a3d668a69d76566f3631c4271d534e4c0c8d36e53b3e9441a6d312961ecebde3"
 dependencies = [
  "getrandom 0.2.17",
  "hmac",
@@ -808,9 +808,9 @@ dependencies = [
 
 [[package]]
 name = "cts-common"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67ba90f74dc0f13a2c49555372dc05c7f85bbe78176efcf232d736dd4b609132"
+checksum = "213c68ee76dad1b35d7bad7d1c0d937a3579608bc0cc43f0892765506e947342"
 dependencies = [
  "arrayvec",
  "base32",
@@ -1060,9 +1060,9 @@ dependencies = [
 
 [[package]]
 name = "eql-bindings"
-version = "3.0.0-alpha.3"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e21547d3ca996f15e503439c8e58bcfb60996a994b827cca14e7da0a189d10d3"
+checksum = "1e5f74b509a0e4b00790f29f65fb6894c012653c8dc6be975eacc39ed91c630c"
 dependencies = [
  "schemars",
  "serde",
@@ -3255,9 +3255,9 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stack-auth"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f6ce6f8de65558c429ae62a6cd18ff9d526a62feb2f0fd2574a2d8e60e2d757"
+checksum = "cce8d3542baca1534ab2433045783b942e27a0316c6fe4cccce5fa486611d5a7"
 dependencies = [
  "aquamarine",
  "base64",
@@ -3283,9 +3283,9 @@ dependencies = [
 
 [[package]]
 name = "stack-profile"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "555cd05d5b20222501b3149d266ceb2551b076067e366526452d725fa44797dd"
+checksum = "bb53230626882275c47a5dd8654a65e5620f23436cc97e0a37493871c4a638c6"
 dependencies = [
  "dirs",
  "gethostname",
@@ -4828,9 +4828,9 @@ dependencies = [
 
 [[package]]
 name = "zerokms-protocol"
-version = "0.12.22"
+version = "0.12.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b7a50297251fa6bf9662e8f78657773fab3f4fc78095909da286fa6c8967d39"
+checksum = "1a8ac74829619f2d428c9c098cd74da7a02e08e0e14efcd596d79527e2e82619"
 dependencies = [
  "base64",
  "cipherstash-config",

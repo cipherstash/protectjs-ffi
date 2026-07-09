@@ -19,8 +19,8 @@ import {
   type SteVecQuery,
   type TextEq,
   type TextEqQuery,
-  type TextSearch,
-  type TextSearchQuery,
+  type TextSearchOre,
+  type TextSearchOreQuery,
   type TimestampOrdOre,
   decrypt,
   decryptBulk,
@@ -146,8 +146,8 @@ describe('eql v3 scalar round-trips', async () => {
     {
       column: 'email',
       plaintext: 'v3@example.com',
-      domain: 'text_search',
-      keys: v3WireKeys<TextSearch>()('v', 'i', 'c', 'hm', 'ob', 'bf'),
+      domain: 'text_search_ore',
+      keys: v3WireKeys<TextSearchOre>()('v', 'i', 'c', 'hm', 'ob', 'bf'),
     },
     // unique-only text carries hm only
     {
@@ -438,8 +438,8 @@ describe('eql v3 query encryption', async () => {
       column: 'email',
       plaintext: 'v3@example.com',
       indexType: 'unique',
-      domain: 'text_search',
-      keys: v3WireKeys<TextSearchQuery>()('v', 'i', 'hm', 'ob', 'bf'),
+      domain: 'text_search_ore',
+      keys: v3WireKeys<TextSearchOreQuery>()('v', 'i', 'hm', 'ob', 'bf'),
     },
     // match on the same column: identical operand — tracks the column
     // domain, not the queried index
@@ -447,8 +447,8 @@ describe('eql v3 query encryption', async () => {
       column: 'email',
       plaintext: 'example',
       indexType: 'match',
-      domain: 'text_search',
-      keys: v3WireKeys<TextSearchQuery>()('v', 'i', 'hm', 'ob', 'bf'),
+      domain: 'text_search_ore',
+      keys: v3WireKeys<TextSearchOreQuery>()('v', 'i', 'hm', 'ob', 'bf'),
     },
     {
       column: 'name',
@@ -547,7 +547,7 @@ describe('eql v3 query encryption', async () => {
 
     expect(results).toHaveLength(4)
     expect(Object.keys(expectV3QueryOperand(results[0])).sort()).toEqual(
-      v3WireKeys<TextSearchQuery>()('v', 'i', 'hm', 'ob', 'bf'),
+      v3WireKeys<TextSearchOreQuery>()('v', 'i', 'hm', 'ob', 'bf'),
     )
     const needle = results[1] as Record<string, unknown>
     expect(needle.v).toBeUndefined()

@@ -8,7 +8,7 @@ import {
   type IntegerOrdOreQuery,
   type TextEq,
   type TextEqQuery,
-  type TextSearchQuery,
+  type TextSearchOreQuery,
   decrypt,
   decryptBulk,
   encrypt,
@@ -27,8 +27,8 @@ import { v3WireKeys } from './common'
 //
 // The config -> eql_v3 domain mapping is asserted, not assumed: each
 // payload's exact key set is checked against the vendored domain type
-// before INSERT (below), and the live domain CHECK on the public.text_eq /
-// public.integer_ord_ore / public.integer_ord_ope columns validates the
+// before INSERT (below), and the live domain CHECK on the public.eql_v3_text_eq
+// / public.eql_v3_integer_ord_ore / public.eql_v3_integer_ord_ope columns validates the
 // required keys on INSERT.
 const encryptConfig: EncryptConfig = {
   v: 1,
@@ -66,7 +66,9 @@ const integerOrdOpeKeys = v3WireKeys<IntegerOrdOpe>()('v', 'i', 'c', 'op')
 
 // Query operands are the term-only twins: no `c`.
 const textEqQueryKeys = v3WireKeys<TextEqQuery>()('v', 'i', 'hm')
-const textSearchQueryKeys = v3WireKeys<TextSearchQuery>()(
+// `bio` is unique + ore + match, so it lands on the ORE search domain: the
+// bare text_search carries the OPE `op` term instead of `ob`.
+const textSearchOreQueryKeys = v3WireKeys<TextSearchOreQuery>()(
   'v',
   'i',
   'hm',
@@ -94,11 +96,11 @@ describe('postgres eql_v3', () => {
     await pg.query(`
       CREATE TABLE encrypted_v3 (
         id SERIAL PRIMARY KEY,
-        email public.text_eq,
-        score public.integer_ord_ore,
-        rank public.integer_ord_ope,
-        bio public.text_search,
-        profile public.json
+        email public.eql_v3_text_eq,
+        score public.eql_v3_integer_ord_ore,
+        rank public.eql_v3_integer_ord_ope,
+        bio public.eql_v3_text_search_ore,
+        profile public.eql_v3_json
       )
     `)
 
@@ -352,7 +354,7 @@ describe('postgres eql_v3', () => {
     expect(decrypted).toEqual([10, 20])
   })
 
-  test('match: a query_text_search operand finds rows containing the term', async () => {
+  test('match: a query_text_search_ore operand finds rows containing the term', async () => {
     const ciphertexts = await encryptBulk(protectClient, {
       plaintexts: [
         {
@@ -373,7 +375,7 @@ describe('postgres eql_v3', () => {
       ciphertexts,
     )
 
-    // The operand carries the FULL text_search term set (hm + ob + bf),
+    // The operand carries the FULL text_search_ore term set (hm + ob + bf),
     // whichever indexType was queried — the bf term drives `@>` here.
     const operand = await encryptQuery(protectClient, {
       plaintext: 'quick',
@@ -381,12 +383,14 @@ describe('postgres eql_v3', () => {
       table: 'v3pg',
       indexType: 'match',
     })
-    expect(Object.keys(operand as object).sort()).toEqual(textSearchQueryKeys)
+    expect(Object.keys(operand as object).sort()).toEqual(
+      textSearchOreQueryKeys,
+    )
 
     const res: QueryResult<{ bio: EncryptedPayload }> = await pg.query(
       `
       SELECT bio::jsonb FROM encrypted_v3
-      WHERE bio @> $1::jsonb::eql_v3.query_text_search
+      WHERE bio @> $1::jsonb::eql_v3.query_text_search_ore
       `,
       [operand],
     )

@@ -443,7 +443,8 @@ export type NewClientOptions = {
    *
    * With `3`, {@link encrypt} / {@link encryptBulk} return {@link
    * EncryptedV3} payloads for the `eql_v3` per-capability column domains
-   * (`public.text_eq`, `public.integer_ord_ore`, `public.json`, …), derived
+   * (`public.eql_v3_text_eq`, `public.eql_v3_integer_ord_ore`,
+   * `public.eql_v3_json`, …), derived
    * from each column's `cast_as` + indexes, and {@link encryptQuery} /
    * {@link encryptQueryBulk} return {@link EncryptedV3Query} operands:
    * term-only scalar operands for the `eql_v3.query_<name>` twins, the

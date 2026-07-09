@@ -4,12 +4,12 @@
 import type { BloomFilter } from "./BloomFilter";
 import type { Hmac256 } from "./Hmac256";
 import type { Identifier } from "./Identifier";
-import type { OpeCllw } from "./OpeCllw";
+import type { OreBlock256 } from "./OreBlock256";
 import type { SchemaVersion } from "./SchemaVersion";
 
 /**
- * `eql_v3.query_text_search` — search domain query operand.
+ * `eql_v3.query_text_search_ore` — search domain query operand.
  *
- * Operators: `=` `<>` `<` `<=` `>` `>=` `@>` `<@`. Required keys: `v` `i` `hm` `op` `bf`.
+ * Operators: `=` `<>` `<` `<=` `>` `>=` `@>` `<@`. Required keys: `v` `i` `hm` `ob` `bf`.
  */
-export type TextSearchQuery = { v: SchemaVersion, i: Identifier, hm: Hmac256, op: OpeCllw, bf: BloomFilter, };
+export type TextSearchOreQuery = { v: SchemaVersion, i: Identifier, hm: Hmac256, ob: OreBlock256, bf: BloomFilter, };
