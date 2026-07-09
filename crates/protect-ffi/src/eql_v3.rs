@@ -19,7 +19,8 @@
 
 use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload, SteVecQueryTerm};
 use cipherstash_client::schema::{
-    column::ColumnType, column::IndexType, column::SteVecMode, ColumnConfig,
+    column::ColumnType, column::IndexType, column::SteVecMode, CanonicalEncryptionConfig,
+    ColumnConfig, Identifier,
 };
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
 use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
@@ -29,6 +30,7 @@ use eql_bindings::v3::terms::Selector;
 use eql_bindings::v3::{DomainPayload, QueryPayload};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use crate::Error;
 
@@ -211,8 +213,9 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
         // comparison. A `Standard`-mode (legacy v2) ste_vec emits
         // CLLW-ORE `oc`, whose ciphertext bytes do not order bytewise —
         // eql-bindings refuses to convert it rather than silently misorder, and
-        // no mechanical conversion exists. Catch it here, where the column name
-        // and a fix are in hand, instead of at encrypt time.
+        // no mechanical conversion exists. Catch it here:
+        // [`ResolvedEncryptConfig::build`] runs this at client construction, so
+        // the column name and a fix are in hand before any row is encrypted.
         return match terms.sv_mode {
             Some(SteVecMode::Compat) => Ok(v3_domain("json")),
             _ => Err(no_v3_domain(
@@ -397,19 +400,17 @@ pub(crate) enum EncryptedOutput {
 
 /// Wrap a Store-mode ciphertext in the client's configured wire format:
 /// v2 passes through untouched; v3 converts via
-/// [`eql_bindings::from_v2::from_v2_typed`] against the domain selected from
-/// the column configuration, keeping the strictly parsed [`DomainPayload`].
+/// [`eql_bindings::from_v2::from_v2_typed`] against the column's domain,
+/// resolved at client build, keeping the strictly parsed [`DomainPayload`].
 pub(crate) fn storage_output(
     ciphertext: EqlCiphertext,
-    eql_version: EqlVersion,
-    column_config: &ColumnConfig,
+    target: OutputTarget,
 ) -> Result<EncryptedOutput, Error> {
-    match eql_version {
-        EqlVersion::V2 => Ok(EncryptedOutput::V2(Box::new(ciphertext))),
-        EqlVersion::V3 => {
-            let target = v3_target_for_column(column_config)?;
+    match target {
+        OutputTarget::V2 => Ok(EncryptedOutput::V2(Box::new(ciphertext))),
+        OutputTarget::V3(domain) => {
             let v2_value = serde_json::to_value(&ciphertext)?;
-            Ok(EncryptedOutput::V3(from_v2_typed(&v2_value, target)?))
+            Ok(EncryptedOutput::V3(from_v2_typed(&v2_value, domain)?))
         }
     }
 }
@@ -445,20 +446,13 @@ pub(crate) enum QueryOutput {
 /// ciphertexts, exactly like the SQL cast eql_v3.to_ste_vec_query). The only
 /// Query-mode payload with a v3 meaning is the selector, which flattens to
 /// its bare selector hash.
-pub(crate) fn query_output(
-    output: EqlOutput,
-    eql_version: EqlVersion,
-    column_config: &ColumnConfig,
-) -> Result<QueryOutput, Error> {
-    match eql_version {
-        EqlVersion::V2 => Ok(QueryOutput::V2(Box::new(output))),
-        EqlVersion::V3 => match output {
+pub(crate) fn query_output(output: EqlOutput, target: OutputTarget) -> Result<QueryOutput, Error> {
+    match target {
+        OutputTarget::V2 => Ok(QueryOutput::V2(Box::new(output))),
+        OutputTarget::V3(domain) => match output {
             EqlOutput::Store(ciphertext) => {
                 let v2_value = serde_json::to_value(&ciphertext)?;
-                Ok(QueryOutput::V3(from_v2_query_typed(
-                    &v2_value,
-                    v3_target_for_column(column_config)?,
-                )?))
+                Ok(QueryOutput::V3(from_v2_query_typed(&v2_value, domain)?))
             }
             EqlOutput::Query(EqlQueryPayload::SteVec(payload)) => match payload.term {
                 SteVecQueryTerm::Selector { selector } => {
@@ -545,8 +539,25 @@ pub(crate) fn is_encrypted_value(value: &serde_json::Value) -> bool {
 ///
 /// [`target_domain_for_column`] only ever emits inventory names (pinned by a
 /// unit test), so a parse failure here is a protect-ffi bug, not user error.
-fn v3_target_for_column(column_config: &ColumnConfig) -> Result<TargetDomain, Error> {
-    let domain = target_domain_for_column(column_config)?;
+///
+/// `ident` re-labels [`Error::NoV3Domain`] with the column's table.
+/// [`target_domain_for_column`] is a pure function of one column's
+/// configuration, so it can only name the column — unambiguous back when the
+/// error fired from an `encrypt(table, column)` call, but a whole-config sweep
+/// has no such call site to disambiguate it and two tables may configure the
+/// same column name.
+fn v3_target_for_column(
+    ident: &Identifier,
+    column_config: &ColumnConfig,
+) -> Result<TargetDomain, Error> {
+    let domain = target_domain_for_column(column_config).map_err(|error| match error {
+        Error::NoV3Domain { reason, hint, .. } => Error::NoV3Domain {
+            column: format!("{}.{}", ident.table, ident.column),
+            reason,
+            hint,
+        },
+        other => other,
+    })?;
     TargetDomain::parse(&domain).map_err(|e| {
         Error::InvariantViolation(format!(
             "selected v3 domain {domain:?} is not in the eql-bindings inventory: {e}"
@@ -554,9 +565,142 @@ fn v3_target_for_column(column_config: &ColumnConfig) -> Result<TargetDomain, Er
     })
 }
 
+/// The client's encrypt configuration, keyed by column.
+pub(crate) type EncryptConfigMap = HashMap<Identifier, ColumnConfig>;
+
+/// The wire format one column's payloads take.
+///
+/// `V3` carries the domain resolved when the client was built, so the
+/// per-payload path never re-derives the name or re-scans the eql-bindings
+/// inventory. Pairing the version with the domain also makes the v2/v3 split
+/// a single exhaustive `match` at each output seam.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum OutputTarget {
+    V2,
+    V3(TargetDomain),
+}
+
+/// One column's configuration and the wire target its payloads take.
+#[derive(Debug)]
+struct ResolvedColumn {
+    config: ColumnConfig,
+    target: OutputTarget,
+}
+
+/// Every configured column, resolved onto its wire target once, when the
+/// client was built.
+///
+/// Holding the configuration and the target in one entry is what makes them
+/// un-driftable: [`Self::resolve`] takes both from a single lookup, so there is
+/// no second map whose keys could disagree with the first and no column that
+/// could be described by one but not the other.
+///
+/// Under EQL v3 a column the wire format cannot represent fails
+/// [`Self::build`] — naming the column and a remedy — rather than on the first
+/// encrypt to it, which would leave a configured-but-never-written column
+/// silently broken. This is deliberately fatal to the whole client rather than
+/// to that one column: the encrypt config declares the shape of every
+/// encrypted column, so one v3 cannot store is a configuration error, not a
+/// per-row one. Under v2 nothing needs resolving and every column targets
+/// [`OutputTarget::V2`].
+#[derive(Debug)]
+pub(crate) struct ResolvedEncryptConfig {
+    columns: HashMap<Identifier, ResolvedColumn>,
+    eql_version: EqlVersion,
+}
+
+impl ResolvedEncryptConfig {
+    /// Validate `eql_version`, parse `encrypt_config`, and resolve every
+    /// column: the whole fail-fast sequence both clients run before any
+    /// network I/O, in one place so the Neon and wasm builds cannot drift.
+    pub(crate) fn build(
+        eql_version: Option<u8>,
+        encrypt_config: CanonicalEncryptionConfig,
+    ) -> Result<Self, Error> {
+        let eql_version = validate_eql_version(eql_version)?;
+        Self::resolve_all(eql_version, encrypt_config.into_config_map()?)
+    }
+
+    /// Resolve an already-parsed config. Split from [`Self::build`] so tests
+    /// can drive the resolution seam from a column map without spelling a
+    /// whole canonical config.
+    ///
+    /// Columns are visited in identifier order so a config with more than one
+    /// unrepresentable column always names the same one: `HashMap` iteration
+    /// order varies between runs, and an error that moves run to run reads
+    /// like a flake.
+    pub(crate) fn resolve_all(
+        eql_version: EqlVersion,
+        encrypt_config: EncryptConfigMap,
+    ) -> Result<Self, Error> {
+        let mut config: Vec<_> = encrypt_config.into_iter().collect();
+        config.sort_unstable_by(|(a, _), (b, _)| (&a.table, &a.column).cmp(&(&b.table, &b.column)));
+
+        let columns = config
+            .into_iter()
+            .map(|(ident, config)| {
+                let target = match eql_version {
+                    EqlVersion::V2 => OutputTarget::V2,
+                    EqlVersion::V3 => OutputTarget::V3(v3_target_for_column(&ident, &config)?),
+                };
+                Ok((ident, ResolvedColumn { config, target }))
+            })
+            .collect::<Result<_, Error>>()?;
+
+        Ok(Self {
+            columns,
+            eql_version,
+        })
+    }
+
+    /// EQL wire version this client emits. Decryption accepts both formats
+    /// regardless of this setting.
+    pub(crate) fn eql_version(&self) -> EqlVersion {
+        self.eql_version
+    }
+
+    /// The column's configuration and the wire target its payloads take, or
+    /// [`Error::UnknownColumn`].
+    ///
+    /// One lookup serves both because every encrypt entry point needs both —
+    /// the configuration to build the plaintext, the target to shape the
+    /// output — and taking them from the same entry is what guarantees they
+    /// describe the same column.
+    pub(crate) fn resolve(
+        &self,
+        ident: &Identifier,
+    ) -> Result<(&ColumnConfig, OutputTarget), Error> {
+        self.columns
+            .get(ident)
+            .map(|resolved| (&resolved.config, resolved.target))
+            .ok_or_else(|| Error::UnknownColumn(ident.clone()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The [`OutputTarget`] a client built for `eql_version` holds for this
+    /// column, resolved through [`ResolvedEncryptConfig`] itself — the seam
+    /// the FFI entry points use — so the conversion tests below exercise the
+    /// real thing rather than a hand-spelled domain.
+    ///
+    /// Panics on a column with no v3 domain: selection failures are covered by
+    /// `domain_err` in the `target_domain_for_column` module, and every column
+    /// reaching a conversion test here is expected to resolve.
+    fn target(eql_version: EqlVersion, column_config: &ColumnConfig) -> OutputTarget {
+        let ident = Identifier::new("users".to_string(), column_config.name.clone());
+        let resolved = ResolvedEncryptConfig::resolve_all(
+            eql_version,
+            HashMap::from([(ident.clone(), column_config.clone())]),
+        )
+        .expect("column resolves to a v3 domain");
+        resolved
+            .resolve(&ident)
+            .expect("the column just resolved is in the map")
+            .1
+    }
 
     /// Shared payload builders for the conversion tests. These mirror the
     /// real wire shapes cipherstash-client emits (dummy key material, valid
@@ -1108,6 +1252,10 @@ mod tests {
                 (ColumnType::Text, vec![unique(), ore()]),
                 (ColumnType::Text, vec![unique(), ope()]),
                 (ColumnType::Text, vec![unique(), ore(), match_index()]),
+                // The OPE search domain: the only case reaching the `_search`
+                // arm, and the only one whose name `_search_ore` does not
+                // already cover.
+                (ColumnType::Text, vec![unique(), ope(), match_index()]),
                 (ColumnType::SmallInt, vec![]),
                 (ColumnType::SmallInt, vec![unique()]),
                 (ColumnType::SmallInt, vec![ore()]),
@@ -1154,6 +1302,162 @@ mod tests {
         }
     }
 
+    /// The seam that makes EQL v3 column errors a *configuration*-time
+    /// failure: `newClient` builds this before any row is encrypted, so a
+    /// column v3 cannot represent never reaches `encrypt`.
+    mod resolved_encrypt_config {
+        use super::support::column;
+        use super::*;
+        use cipherstash_client::schema::column::{Index, IndexType};
+
+        /// Keyed by identifier, with each `ColumnConfig.name` set to match —
+        /// the error path labels the column from its identifier, so the two
+        /// must agree for the "names the offending column" assertions below to
+        /// mean anything.
+        fn config_in(table: &str, columns: Vec<(&str, ColumnConfig)>) -> EncryptConfigMap {
+            columns
+                .into_iter()
+                .map(|(name, mut cfg)| {
+                    cfg.name = name.to_string();
+                    (Identifier::new(table.to_string(), name.to_string()), cfg)
+                })
+                .collect()
+        }
+
+        fn config(columns: Vec<(&str, ColumnConfig)>) -> EncryptConfigMap {
+            config_in("users", columns)
+        }
+
+        fn unique() -> Index {
+            Index::new(IndexType::Unique {
+                token_filters: vec![],
+            })
+        }
+
+        fn ore() -> Index {
+            Index::new(IndexType::Ore)
+        }
+
+        fn resolve_all(eql_version: EqlVersion, cfg: EncryptConfigMap) -> ResolvedEncryptConfig {
+            ResolvedEncryptConfig::resolve_all(eql_version, cfg).unwrap()
+        }
+
+        #[test]
+        fn v2_targets_every_column_at_v2() {
+            // v2 payloads pass through unconverted, so no domain is needed —
+            // and a column with no v3 domain must not break a v2 client.
+            let cfg = config(vec![(
+                "flagged",
+                column(ColumnType::Boolean, vec![unique()]),
+            )]);
+            let resolved = resolve_all(EqlVersion::V2, cfg);
+            let ident = Identifier::new("users".to_string(), "flagged".to_string());
+
+            let (_, target) = resolved.resolve(&ident).unwrap();
+            assert!(
+                matches!(target, OutputTarget::V2),
+                "v2 client targets v2: {target:?}"
+            );
+            assert!(matches!(resolved.eql_version(), EqlVersion::V2));
+        }
+
+        #[test]
+        fn v3_resolves_every_column_to_its_domain() {
+            let cfg = config(vec![
+                ("email", column(ColumnType::Text, vec![unique()])),
+                ("score", column(ColumnType::Int, vec![])),
+            ]);
+            let resolved = resolve_all(EqlVersion::V3, cfg);
+
+            // The pairing is what matters: each column must carry ITS domain,
+            // not merely some domain, or a mis-keyed map would still pass.
+            for (name, expected) in [("email", "eql_v3_text_eq"), ("score", "eql_v3_integer")] {
+                let ident = Identifier::new("users".to_string(), name.to_string());
+                let (config, target) = resolved.resolve(&ident).unwrap();
+                assert_eq!(config.name, name);
+                match target {
+                    OutputTarget::V3(domain) => assert_eq!(
+                        domain,
+                        TargetDomain::parse(expected).unwrap(),
+                        "{name} targets {expected}"
+                    ),
+                    OutputTarget::V2 => panic!("v3 client must not target v2: {name}"),
+                }
+            }
+        }
+
+        #[test]
+        fn an_unconfigured_column_is_unknown() {
+            let resolved = resolve_all(
+                EqlVersion::V3,
+                config(vec![("email", column(ColumnType::Text, vec![unique()]))]),
+            );
+            let err = resolved
+                .resolve(&Identifier::new("users".to_string(), "nope".to_string()))
+                .unwrap_err();
+            assert!(matches!(err, Error::UnknownColumn(_)), "{err}");
+        }
+
+        #[test]
+        fn v3_rejects_an_unrepresentable_column_naming_it() {
+            // An indexed boolean has no v3 domain. Under v2 the same config is
+            // fine (above), so the rejection must be version-scoped — and it
+            // must name the offending column, since the client is built from a
+            // whole config and the user needs to know which one to fix.
+            let cfg = config(vec![
+                ("email", column(ColumnType::Text, vec![unique()])),
+                ("flagged", column(ColumnType::Boolean, vec![unique()])),
+            ]);
+            let err = ResolvedEncryptConfig::resolve_all(EqlVersion::V3, cfg)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("flagged"), "names the offending column: {err}");
+            assert!(!err.contains("email"), "not the valid one: {err}");
+            assert!(err.contains("storage-only"), "explains why: {err}");
+        }
+
+        #[test]
+        fn v3_qualifies_the_named_column_with_its_table() {
+            // Two tables, same column name, only one unrepresentable: the bare
+            // name cannot say which to fix. The error fires from a whole-config
+            // sweep with no `encrypt(table, column)` call site to disambiguate
+            // it, so the table has to be in the message.
+            let mut cfg = config_in("users", vec![("flag", column(ColumnType::Text, vec![]))]);
+            cfg.extend(config_in(
+                "audit",
+                vec![("flag", column(ColumnType::Boolean, vec![unique()]))],
+            ));
+
+            let err = ResolvedEncryptConfig::resolve_all(EqlVersion::V3, cfg)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("audit.flag"), "names the table: {err}");
+            assert!(!err.contains("users.flag"), "not the valid one: {err}");
+        }
+
+        #[test]
+        fn v3_names_the_same_column_every_run() {
+            // Two unrepresentable columns: the reported one must not depend on
+            // HashMap iteration order, or the error appears to move between
+            // otherwise identical runs. `flagged` sorts before `ranked`.
+            //
+            // A fresh map per iteration is what makes this a real test: a
+            // HashMap's iteration order is fixed for a given instance, and only
+            // varies because each new instance seeds a new `RandomState`.
+            // Re-iterating one map would pass even without the sort.
+            for _ in 0..32 {
+                let cfg = config(vec![
+                    ("ranked", column(ColumnType::Text, vec![ore()])),
+                    ("flagged", column(ColumnType::Boolean, vec![unique()])),
+                ]);
+                let err = ResolvedEncryptConfig::resolve_all(EqlVersion::V3, cfg)
+                    .unwrap_err()
+                    .to_string();
+                assert!(err.contains("flagged"), "always the first column: {err}");
+            }
+        }
+    }
+
     mod storage_output {
         use super::support::{
             column, ope_scalar_payload, ore_ste_vec_payload, scalar_payload, ste_vec_payload,
@@ -1187,8 +1491,7 @@ mod tests {
 
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
-                EqlVersion::V2,
-                &text_search_column(),
+                target(EqlVersion::V2, &text_search_column()),
             )
             .unwrap();
 
@@ -1216,7 +1519,7 @@ mod tests {
             let scalar_target =
                 TargetDomain::parse(&target_domain_for_column(&scalar_cfg).unwrap()).unwrap();
 
-            let output = storage_output(scalar_ct, EqlVersion::V3, &scalar_cfg).unwrap();
+            let output = storage_output(scalar_ct, target(EqlVersion::V3, &scalar_cfg)).unwrap();
             assert_eq!(
                 serde_json::to_value(&output).unwrap(),
                 from_v2(&scalar_v2, scalar_target).unwrap(),
@@ -1233,7 +1536,8 @@ mod tests {
             );
             let sv_v2 = serde_json::to_value(ste_vec_payload()).unwrap();
 
-            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &sv_cfg).unwrap();
+            let output =
+                storage_output(ste_vec_payload(), target(EqlVersion::V3, &sv_cfg)).unwrap();
             assert_eq!(
                 serde_json::to_value(&output).unwrap(),
                 from_v2(&sv_v2, TargetDomain::Json).unwrap(),
@@ -1244,8 +1548,7 @@ mod tests {
         fn v3_scalar_output_has_v3_envelope_and_required_terms() {
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
-                EqlVersion::V3,
-                &text_search_column(),
+                target(EqlVersion::V3, &text_search_column()),
             )
             .unwrap();
 
@@ -1275,8 +1578,7 @@ mod tests {
             );
             let output = storage_output(
                 scalar_payload(Some("aa"), None, Some(vec!["bb"])),
-                EqlVersion::V3,
-                &cfg,
+                target(EqlVersion::V3, &cfg),
             )
             .unwrap();
 
@@ -1298,9 +1600,11 @@ mod tests {
                     token_filters: vec![],
                 })],
             );
-            let output =
-                storage_output(scalar_payload(Some("aa"), None, None), EqlVersion::V3, &cfg)
-                    .unwrap();
+            let output = storage_output(
+                scalar_payload(Some("aa"), None, None),
+                target(EqlVersion::V3, &cfg),
+            )
+            .unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
@@ -1318,8 +1622,7 @@ mod tests {
             let cfg = column(ColumnType::BigInt, vec![Index::new(IndexType::Ore)]);
             let output = storage_output(
                 scalar_payload(None, None, Some(vec!["bb"])),
-                EqlVersion::V3,
-                &cfg,
+                target(EqlVersion::V3, &cfg),
             )
             .unwrap();
 
@@ -1337,7 +1640,8 @@ mod tests {
             // term (CIP-3348), so an ope-indexed column can reach its
             // _ord_ope domain: v, i, c, op and nothing else.
             let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ope)]);
-            let output = storage_output(ope_scalar_payload("cc"), EqlVersion::V3, &cfg).unwrap();
+            let output =
+                storage_output(ope_scalar_payload("cc"), target(EqlVersion::V3, &cfg)).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
@@ -1354,8 +1658,7 @@ mod tests {
             // reinterprets the upper half (32768..=65535) as negative i16.
             let output = storage_output(
                 scalar_payload(Some("aa"), Some(vec![7, 40000]), Some(vec!["bb"])),
-                EqlVersion::V3,
-                &text_search_column(),
+                target(EqlVersion::V3, &text_search_column()),
             )
             .unwrap();
 
@@ -1374,7 +1677,7 @@ mod tests {
                     mode: SteVecMode::Compat,
                 })],
             );
-            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
+            let output = storage_output(ste_vec_payload(), target(EqlVersion::V3, &cfg)).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
@@ -1409,7 +1712,7 @@ mod tests {
                     mode: SteVecMode::Compat,
                 })],
             );
-            let err = storage_output(ore_ste_vec_payload(), EqlVersion::V3, &cfg)
+            let err = storage_output(ore_ste_vec_payload(), target(EqlVersion::V3, &cfg))
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -1425,8 +1728,7 @@ mod tests {
             // not silently degrade.
             let result = storage_output(
                 scalar_payload(Some("aa"), None, Some(vec!["bb"])),
-                EqlVersion::V3,
-                &text_search_column(),
+                target(EqlVersion::V3, &text_search_column()),
             );
 
             let err = result.unwrap_err().to_string();
@@ -1509,8 +1811,11 @@ mod tests {
         fn v2_output_serializes_identically_to_the_bare_eql_output() {
             let expected = serde_json::to_string(&scalar_query()).unwrap();
 
-            let output =
-                query_output(scalar_query(), EqlVersion::V2, &text_search_column()).unwrap();
+            let output = query_output(
+                scalar_query(),
+                target(EqlVersion::V2, &text_search_column()),
+            )
+            .unwrap();
 
             assert_eq!(serde_json::to_string(&output).unwrap(), expected);
         }
@@ -1521,8 +1826,7 @@ mod tests {
 
             let output = query_output(
                 EqlOutput::Store(ste_vec_payload()),
-                EqlVersion::V2,
-                &json_column(),
+                target(EqlVersion::V2, &json_column()),
             )
             .unwrap();
 
@@ -1533,8 +1837,7 @@ mod tests {
         fn v3_containment_output_is_a_query_jsonb_needle() {
             let output = query_output(
                 EqlOutput::Store(ste_vec_payload()),
-                EqlVersion::V3,
-                &json_column(),
+                target(EqlVersion::V3, &json_column()),
             )
             .unwrap();
 
@@ -1566,8 +1869,11 @@ mod tests {
             let v2_value = serde_json::to_value(&ciphertext).unwrap();
             let erased = from_v2_query(&v2_value, TargetDomain::Json).unwrap();
 
-            let output =
-                query_output(EqlOutput::Store(ciphertext), EqlVersion::V3, &json_column()).unwrap();
+            let output = query_output(
+                EqlOutput::Store(ciphertext),
+                target(EqlVersion::V3, &json_column()),
+            )
+            .unwrap();
             let typed = serde_json::to_value(&output).unwrap();
 
             // Value equality: identical keys and values. Key ORDER differs
@@ -1587,8 +1893,7 @@ mod tests {
 
             let output = query_output(
                 EqlOutput::Store(scalar_ct),
-                EqlVersion::V3,
-                &text_search_column(),
+                target(EqlVersion::V3, &text_search_column()),
             )
             .unwrap();
             let typed = serde_json::to_value(&output).unwrap();
@@ -1607,8 +1912,7 @@ mod tests {
                     Some(vec![1, 2]),
                     Some(vec!["bb"]),
                 )),
-                EqlVersion::V3,
-                &text_search_column(),
+                target(EqlVersion::V3, &text_search_column()),
             )
             .unwrap();
 
@@ -1635,8 +1939,7 @@ mod tests {
             );
             let output = query_output(
                 EqlOutput::Store(scalar_payload(Some("aa"), None, None)),
-                EqlVersion::V3,
-                &cfg,
+                target(EqlVersion::V3, &cfg),
             )
             .unwrap();
 
@@ -1652,8 +1955,7 @@ mod tests {
             let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ore)]);
             let output = query_output(
                 EqlOutput::Store(scalar_payload(None, None, Some(vec!["bb"]))),
-                EqlVersion::V3,
-                &cfg,
+                target(EqlVersion::V3, &cfg),
             )
             .unwrap();
 
@@ -1669,8 +1971,7 @@ mod tests {
             let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ope)]);
             let output = query_output(
                 EqlOutput::Store(ope_scalar_payload("cc")),
-                EqlVersion::V3,
-                &cfg,
+                target(EqlVersion::V3, &cfg),
             )
             .unwrap();
 
@@ -1695,8 +1996,7 @@ mod tests {
             );
             let output = query_output(
                 EqlOutput::Store(scalar_payload(None, Some(vec![7, 40000]), None)),
-                EqlVersion::V3,
-                &cfg,
+                target(EqlVersion::V3, &cfg),
             )
             .unwrap();
 
@@ -1710,7 +2010,8 @@ mod tests {
             // v3 has no encrypted-selector envelope: the SQL `->`/`->>`
             // operators take the bare selector hash as text (the same
             // Selector encoding SteVecQuery entries carry in `s`).
-            let output = query_output(selector_query(), EqlVersion::V3, &json_column()).unwrap();
+            let output =
+                query_output(selector_query(), target(EqlVersion::V3, &json_column())).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value, serde_json::json!("deadbeef"));
@@ -1721,8 +2022,11 @@ mod tests {
             // Under v3, scalar Default queries run Store mode (the operand
             // needs ALL the column domain's terms), so a v2 Query-mode
             // scalar payload arriving here means the mode inference broke.
-            let err =
-                query_output(scalar_query(), EqlVersion::V3, &text_search_column()).unwrap_err();
+            let err = query_output(
+                scalar_query(),
+                target(EqlVersion::V3, &text_search_column()),
+            )
+            .unwrap_err();
 
             assert!(matches!(err, Error::InvariantViolation(_)));
             assert!(
@@ -1739,8 +2043,7 @@ mod tests {
             // instead of emitting a malformed needle.
             let err = query_output(
                 EqlOutput::Store(scalar_payload(Some("aa"), None, None)),
-                EqlVersion::V3,
-                &json_column(),
+                target(EqlVersion::V3, &json_column()),
             )
             .unwrap_err();
 
@@ -1774,9 +2077,11 @@ mod tests {
                     token_filters: vec![],
                 })],
             );
-            let output =
-                storage_output(scalar_payload(Some("aa"), None, None), EqlVersion::V3, &cfg)
-                    .unwrap();
+            let output = storage_output(
+                scalar_payload(Some("aa"), None, None),
+                target(EqlVersion::V3, &cfg),
+            )
+            .unwrap();
             serde_json::to_value(&output).unwrap()
         }
 
@@ -1790,7 +2095,7 @@ mod tests {
                     mode: SteVecMode::Compat,
                 })],
             );
-            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
+            let output = storage_output(ste_vec_payload(), target(EqlVersion::V3, &cfg)).unwrap();
             serde_json::to_value(&output).unwrap()
         }
 

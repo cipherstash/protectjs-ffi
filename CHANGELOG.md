@@ -15,6 +15,40 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Breaking
+
+- **An `eqlVersion: 3` client no longer builds when ANY configured column is
+  one EQL v3 cannot represent** — even a column you only decrypt, query by
+  selector, or never touch. `newClient` now maps every configured column onto
+  its `eql_v3` domain up front, so such a config throws
+  `EQL_V3_UNSUPPORTED_COLUMN` there — naming the offending `table.column` —
+  instead of on the first `encrypt` to it.
+
+  Previously the client built and only writes to that column failed, so a
+  configured-but-never-written column never errored at all. A config declaring
+  a column v3 cannot store is a configuration error, and this reports it as
+  one: at build, once, naming the column and a remedy, rather than on a write
+  that may not happen until production.
+
+  **If this rejects a config that worked before**, either drop the offending
+  column's indexes (the error names which, and why), or — for a service that
+  only reads — build with `eqlVersion: 2`: decrypt is version-agnostic and
+  reads v3 payloads regardless of the client's setting. v2 clients are
+  unaffected by this check: their payloads pass through unconverted and need
+  no domain.
+
+### Changed
+
+- **`eqlVersion: 3` column domains are resolved once, when the client is
+  built**, rather than per encrypted row. Every row used to re-derive the
+  domain name and re-scan the eql-bindings domain inventory; that work now
+  happens once per client.
+- **`newClient` now parses `encryptConfig` before contacting ZeroKMS** (all
+  clients, both wire versions). A malformed config previously surfaced only
+  after auth and a network round-trip; it now fails fast with no I/O. Where
+  credentials *and* the config are both bad, the config error is the one you
+  see — previously it was the auth error.
+
 ## [0.29.0] - 2026-07-09
 
 ### Added
