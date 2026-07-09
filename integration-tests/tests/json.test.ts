@@ -202,11 +202,14 @@ describe('SteVec index field generation', () => {
     })
   })
 
-  // Under SteVec Standard mode (the cipherstash-client 0.34.1-alpha.7
-  // default), numeric and string values share a single orderable field `oc`
-  // — the old `ocf`/`ocv` split has been collapsed via tagged-plaintext
-  // encoding. Non-orderable values (booleans, null, arrays, objects) carry
-  // an `hm` HMAC field instead.
+  // Under SteVec Standard mode (pinned by the `jsonSteVec` fixture; no longer
+  // the library default as of cipherstash-config 0.40.0), numeric and string
+  // values share a single orderable field `oc` — the old `ocf`/`ocv` split has
+  // been collapsed via tagged-plaintext encoding. Non-orderable values
+  // (booleans, null, arrays, objects) carry an `hm` HMAC field instead.
+  //
+  // Each test also asserts the Compat-mode `op` key is absent, so a client
+  // that emitted both terms could not pass on the `oc` assertion alone.
   describe('ORE index field (oc)', () => {
     test('should include ORE field (oc) for numeric values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
@@ -227,6 +230,9 @@ describe('SteVec index field generation', () => {
       for (const entry of entriesWithOre) {
         expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
       }
+
+      // The Compat-mode CLLW-OPE key must not appear in Standard mode.
+      expect(sv.filter((e) => e.op !== undefined)).toHaveLength(0)
     })
 
     test('should include ORE field (oc) for string values', async () => {
@@ -248,6 +254,9 @@ describe('SteVec index field generation', () => {
       for (const entry of entriesWithOre) {
         expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
       }
+
+      // The Compat-mode CLLW-OPE key must not appear in Standard mode.
+      expect(sv.filter((e) => e.op !== undefined)).toHaveLength(0)
     })
   })
 

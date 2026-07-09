@@ -95,13 +95,14 @@ describe('encryptBulk output structure for nested JSON', () => {
     const sv = encrypted.sv
     if (!sv) throw new Error('sv should be defined')
 
-    // Count entries by field presence. Under SteVec Standard mode (the
-    // cipherstash-client 0.34.1-alpha.7 default) numeric and string values
-    // share a single orderable field `oc`, and non-orderable values
-    // (booleans, null, arrays, objects) carry an `hm` HMAC.
+    // Count entries by field presence. Under SteVec Standard mode (pinned by
+    // the `jsonSteVec` fixture) numeric and string values share a single
+    // orderable field `oc`, and non-orderable values (booleans, null, arrays,
+    // objects) carry an `hm` HMAC.
     const withSelector = sv.filter((e) => e.s !== undefined)
     const withHmac = sv.filter((e) => e.hm !== undefined)
     const withOreCllw = sv.filter((e) => e.oc !== undefined)
+    const withOpeCllw = sv.filter((e) => e.op !== undefined)
     const withArrayFlag = sv.filter((e) => e.a === true)
 
     console.log('SteVec entry counts:')
@@ -116,6 +117,9 @@ describe('encryptBulk output structure for nested JSON', () => {
 
     // Scalar string and numeric values produce ORE CLLW (`oc`) entries
     expect(withOreCllw.length).toBeGreaterThan(0)
+
+    // The Compat-mode CLLW-OPE key never appears in Standard mode
+    expect(withOpeCllw.length).toBe(0)
 
     // Non-orderable values (root object, booleans, arrays) produce HMAC (`hm`) entries
     expect(withHmac.length).toBeGreaterThan(0)

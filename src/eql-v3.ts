@@ -82,6 +82,8 @@ import type { TextOrdOre } from './eql-v3-types/TextOrdOre.js'
 import type { TextOrdOreQuery } from './eql-v3-types/TextOrdOreQuery.js'
 import type { TextOrdQuery } from './eql-v3-types/TextOrdQuery.js'
 import type { TextSearch } from './eql-v3-types/TextSearch.js'
+import type { TextSearchOre } from './eql-v3-types/TextSearchOre.js'
+import type { TextSearchOreQuery } from './eql-v3-types/TextSearchOreQuery.js'
 import type { TextSearchQuery } from './eql-v3-types/TextSearchQuery.js'
 import type { Timestamp } from './eql-v3-types/Timestamp.js'
 import type { TimestampEq } from './eql-v3-types/TimestampEq.js'
@@ -100,7 +102,6 @@ export type { Hmac256 } from './eql-v3-types/Hmac256.js'
 export type { Identifier as EqlV3Identifier } from './eql-v3-types/Identifier.js'
 export type { OpeCllw } from './eql-v3-types/OpeCllw.js'
 export type { OreBlock256 } from './eql-v3-types/OreBlock256.js'
-export type { OreCllw } from './eql-v3-types/OreCllw.js'
 export type { SchemaVersion } from './eql-v3-types/SchemaVersion.js'
 export type { Selector } from './eql-v3-types/Selector.js'
 
@@ -157,6 +158,7 @@ export type {
   TextOrdOpe,
   TextOrdOre,
   TextSearch,
+  TextSearchOre,
   Timestamp,
   TimestampEq,
   TimestampOrd,
@@ -199,6 +201,7 @@ export type {
   TextOrdOpeQuery,
   TextOrdOreQuery,
   TextOrdQuery,
+  TextSearchOreQuery,
   TextSearchQuery,
   TimestampEqQuery,
   TimestampOrdOpeQuery,
@@ -254,6 +257,7 @@ export type EncryptedV3Scalar =
   | TextOrdOpe
   | TextOrdOre
   | TextSearch
+  | TextSearchOre
   | Timestamp
   | TimestampEq
   | TimestampOrd
@@ -314,6 +318,7 @@ export type EncryptedV3ScalarQuery =
   | TextOrdOpeQuery
   | TextOrdOreQuery
   | TextOrdQuery
+  | TextSearchOreQuery
   | TextSearchQuery
   | TimestampEqQuery
   | TimestampOrdOpeQuery

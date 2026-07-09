@@ -23,7 +23,7 @@ uses the promoted section as the GitHub release notes.
   with **no `c` ciphertext** — bindable as
   `col = $1::jsonb::eql_v3.query_<name>` (and the ordering / `@>` match
   operators). The operand always carries ALL the column domain's terms
-  (`text_search` → `hm` + `ob` + `bf`), whichever `indexType` was queried:
+  (`text_search_ore` → `hm` + `ob` + `bf`), whichever `indexType` was queried:
   the EQL v3 operators pair each column domain only with its same-name query
   twin, whose domain CHECK requires the full term set. Terms derive from the
   same conversion as storage encryption, so bounds behaviour (e.g. bigint i64
@@ -41,6 +41,11 @@ uses the promoted section as the GitHub release notes.
 
 ### Changed
 
+- Bumped `eql-bindings` to `3.0.0` (from `3.0.0-alpha.3`) and
+  `cipherstash-client` (with `cts-common`, `stack-auth`, `stack-profile`) to
+  `0.40.0` (from `0.39.1`). The EQL v3 SQL snapshot and the vendored
+  `src/eql-v3-types/**` TypeScript types were regenerated from the newly
+  locked release (`mise run eql:v3:build`, `scripts/sync-eql-v3-types.sh`).
 - Bumped `eql-bindings` to `3.0.0-alpha.3` (from `0.4.2`): catalog-generated
   scalar `QueryPayload` variants, scalar term hoisting in `from_v2_query`, and
   the CIP-3442 domain rename — query operands are `eql_v3.query_<name>` /
@@ -59,6 +64,35 @@ uses the promoted section as the GitHub release notes.
 
 ### Breaking
 
+- **EQL v3 public column domains are versioned (CIP-3472).** Every
+  public-schema column domain gained an `eql_v3_` prefix: a column declared
+  `email public.text_eq` is now `email public.eql_v3_text_eq`, and
+  `public.json` is `public.eql_v3_json`. The term-only query twins are
+  unchanged (`eql_v3.query_text_eq`) — the `eql_v3` schema already versions
+  them. Existing v3 tables must be migrated to the new column types.
+- **`text_search` now means OPE, not ORE.** The bare search domain carries
+  `hm` + `op` + `bf`; the ORE search domain is the new
+  `eql_v3_text_search_ore` (`hm` + `ob` + `bf`). A `unique` + `ore` + `match`
+  text column therefore targets `eql_v3_text_search_ore` and binds against
+  `eql_v3.query_text_search_ore`. The same flip applies to the bare
+  `<family>_ord` domains upstream; protect-ffi only ever selects the explicit
+  `_ord_ore` / `_ord_ope` variants, which are unaffected. As a result,
+  `unique` + `ope` + `match` on text now resolves (to `eql_v3_text_search`)
+  where it previously errored.
+- **The `ste_vec` index mode default flipped to `compat`** in
+  `cipherstash-client` 0.40.0 (it was `standard`). An unconfigured JSON
+  column now emits CLLW-OPE `op` SteVec terms instead of CLLW-ORE `oc` — in
+  **v2 output as well as v3**. Indexes built under the two modes are not
+  cross-comparable, so JSON columns with existing rows must either pin
+  `mode: 'standard'` or be re-encrypted.
+- **EQL v3 requires `compat`-mode `ste_vec`.** v3 orders SteVec entries by
+  the `op` term under native byte comparison; ORE ciphertext bytes do not
+  order that way, so `oc` has no mechanical conversion. A `standard`-mode
+  JSON column on an `eqlVersion: 3` client now fails at configuration time
+  with `EQL_V3_UNSUPPORTED_COLUMN` rather than converting incorrectly.
+- The `OreCllw` TypeScript type is removed — v3 SteVec entries carry `hm` XOR
+  `op`, so `oc` no longer appears in any v3 payload. `TextSearchOre` and
+  `TextSearchOreQuery` are added.
 - The `EQL_V3_QUERY_UNSUPPORTED` error code is removed from
   `ProtectErrorCode` — the scalar and selector queries that threw it now
   succeed and return operands.

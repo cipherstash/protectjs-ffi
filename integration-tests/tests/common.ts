@@ -116,14 +116,20 @@ export const datesConfig: EncryptConfig = {
   },
 }
 
-// A single JSON column with an ste_vec index
+// A single JSON column with an ste_vec index.
+//
+// `mode` is pinned to `standard` (CLLW-ORE, `oc` terms). cipherstash-config
+// 0.40.0 flipped the default to `compat` (CLLW-OPE, `op` terms); pinning keeps
+// these v2 tests on the ORE path that JSON columns with existing rows must
+// stay on, since the two orderings are not cross-comparable. EQL v3 accepts
+// only `compat` — see `v3Config` in eql-v3.test.ts.
 export const jsonSteVec: EncryptConfig = {
   v: 1,
   tables: {
     users: {
       profile: {
         cast_as: 'json',
-        indexes: { ste_vec: { prefix: 'users/profile' } },
+        indexes: { ste_vec: { prefix: 'users/profile', mode: 'standard' } },
       },
     },
   },

@@ -47,7 +47,8 @@ export type NativeEncryptConfig = Omit<EncryptConfig, 'tables'> & {
  *   `'none'` — the library would otherwise default to `'all'`.
  *
  * `mode` is intentionally left untouched: an omitted `mode` follows the
- * library default (`standard`). The input config is never mutated.
+ * library default (`compat` since cipherstash-config 0.40.0). The input
+ * config is never mutated.
  */
 export function normalizeEncryptConfig(
   config: EncryptConfig,

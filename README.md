@@ -59,32 +59,43 @@ const v3 = await addon.newClient({ encryptConfig, eqlVersion: 3 })
 With `eqlVersion: 3`, each column's payload targets the `eql_v3` domain
 derived from its `cast_as` and indexes:
 
+Every public-schema column domain carries an `eql_v3_` prefix (so the SQL
+column type is `public.eql_v3_text_eq`); the term-only query twins do not
+(`eql_v3.query_text_eq`), because the `eql_v3` schema already versions them.
+
 | `cast_as` | family | indexes | domain |
 |-----------|--------|---------|--------|
-| `text` | `text` | `unique` + `ore` + `match` | `text_search` |
-| `text` | `text` | `unique` + `ore` | `text_ord_ore` |
-| `text` | `text` | `match` | `text_match` |
-| `text` | `text` | `unique` | `text_eq` |
-| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `ore` (with or without `unique`) | `<family>_ord_ore` |
-| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `unique` | `<family>_eq` |
+| `text` | `text` | `unique` + `ore` + `match` | `eql_v3_text_search_ore` |
+| `text` | `text` | `unique` + `ope` + `match` | `eql_v3_text_search` |
+| `text` | `text` | `unique` + `ore` | `eql_v3_text_ord_ore` |
+| `text` | `text` | `match` | `eql_v3_text_match` |
+| `text` | `text` | `unique` | `eql_v3_text_eq` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `ore` (with or without `unique`) | `eql_v3_<family>_ord_ore` |
+| `int` / `small_int` / `bigint` | `integer` / `smallint` / `bigint` | `unique` | `eql_v3_<family>_eq` |
 | `number` / `decimal` / `date` / `timestamp` | `double` / `numeric` / `date` / `timestamp` | as above | as above |
-| any scalar | — | none | storage-only domain (`text`, `integer`, …) |
-| `boolean` | `boolean` | none only | `boolean` (storage-only — any index errors) |
-| `json` | `json` | `ste_vec` (required) | `json` |
+| any scalar | — | none | storage-only domain (`eql_v3_text`, `eql_v3_integer`, …) |
+| `boolean` | `boolean` | none only | `eql_v3_boolean` (storage-only — any index errors) |
+| `json` | `json` | `ste_vec` (required, `compat` mode) | `eql_v3_json` |
 
 Notes:
 
 - The richest matching domain wins, and it must cover every configured
   capability — a combination that would silently drop a term errors instead
-  (e.g. `unique` + `match`, `unique` + `ope` + `match`, or `ore` + `match`
-  on text: no single domain carries those term sets, so add the missing
-  index to reach `text_search`, split the capabilities across columns, or
-  use `eqlVersion: 2`).
+  (e.g. `unique` + `match` or `ore` + `match` on text: no single domain
+  carries those term sets, so add the missing index to reach a search
+  domain, split the capabilities across columns, or use `eqlVersion: 2`).
+- The two text search domains differ only in the ordering term they carry:
+  `eql_v3_text_search_ore` carries `ob` (ORE), `eql_v3_text_search` carries
+  `op` (OPE). Configuring both `ore` and `ope` selects the ORE one.
 - Exception: dropping a *term* is fine when the *capability* survives.
   Non-text ordering domains carry only `ob`, so `unique` + `ore` on a
   numeric column drops `hm` — equality still works via the ORE operators.
-- Ordered text requires a `unique` index (`text_ord_ore`/`text_ord_ope`
-  carry `hm` + `ob`/`op`); `ore`-only text errors.
+- Ordered text requires a `unique` index (`eql_v3_text_ord_ore` /
+  `eql_v3_text_ord_ope` carry `hm` + `ob`/`op`); `ore`-only text errors.
+- A `json` column's `ste_vec` index must use the `compat` mode (the
+  `cipherstash-client` default since 0.40.0). v3 orders SteVec entries by
+  the CLLW-OPE `op` term; a `standard`-mode index emits CLLW-ORE `oc`, which
+  has no mechanical conversion, so such a column errors at config time.
 - `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
   v3 data can coexist during a migration.
 - v3 query encryption returns index-terms-only operands: scalar queries

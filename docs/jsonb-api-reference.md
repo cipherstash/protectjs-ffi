@@ -197,20 +197,23 @@ type SteVecEntry = {
   c: string       // Per-entry ciphertext (mp_base85) — required
   a?: boolean     // Array marker
   hm?: string     // HMAC term — non-orderable leaves (objects, arrays, booleans, null)
-  oc?: string     // CLLW ORE term — orderable leaves (strings, numbers), Standard mode
+  op?: string     // CLLW OPE term — orderable leaves (strings, numbers), Compat mode (default)
+  oc?: string     // CLLW ORE term — orderable leaves, Standard mode (EQL v2 only)
 }
 ```
 
 Query payloads share the same `{ k, v, i, ... }` shape but omit `c` at the root (queries do not encrypt for storage). For `k = "ct"` queries, the payload carries exactly one of `hm`, `bf`, or `ob`. For `k = "sv"` queries, the FFI emits two shapes: selector queries (`ste_vec_selector`) carry a single tokenized `s`; containment queries (`ste_vec_term`) are emitted as full SteVec storage payloads with an `sv` array — see the *Output by Operation* table below.
 
-Under SteVec **Standard** mode (the default since `cipherstash-client` 0.34.1-alpha.7), each `sv` entry carries either `hm` or `oc` depending on the underlying JSON value:
+Each `sv` entry carries either `hm` or an orderable term, depending on the underlying JSON value. Which orderable term is emitted depends on the `ste_vec` index **mode**:
 
-| JSON value type | SteVec entry field |
-|-----------------|--------------------|
-| Object, array, boolean, null | `hm` (HMAC-SHA256) |
-| String, number | `oc` (CLLW ORE, tagged-plaintext) |
+| JSON value type | `compat` mode | `standard` mode |
+|-----------------|---------------|-----------------|
+| Object, array, boolean, null | `hm` (HMAC-SHA256) | `hm` (HMAC-SHA256) |
+| String, number | `op` (CLLW OPE, tagged-plaintext) | `oc` (CLLW ORE, tagged-plaintext) |
 
-Numeric and string values share the single `oc` orderable field — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
+Since `cipherstash-client` 0.40.0 the default is **`compat`** (`op`); it was `standard` (`oc`) before. Indexes produced under the two modes are **not cross-comparable**, so the indexing and query sides must agree, and a column whose existing rows were written under one mode must be re-encrypted to move to the other. Only `compat` can be converted to EQL v3.
+
+Numeric and string values share the single orderable field — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
 
 ### Output by Operation
 
@@ -236,7 +239,7 @@ Numeric and string values share the single `oc` orderable field — domain separ
 }
 ```
 
-**SteVec storage encryption (Standard mode):**
+**SteVec storage encryption (Compat mode, the default):**
 ```json
 {
   "k": "sv",
@@ -245,7 +248,7 @@ Numeric and string values share the single `oc` orderable field — domain separ
   "sv": [
     { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
     { "s": "abc123", "hm": "def456", "c": "..." },
-    { "s": "jkl012", "oc": "pqr678", "c": "..." }
+    { "s": "jkl012", "op": "pqr678", "c": "..." }
   ]
 }
 ```
@@ -260,14 +263,14 @@ Numeric and string values share the single `oc` orderable field — domain separ
 }
 ```
 
-**Containment query (Standard mode):**
+**Containment query (Compat mode, the default):**
 ```json
 {
   "k": "sv",
   "v": 2,
   "i": { "t": "users", "c": "profile" },
   "sv": [
-    { "s": "abc123", "oc": "ghi789", "c": "..." }
+    { "s": "abc123", "op": "ghi789", "c": "..." }
   ]
 }
 ```
@@ -279,7 +282,7 @@ wire format instead. Scalar payloads carry no `k` discriminator (the
 envelope is `{ v: 3, i, ... }` with the shape determined by the column's
 `eql_v3` domain); SteVec documents keep `k: "sv"`.
 
-**SteVec storage encryption (`public.json`):**
+**SteVec storage encryption (`public.eql_v3_json`):**
 ```json
 {
   "v": 3,
@@ -287,7 +290,7 @@ envelope is `{ v: 3, i, ... }` with the shape determined by the column's
   "i": { "t": "users", "c": "profile" },
   "sv": [
     { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
-    { "s": "abc123", "oc": "ghi789", "c": "..." }
+    { "s": "abc123", "op": "ghi789", "c": "..." }
   ]
 }
 ```
@@ -300,15 +303,20 @@ entries breaks decryption.
 ```json
 {
   "sv": [
-    { "s": "abc123", "oc": "ghi789" }
+    { "s": "abc123", "op": "ghi789" }
   ]
 }
 ```
 
 The needle carries no envelope (`v`/`i`) and no per-entry ciphertexts —
-each entry is the selector plus exactly one of `hm`/`oc`, mirroring the SQL
+each entry is the selector plus exactly one of `hm`/`op`, mirroring the SQL
 cast `eql_v3.to_ste_vec_query`. Use it with the `@>`/`<@` operators against
-a `public.json` column (`WHERE doc @> $1::jsonb::eql_v3.query_jsonb`).
+a `public.eql_v3_json` column (`WHERE doc @> $1::jsonb::eql_v3.query_jsonb`).
+
+v3 orders SteVec entries by the CLLW-OPE `op` term, so a JSON column's
+`ste_vec` index must use the `compat` mode (the cipherstash-client default).
+A `standard`-mode index emits CLLW-ORE `oc` terms, which cannot be converted
+to v3 — protect-ffi rejects such a column at configuration time.
 
 **Selector (path) query:** `encryptQuery` with `queryOp: 'ste_vec_selector'`
 returns the bare selector hash as a **string** — there is no

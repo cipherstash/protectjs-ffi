@@ -325,7 +325,9 @@ export type EncryptedSteVecSelector = {
  * One entry inside a SteVec payload (`k: "sv"`).
  *
  * Every element carries `s` (selector), `c` (entry ciphertext), and exactly one
- * per-element equality / ordering term (`hm` or `oc`).
+ * per-element equality / ordering term: `hm` for non-orderable leaves, and for
+ * orderable leaves either `op` (Compat mode, the default) or `oc` (Standard
+ * mode). EQL v3 accepts `hm` XOR `op` and rejects `oc`.
  */
 export type SteVecEntry = {
   /** Hex-encoded tokenized selector — deterministic per (path, key) */
@@ -336,7 +338,9 @@ export type SteVecEntry = {
   a?: boolean
   /** Per-entry HMAC term for non-orderable leaves (objects, arrays, booleans, null) */
   hm?: string
-  /** Per-entry CLLW ORE term for orderable leaves (strings, numbers) — Standard mode */
+  /** Per-entry CLLW OPE term for orderable leaves (strings, numbers) — Compat mode, the default */
+  op?: string
+  /** Per-entry CLLW ORE term for orderable leaves (strings, numbers) — Standard mode, EQL v2 only */
   oc?: string
 }
 
@@ -408,9 +412,14 @@ export type ArrayIndexMode =
 /**
  * Encoding mode for SteVec indexes.
  *
- * - `standard`: standard encoding (default).
- * - `compat`: backwards-compatible encoding. Set explicitly to preserve the
- *   pre-0.34.1-alpha.7 behaviour.
+ * - `compat`: CLLW-OPE ordering, emits `op` per entry. The default since
+ *   cipherstash-config 0.40.0, and the only mode EQL v3 accepts.
+ * - `standard`: CLLW-ORE ordering, emits `oc` per entry. The pre-0.40.0
+ *   default; EQL v2 only.
+ *
+ * The two orderings are not cross-comparable, so a column cannot change mode
+ * without re-encrypting. Pin `standard` on v2 JSON columns that already hold
+ * rows.
  */
 export type SteVecMode = 'compat' | 'standard'
 
@@ -443,7 +452,8 @@ export type NewClientOptions = {
    *
    * With `3`, {@link encrypt} / {@link encryptBulk} return {@link
    * EncryptedV3} payloads for the `eql_v3` per-capability column domains
-   * (`public.text_eq`, `public.integer_ord_ore`, `public.json`, …), derived
+   * (`public.eql_v3_text_eq`, `public.eql_v3_integer_ord_ore`,
+   * `public.eql_v3_json`, …), derived
    * from each column's `cast_as` + indexes, and {@link encryptQuery} /
    * {@link encryptQueryBulk} return {@link EncryptedV3Query} operands:
    * term-only scalar operands for the `eql_v3.query_<name>` twins, the

@@ -6,6 +6,7 @@ import type {
   IndexTypeName,
   Indexes,
   QueryPayload,
+  TextSearchOreQuery,
   TextSearchQuery,
 } from './index.cjs'
 
@@ -53,13 +54,22 @@ describe('EncryptedV3Query', () => {
   it('spans scalar operands, the containment needle, and bare selectors', () => {
     // Type-level assertions: each v3 encryptQuery output shape must be
     // assignable to the union (enforced by `npm run test:typecheck`).
+    // The bare search domain orders by the CLLW-OPE `op` term; its ORE twin
+    // (`ob`) is the separate text_search_ore domain. Both are operands.
     const scalar: EncryptedV3Query = {
+      v: 3,
+      i: { t: 'users', c: 'email' },
+      hm: 'aa',
+      op: 'bb',
+      bf: [1, 2],
+    } satisfies TextSearchQuery
+    const scalarOre: EncryptedV3Query = {
       v: 3,
       i: { t: 'users', c: 'email' },
       hm: 'aa',
       ob: ['bb'],
       bf: [1, 2],
-    } satisfies TextSearchQuery
+    } satisfies TextSearchOreQuery
     const needle: EncryptedV3Query = { sv: [{ s: 'aa', hm: 'bb' }] }
     const selector: EncryptedV3Query = 'deadbeef'
 
@@ -68,13 +78,14 @@ describe('EncryptedV3Query', () => {
       v: 3,
       i: { t: 'users', c: 'email' },
       hm: 'aa',
-      ob: ['bb'],
+      op: 'bb',
       bf: [1, 2],
       // @ts-expect-error — a query operand carries no ciphertext
       c: 'nope',
     }
 
     expect(scalar).toBeDefined()
+    expect(scalarOre).toBeDefined()
     expect(needle).toBeDefined()
     expect(selector).toBe('deadbeef')
     expect(withCiphertext).toBeDefined()
