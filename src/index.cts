@@ -325,7 +325,9 @@ export type EncryptedSteVecSelector = {
  * One entry inside a SteVec payload (`k: "sv"`).
  *
  * Every element carries `s` (selector), `c` (entry ciphertext), and exactly one
- * per-element equality / ordering term (`hm` or `oc`).
+ * per-element equality / ordering term: `hm` for non-orderable leaves, and for
+ * orderable leaves either `op` (Compat mode, the default) or `oc` (Standard
+ * mode). EQL v3 accepts `hm` XOR `op` and rejects `oc`.
  */
 export type SteVecEntry = {
   /** Hex-encoded tokenized selector — deterministic per (path, key) */
@@ -336,7 +338,9 @@ export type SteVecEntry = {
   a?: boolean
   /** Per-entry HMAC term for non-orderable leaves (objects, arrays, booleans, null) */
   hm?: string
-  /** Per-entry CLLW ORE term for orderable leaves (strings, numbers) — Standard mode */
+  /** Per-entry CLLW OPE term for orderable leaves (strings, numbers) — Compat mode, the default */
+  op?: string
+  /** Per-entry CLLW ORE term for orderable leaves (strings, numbers) — Standard mode, EQL v2 only */
   oc?: string
 }
 

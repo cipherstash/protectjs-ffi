@@ -197,7 +197,8 @@ type SteVecEntry = {
   c: string       // Per-entry ciphertext (mp_base85) — required
   a?: boolean     // Array marker
   hm?: string     // HMAC term — non-orderable leaves (objects, arrays, booleans, null)
-  oc?: string     // CLLW ORE term — orderable leaves (strings, numbers), Standard mode
+  op?: string     // CLLW OPE term — orderable leaves (strings, numbers), Compat mode (default)
+  oc?: string     // CLLW ORE term — orderable leaves, Standard mode (EQL v2 only)
 }
 ```
 
@@ -238,7 +239,7 @@ Numeric and string values share the single orderable field — domain separation
 }
 ```
 
-**SteVec storage encryption (Standard mode):**
+**SteVec storage encryption (Compat mode, the default):**
 ```json
 {
   "k": "sv",
@@ -247,7 +248,7 @@ Numeric and string values share the single orderable field — domain separation
   "sv": [
     { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
     { "s": "abc123", "hm": "def456", "c": "..." },
-    { "s": "jkl012", "oc": "pqr678", "c": "..." }
+    { "s": "jkl012", "op": "pqr678", "c": "..." }
   ]
 }
 ```
@@ -262,14 +263,14 @@ Numeric and string values share the single orderable field — domain separation
 }
 ```
 
-**Containment query (Standard mode):**
+**Containment query (Compat mode, the default):**
 ```json
 {
   "k": "sv",
   "v": 2,
   "i": { "t": "users", "c": "profile" },
   "sv": [
-    { "s": "abc123", "oc": "ghi789", "c": "..." }
+    { "s": "abc123", "op": "ghi789", "c": "..." }
   ]
 }
 ```
