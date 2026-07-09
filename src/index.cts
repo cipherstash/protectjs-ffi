@@ -412,9 +412,14 @@ export type ArrayIndexMode =
 /**
  * Encoding mode for SteVec indexes.
  *
- * - `standard`: standard encoding (default).
- * - `compat`: backwards-compatible encoding. Set explicitly to preserve the
- *   pre-0.34.1-alpha.7 behaviour.
+ * - `compat`: CLLW-OPE ordering, emits `op` per entry. The default since
+ *   cipherstash-config 0.40.0, and the only mode EQL v3 accepts.
+ * - `standard`: CLLW-ORE ordering, emits `oc` per entry. The pre-0.40.0
+ *   default; EQL v2 only.
+ *
+ * The two orderings are not cross-comparable, so a column cannot change mode
+ * without re-encrypting. Pin `standard` on v2 JSON columns that already hold
+ * rows.
  */
 export type SteVecMode = 'compat' | 'standard'
 

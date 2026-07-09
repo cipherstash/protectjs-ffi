@@ -202,13 +202,16 @@ describe('SteVec index field generation', () => {
     })
   })
 
-  // Under SteVec Compat mode (the cipherstash-client default since 0.40.0),
-  // numeric and string values share a single orderable field `op` — the
-  // CLLW-OPE term. Non-orderable values (booleans, null, arrays, objects)
-  // carry an `hm` HMAC field instead. Standard mode still emits `oc`
-  // (CLLW-ORE), but EQL v3 rejects `oc`, so nothing here exercises it.
-  describe('OPE index field (op)', () => {
-    test('should include OPE field (op) for numeric values', async () => {
+  // Under SteVec Standard mode (pinned by the `jsonSteVec` fixture; no longer
+  // the library default as of cipherstash-config 0.40.0), numeric and string
+  // values share a single orderable field `oc` — the old `ocf`/`ocv` split has
+  // been collapsed via tagged-plaintext encoding. Non-orderable values
+  // (booleans, null, arrays, objects) carry an `hm` HMAC field instead.
+  //
+  // Each test also asserts the Compat-mode `op` key is absent, so a client
+  // that emitted both terms could not pass on the `oc` assertion alone.
+  describe('ORE index field (oc)', () => {
+    test('should include ORE field (oc) for numeric values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
       const ciphertext = await encrypt(client, {
@@ -221,18 +224,18 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const sv = ciphertext.sv ?? []
 
-      const entriesWithOpe = sv.filter((e) => e.op !== undefined)
-      expect(entriesWithOpe.length).toBeGreaterThan(0)
+      const entriesWithOre = sv.filter((e) => e.oc !== undefined)
+      expect(entriesWithOre.length).toBeGreaterThan(0)
 
-      for (const entry of entriesWithOpe) {
-        expect(entry.op).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithOre) {
+        expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
       }
 
-      // The legacy CLLW-ORE key must not appear in Compat mode.
-      expect(sv.filter((e) => e.oc !== undefined)).toHaveLength(0)
+      // The Compat-mode CLLW-OPE key must not appear in Standard mode.
+      expect(sv.filter((e) => e.op !== undefined)).toHaveLength(0)
     })
 
-    test('should include OPE field (op) for string values', async () => {
+    test('should include ORE field (oc) for string values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
       const ciphertext = await encrypt(client, {
@@ -245,14 +248,15 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const sv = ciphertext.sv ?? []
 
-      const entriesWithOpe = sv.filter((e) => e.op !== undefined)
-      expect(entriesWithOpe.length).toBeGreaterThan(0)
+      const entriesWithOre = sv.filter((e) => e.oc !== undefined)
+      expect(entriesWithOre.length).toBeGreaterThan(0)
 
-      for (const entry of entriesWithOpe) {
-        expect(entry.op).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithOre) {
+        expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
       }
 
-      expect(sv.filter((e) => e.oc !== undefined)).toHaveLength(0)
+      // The Compat-mode CLLW-OPE key must not appear in Standard mode.
+      expect(sv.filter((e) => e.op !== undefined)).toHaveLength(0)
     })
   })
 
