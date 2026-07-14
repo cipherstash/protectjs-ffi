@@ -17,7 +17,9 @@
 //! formats regardless of the client's `eqlVersion` so data can be migrated
 //! incrementally.
 
-use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload, SteVecQueryTerm};
+use cipherstash_client::eql::{
+    EqlCiphertext, EqlCiphertextV3, EqlOutput, EqlQueryPayload, SteVecQueryTerm,
+};
 use cipherstash_client::schema::{
     column::ColumnType, column::IndexType, column::SteVecMode, ColumnConfig,
 };
@@ -412,6 +414,32 @@ pub(crate) fn storage_output(
             Ok(EncryptedOutput::V3(from_v2_typed(&v2_value, target)?))
         }
     }
+}
+
+/// Build the V3 stored output **natively** from `encrypt_eql_v3`'s payload —
+/// the runtime replacement for [`storage_output`]'s `from_v2` branch (no
+/// conversion). The client already emits the v3 envelope, so this only
+/// strict-parses it into the column's typed [`DomainPayload`] (the same strict
+/// parse `from_v2_typed` did after converting), keyed on the domain selected
+/// from the column configuration.
+///
+/// (`storage_output`'s v2→v3 branch is retained for `eqlVersion 2` clients and
+/// as the tested home of the `from_v2` converter, but the v3 runtime path no
+/// longer routes through it.)
+pub(crate) fn storage_output_v3(
+    ciphertext: EqlCiphertextV3,
+    column_config: &ColumnConfig,
+) -> Result<EncryptedOutput, Error> {
+    let domain = target_domain_for_column(column_config)?;
+    let value = serde_json::to_value(&ciphertext)?;
+    let payload = DomainPayload::parse(&domain, &value)
+        .ok_or_else(|| {
+            Error::InvariantViolation(format!(
+                "selected v3 domain {domain:?} has no DomainPayload variant"
+            ))
+        })?
+        .map_err(Error::Parse)?;
+    Ok(EncryptedOutput::V3(payload))
 }
 
 /// A query payload in whichever wire format the client is configured for.
@@ -1178,6 +1206,57 @@ mod tests {
                     }),
                 ],
             )
+        }
+
+        /// A native v3 scalar payload (as `encrypt_eql_v3` emits it) carrying
+        /// the same terms as `scalar_payload(Some("aa"), Some([1, 2]),
+        /// Some(["bb"]))`. Bloom positions are small and positive, so the signed
+        /// `smallint[]` v3 form equals the v2 unsigned form.
+        fn native_text_search_scalar() -> cipherstash_client::eql::EqlCiphertextV3 {
+            use cipherstash_client::eql::{
+                EncryptedPayloadV3, EqlCiphertextV3, Identifier as EqlIdentifier,
+                EQL_SCHEMA_VERSION_V3,
+            };
+            EqlCiphertextV3::Encrypted(EncryptedPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: super::support::dummy_encrypted_record(),
+                hmac_256: Some("aa".into()),
+                bloom_filter: Some(vec![1, 2]),
+                ore_block_u64_8_256: Some(vec!["bb".into()]),
+                ope_cllw: None,
+            })
+        }
+
+        #[test]
+        fn v3_native_output_matches_the_from_v2_conversion() {
+            // The native emit path (storage_output_v3) and the from_v2 path
+            // (storage_output V3 branch) must produce the identical typed
+            // DomainPayload for the same terms — so retiring from_v2 from the
+            // runtime is behaviour-preserving.
+            let cfg = text_search_column();
+            let native = storage_output_v3(native_text_search_scalar(), &cfg).unwrap();
+            let converted = storage_output(
+                scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&converted).unwrap(),
+            );
+        }
+
+        #[test]
+        fn v3_native_output_has_the_v3_scalar_shape() {
+            let output =
+                storage_output_v3(native_text_search_scalar(), &text_search_column()).unwrap();
+            let v = serde_json::to_value(&output).unwrap();
+            assert_eq!(v["v"], 3);
+            assert!(v.get("k").is_none(), "v3 scalar payloads carry no `k`");
+            assert_eq!(v["hm"], "aa");
+            assert!(v.get("c").is_some());
         }
 
         #[test]
