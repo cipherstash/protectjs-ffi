@@ -54,7 +54,7 @@ use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
     auth_failure_message, encrypted_record_from_value, into_store_ciphertext,
     into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_output,
-    storage_output, storage_output_v3, validate_eql_version,
+    query_output_v3, storage_output, storage_output_v3, validate_eql_version,
     DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
     EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
 };
@@ -583,8 +583,16 @@ async fn do_encrypt_query(
         index_types: None,
         decryption_policy: None,
     };
-    let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    query_output(encrypted.remove(0), client.eql_version, column_config)
+    // v3 clients emit query operands natively via encrypt_eql_v3 (no from_v2);
+    // v2 keeps the historical encrypt_eql + query_output path.
+    if client.eql_version == EqlVersion::V3 {
+        let mut encrypted =
+            encrypt_eql_v3(client.cipher.clone(), vec![prepared], &eql_opts).await?;
+        query_output_v3(encrypted.remove(0), column_config)
+    } else {
+        let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
+        query_output(encrypted.remove(0), client.eql_version, column_config)
+    }
 }
 
 async fn do_encrypt_query_bulk(
@@ -635,11 +643,25 @@ async fn do_encrypt_query_bulk(
             decryption_policy: None,
         };
 
-        let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
-        // Place results back in original order
-        for (eql_output, (original_idx, column_config)) in encrypted.into_iter().zip(payload_data) {
-            results[original_idx] =
-                Some(query_output(eql_output, client.eql_version, column_config)?);
+        // v3 clients emit query operands natively via encrypt_eql_v3 (no
+        // from_v2); v2 keeps the historical path.
+        if client.eql_version == EqlVersion::V3 {
+            let encrypted =
+                encrypt_eql_v3(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+            for (eql_output, (original_idx, column_config)) in
+                encrypted.into_iter().zip(payload_data)
+            {
+                results[original_idx] = Some(query_output_v3(eql_output, column_config)?);
+            }
+        } else {
+            let encrypted =
+                encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+            for (eql_output, (original_idx, column_config)) in
+                encrypted.into_iter().zip(payload_data)
+            {
+                results[original_idx] =
+                    Some(query_output(eql_output, client.eql_version, column_config)?);
+            }
         }
     }
 

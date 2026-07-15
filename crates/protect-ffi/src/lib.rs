@@ -27,7 +27,7 @@ use cts_common::Crn;
 // Shared by the Neon exports below and the wasm module (which imports these
 // via `crate::`), so both targets resolve them through this one re-export.
 pub(crate) use eql_v3::{
-    encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
+    encrypted_record_from_value, is_encrypted_value, query_output, query_output_v3, storage_output,
     storage_output_v3, validate_eql_version, EncryptedOutput, EqlVersion, QueryOutput,
 };
 use js_plaintext::JsPlaintext;
@@ -1503,14 +1503,18 @@ async fn encrypt_query(
         decryption_policy: None,
     };
 
-    let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-    let eql_output = encrypted.remove(0);
+    // v3 clients emit query operands natively via encrypt_eql_v3 (no from_v2);
+    // v2 clients keep the historical encrypt_eql + query_output path.
+    let output = if client.eql_version == EqlVersion::V3 {
+        let mut encrypted =
+            encrypt_eql_v3(client.cipher.clone(), vec![prepared], &eql_opts).await?;
+        query_output_v3(encrypted.remove(0), column_config)?
+    } else {
+        let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
+        query_output(encrypted.remove(0), client.eql_version, column_config)?
+    };
 
-    Ok(Json(query_output(
-        eql_output,
-        client.eql_version,
-        column_config,
-    )?))
+    Ok(Json(output))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1566,12 +1570,26 @@ async fn encrypt_query_bulk(
             decryption_policy: None,
         };
 
-        let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
-
-        // Place results back in original order
-        for (eql_output, (original_idx, column_config)) in encrypted.into_iter().zip(payload_data) {
-            results[original_idx] =
-                Some(query_output(eql_output, client.eql_version, column_config)?);
+        // v3 clients emit query operands natively via encrypt_eql_v3 (no
+        // from_v2); v2 keeps the historical path. Only one branch runs, so both
+        // may consume the moved `prepared_plaintexts` / `payload_data`.
+        if client.eql_version == EqlVersion::V3 {
+            let encrypted =
+                encrypt_eql_v3(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+            for (eql_output, (original_idx, column_config)) in
+                encrypted.into_iter().zip(payload_data)
+            {
+                results[original_idx] = Some(query_output_v3(eql_output, column_config)?);
+            }
+        } else {
+            let encrypted =
+                encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
+            for (eql_output, (original_idx, column_config)) in
+                encrypted.into_iter().zip(payload_data)
+            {
+                results[original_idx] =
+                    Some(query_output(eql_output, client.eql_version, column_config)?);
+            }
         }
     }
 
