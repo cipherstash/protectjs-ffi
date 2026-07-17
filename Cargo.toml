@@ -1,21 +1,3 @@
 [workspace]
 members = ["crates/protect-ffi"]
 resolver = "2"
-
-# TEMPORARY (CIP-3359 Workstream C): redirect the cipherstash-suite crates to the
-# local `encrypt_eql_v3` branch so protect-ffi can emit native v3 EQL payloads
-# before a client release. Local and published are the same versions (0.40.0 etc.),
-# so these patches are source-only. Patch the whole shared set — not just
-# cipherstash-client — so protect-ffi's direct deps (cts-common / stack-auth /
-# stack-profile) resolve to the SAME source as the client's transitive deps,
-# avoiding two-sources-of-one-crate type errors. REMOVE once the client releases.
-[patch.crates-io]
-cipherstash-client = { path = "../cipherstash-suite/packages/cipherstash-client" }
-cipherstash-config = { path = "../cipherstash-suite/packages/cipherstash-config" }
-cipherstash-core = { path = "../cipherstash-suite/packages/cipherstash-core" }
-cts-common = { path = "../cipherstash-suite/packages/cts-common" }
-stack-auth = { path = "../cipherstash-suite/packages/stack-auth" }
-stack-profile = { path = "../cipherstash-suite/packages/stack-profile" }
-cllw-ore = { path = "../cipherstash-suite/packages/cllw-ore" }
-recipher = { path = "../cipherstash-suite/packages/recipher" }
-zerokms-protocol = { path = "../cipherstash-suite/packages/zerokms-protocol" }
