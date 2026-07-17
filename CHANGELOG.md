@@ -15,6 +15,20 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Breaking
+
+- **EQL v3 JSON domains renamed** (eql-bindings 3.0.1 / eql 3.0.1). SteVec
+  columns now target `public.eql_v3_json_search` (was `public.eql_v3_json`)
+  and containment needles bind as `eql_v3.query_json` (was
+  `eql_v3.query_jsonb`); `public.eql_v3_json` is now a distinct storage-only
+  scalar JSON domain, which protect-ffi does not yet emit (an index-less JSON
+  column still errors under `eqlVersion: 3`). Databases must run the eql 3.0.1
+  installer, and SQL referencing the old names must be updated.
+- **Fuzzy bloom matching is the `@@` operator** in eql 3.0.1: bind match
+  queries as `col @@ $1::jsonb::eql_v3.query_<name>`. `@>`/`<@` no longer
+  perform bloom matching on scalar search domains — they remain jsonb/SteVec
+  containment (`doc @> $1::jsonb::eql_v3.query_json` is unchanged).
+
 ## [0.29.0] - 2026-07-09
 
 ### Added

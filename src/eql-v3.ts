@@ -333,7 +333,7 @@ export type EncryptedV3ScalarQuery =
  *   bind it with `WHERE col = $1::jsonb::eql_v3.query_<name>` (or the
  *   ordering / containment operator the domain supports).
  * - JSONB containment queries: a {@link SteVecQuery} needle — bind it with
- *   `WHERE doc @> $1::jsonb::eql_v3.query_jsonb`.
+ *   `WHERE doc @> $1::jsonb::eql_v3.query_json`.
  * - JSONB selector (path) queries: the bare {@link Selector} hash (a
  *   string) — there is no encrypted-selector envelope in v3; bind it as the
  *   `text` argument of `->` / `->>` (`SELECT doc -> $1`).

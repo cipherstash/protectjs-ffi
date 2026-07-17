@@ -1355,7 +1355,10 @@ async fn encrypt(
     let output = if client.eql_version == EqlVersion::V3 {
         let mut encrypted =
             encrypt_eql_v3(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-        storage_output_v3(into_store_ciphertext_v3(encrypted.remove(0))?, column_config)?
+        storage_output_v3(
+            into_store_ciphertext_v3(encrypted.remove(0))?,
+            column_config,
+        )?
     } else {
         let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
         storage_output(
@@ -1445,8 +1448,10 @@ async fn encrypt_bulk(
                     .encrypt_config
                     .get(&ident)
                     .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-                results[original_idx] =
-                    Some(storage_output_v3(into_store_ciphertext_v3(eql_output)?, column_config)?);
+                results[original_idx] = Some(storage_output_v3(
+                    into_store_ciphertext_v3(eql_output)?,
+                    column_config,
+                )?);
             }
         } else {
             let encrypted =

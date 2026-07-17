@@ -169,8 +169,8 @@ export async function decryptBulkFallible(
  *   no `c` ciphertext) — bind with `col = $1::jsonb::eql_v3.query_<name>`.
  *   The operand always carries ALL the column domain's terms, whichever
  *   `indexType` was queried.
- * - JSON containment queries produce the `eql_v3.query_jsonb` needle — bind
- *   with `doc @> $1::jsonb::eql_v3.query_jsonb`.
+ * - JSON containment queries produce the `eql_v3.query_json` needle — bind
+ *   with `doc @> $1::jsonb::eql_v3.query_json`.
  * - `ste_vec_selector` queries produce the bare selector hash (a string) —
  *   bind as the `text` argument of `->` / `->>`.
  */
@@ -453,11 +453,11 @@ export type NewClientOptions = {
    * With `3`, {@link encrypt} / {@link encryptBulk} return {@link
    * EncryptedV3} payloads for the `eql_v3` per-capability column domains
    * (`public.eql_v3_text_eq`, `public.eql_v3_integer_ord_ore`,
-   * `public.eql_v3_json`, …), derived
+   * `public.eql_v3_json_search`, …), derived
    * from each column's `cast_as` + indexes, and {@link encryptQuery} /
    * {@link encryptQueryBulk} return {@link EncryptedV3Query} operands:
    * term-only scalar operands for the `eql_v3.query_<name>` twins, the
-   * `eql_v3.query_jsonb` containment needle, and bare selector-hash strings
+   * `eql_v3.query_json` containment needle, and bare selector-hash strings
    * for path queries. {@link decrypt} accepts BOTH formats regardless of
    * this setting.
    */

@@ -282,7 +282,7 @@ wire format instead. Scalar payloads carry no `k` discriminator (the
 envelope is `{ v: 3, i, ... }` with the shape determined by the column's
 `eql_v3` domain); SteVec documents keep `k: "sv"`.
 
-**SteVec storage encryption (`public.eql_v3_json`):**
+**SteVec storage encryption (`public.eql_v3_json_search`):**
 ```json
 {
   "v": 3,
@@ -299,7 +299,7 @@ Entry order is preserved from v2 and `sv[0]` remains the **decryption
 root**: `sv[0].c` is the record ciphertext `decrypt` uses. Reordering `sv`
 entries breaks decryption.
 
-**Containment query (`eql_v3.query_jsonb` needle):**
+**Containment query (`eql_v3.query_json` needle):**
 ```json
 {
   "sv": [
@@ -311,7 +311,7 @@ entries breaks decryption.
 The needle carries no envelope (`v`/`i`) and no per-entry ciphertexts —
 each entry is the selector plus exactly one of `hm`/`op`, mirroring the SQL
 cast `eql_v3.to_ste_vec_query`. Use it with the `@>`/`<@` operators against
-a `public.eql_v3_json` column (`WHERE doc @> $1::jsonb::eql_v3.query_jsonb`).
+a `public.eql_v3_json_search` column (`WHERE doc @> $1::jsonb::eql_v3.query_json`).
 
 v3 orders SteVec entries by the CLLW-OPE `op` term, so a JSON column's
 `ste_vec` index must use the `compat` mode (the cipherstash-client default).

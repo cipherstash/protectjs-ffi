@@ -4,8 +4,8 @@
 //! …}`). The `eql_v3` schema generation replaces the single
 //! `eql_v2_encrypted` column type with per-capability column domains
 //! (`public.eql_v3_text_eq`, `public.eql_v3_integer_ord_ore`,
-//! `public.eql_v3_json`, …), their term-only query twins
-//! (`eql_v3.query_text_eq`, `eql_v3.query_jsonb`, …) — unprefixed, since the
+//! `public.eql_v3_json_search`, …), their term-only query twins
+//! (`eql_v3.query_text_eq`, `eql_v3.query_json`, …) — unprefixed, since the
 //! `eql_v3` schema already versions them —
 //! and a new envelope: scalars are `{v: 3, i, c, <terms>}` with no `k`
 //! discriminator; SteVec (encrypted JSONB) documents keep it
@@ -27,7 +27,7 @@ use cipherstash_client::schema::{
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
 use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
 use eql_bindings::v3::domain_type::PUBLIC_TYPNAME_PREFIX;
-use eql_bindings::v3::jsonb::SteVecDocument;
+use eql_bindings::v3::json::SteVecDocument;
 use eql_bindings::v3::terms::Selector;
 use eql_bindings::v3::{DomainPayload, QueryPayload};
 use serde::{Deserialize, Serialize};
@@ -191,22 +191,25 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
     })?;
 
     if family == "json" {
-        // eql_v3_json carries only sv. Upstream config accepts unique/ore/ope
-        // alongside ste_vec on a JSON column, so selecting the domain anyway
-        // would silently drop those terms — fail closed instead.
+        // eql_v3_json_search carries only sv. Upstream config accepts
+        // unique/ore/ope alongside ste_vec on a JSON column, so selecting the
+        // domain anyway would silently drop those terms — fail closed instead.
         if terms.hm || terms.ob || terms.op || terms.bf {
             return Err(no_v3_domain(
                 column,
-                "eql_v3_json carries only ste_vec terms; the other configured \
+                "eql_v3_json_search carries only ste_vec terms; the other configured \
                  indexes would be silently dropped",
                 "Remove the non-ste_vec indexes from this JSON column or use \
                  eqlVersion 2.",
             ));
         }
         if !terms.sv {
+            // eql-bindings 3.0.1 defines a storage-only `eql_v3_json` domain
+            // for this shape, but protect-ffi does not emit it yet — keep
+            // failing closed rather than silently changing behaviour.
             return Err(no_v3_domain(
                 column,
-                "EQL v3 has no scalar jsonb domain for an index-less JSON column",
+                "an index-less JSON column has no searchable EQL v3 domain",
                 "Add a 'ste_vec' index or use eqlVersion 2.",
             ));
         }
@@ -217,10 +220,10 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
         // no mechanical conversion exists. Catch it here, where the column name
         // and a fix are in hand, instead of at encrypt time.
         return match terms.sv_mode {
-            Some(SteVecMode::Compat) => Ok(v3_domain("json")),
+            Some(SteVecMode::Compat) => Ok(v3_domain("json_search")),
             _ => Err(no_v3_domain(
                 column,
-                "eql_v3_json orders ste_vec entries by the CLLW-OPE 'op' term, but a \
+                "eql_v3_json_search orders ste_vec entries by the CLLW-OPE 'op' term, but a \
                  'standard' mode ste_vec index emits CLLW-ORE 'oc' terms, which cannot \
                  be converted",
                 "Set the ste_vec index mode to 'compat' (existing rows must be \
@@ -447,7 +450,7 @@ pub(crate) fn storage_output_v3(
 /// Same untagged pass-through (and boxing) design as [`EncryptedOutput`].
 /// `V3` carries the typed [`QueryPayload`] — a term-only scalar operand
 /// (`{v, i, <terms>}`, no `c`) for the column domain's `eql_v3.query_<name>`
-/// twin, or the `eql_v3.query_jsonb` containment needle. `V3Selector` carries
+/// twin, or the `eql_v3.query_json` containment needle. `V3Selector` carries
 /// the bare selector hash for `ste_vec_selector` queries — v3 has no
 /// encrypted-selector envelope; the SQL `->`/`->>` operators take the
 /// [`Selector`] encoding (a string) as `text`. All variants are
@@ -515,7 +518,7 @@ pub(crate) fn query_output(
 /// Store-mode results (scalar operands + jsonb containment) project through
 /// [`EqlCiphertextV3::into_query_operand`] — dropping the record ciphertext `c`
 /// (and, for SteVec, the envelope + per-entry `c`/`a`) — then strict-parse into
-/// the column's `query_<name>` / `query_jsonb` [`QueryPayload`]. A jsonb path
+/// the column's `query_<name>` / `query_json` [`QueryPayload`]. A jsonb path
 /// query arrives Query-mode as the bare selector hash.
 pub(crate) fn query_output_v3(
     output: EqlOutputV3,
@@ -625,13 +628,13 @@ fn v3_target_for_column(column_config: &ColumnConfig) -> Result<TargetDomain, Er
 }
 
 /// The `query_<name>` operand domain for a column — the query twin of its
-/// stored domain ([`target_domain_for_column`]). `eql_v3_json` maps to
-/// `query_jsonb`; a scalar `eql_v3_<name>` maps to `query_<name>` by stripping
+/// stored domain ([`target_domain_for_column`]). `eql_v3_json_search` maps to
+/// `query_json`; a scalar `eql_v3_<name>` maps to `query_<name>` by stripping
 /// the version prefix. Keys [`QueryPayload::parse`] for the native query path.
 fn v3_query_domain_name(column_config: &ColumnConfig) -> Result<String, Error> {
     let stored = target_domain_for_column(column_config)?;
-    if stored == v3_domain("json") {
-        return Ok("query_jsonb".to_string());
+    if stored == v3_domain("json_search") {
+        return Ok("query_json".to_string());
     }
     let bare = stored.strip_prefix(PUBLIC_TYPNAME_PREFIX).ok_or_else(|| {
         Error::InvariantViolation(format!(
@@ -1102,8 +1105,8 @@ mod tests {
         }
 
         #[test]
-        fn json_with_compat_mode_ste_vec_is_json() {
-            assert_eq!(domain(ColumnType::Json, vec![ste_vec()]), "json");
+        fn json_with_compat_mode_ste_vec_is_json_search() {
+            assert_eq!(domain(ColumnType::Json, vec![ste_vec()]), "json_search");
         }
 
         #[test]
@@ -1134,7 +1137,7 @@ mod tests {
                     ColumnType::Json,
                     vec![ste_vec_with_mode(Default::default())]
                 ),
-                "json"
+                "json_search"
             );
         }
 
@@ -1149,7 +1152,7 @@ mod tests {
         #[test]
         fn json_with_ste_vec_and_unique_is_an_error() {
             // Upstream config accepts unique/ore/ope alongside ste_vec on a
-            // JSON column; eql_v3.json carries only sv, so selecting it
+            // JSON column; eql_v3_json_search carries only sv, so selecting it
             // would silently drop the other configured terms. Fail closed.
             let err = domain_err(ColumnType::Json, vec![ste_vec(), unique()]);
             assert!(
@@ -1225,13 +1228,13 @@ mod tests {
         #[test]
         fn selected_domains_carry_the_public_typname_prefix() {
             // Every public-schema column domain is versioned (`eql_v3_text_eq`,
-            // `eql_v3_json`); the query twins eql-bindings derives from them
-            // are not. Storage-only, suffixed and json domains all take it.
+            // `eql_v3_json_search`); the query twins eql-bindings derives from
+            // them are not. Storage-only, suffixed and json domains all take it.
             for (cast_type, indexes, expected) in [
                 (ColumnType::Text, vec![], "eql_v3_text"),
                 (ColumnType::Text, vec![unique()], "eql_v3_text_eq"),
                 (ColumnType::Boolean, vec![], "eql_v3_boolean"),
-                (ColumnType::Json, vec![ste_vec()], "eql_v3_json"),
+                (ColumnType::Json, vec![ste_vec()], "eql_v3_json_search"),
             ] {
                 assert_eq!(
                     target_domain_for_column(&column(cast_type, indexes)).unwrap(),
@@ -1671,7 +1674,11 @@ mod tests {
             let cfg = text_search_column();
             let native = query_output_v3(native_scalar_store(), &cfg).unwrap();
             let converted = query_output(
-                EqlOutput::Store(scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]))),
+                EqlOutput::Store(scalar_payload(
+                    Some("aa"),
+                    Some(vec![1, 2]),
+                    Some(vec!["bb"]),
+                )),
                 EqlVersion::V3,
                 &cfg,
             )
@@ -1734,7 +1741,7 @@ mod tests {
         }
 
         #[test]
-        fn v3_containment_output_is_a_query_jsonb_needle() {
+        fn v3_containment_output_is_a_query_json_needle() {
             let output = query_output(
                 EqlOutput::Store(ste_vec_payload()),
                 EqlVersion::V3,
@@ -1743,7 +1750,7 @@ mod tests {
             .unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
-            // The eql_v3.query_jsonb needle: {sv: [{s, hm|oc}]} — no
+            // The eql_v3.query_json needle: {sv: [{s, hm|oc}]} — no
             // envelope, no per-entry ciphertext or array marker.
             assert!(value.get("v").is_none(), "needle carries no envelope");
             assert!(value.get("i").is_none(), "needle carries no identifier");

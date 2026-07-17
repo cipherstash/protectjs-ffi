@@ -54,9 +54,9 @@ use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
     auth_failure_message, encrypted_record_from_value, into_store_ciphertext,
     into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_output,
-    query_output_v3, storage_output, storage_output_v3, validate_eql_version,
-    DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
-    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
+    query_output_v3, storage_output, storage_output_v3, validate_eql_version, DecryptBulkOptions,
+    DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions, EncryptQueryBulkOptions,
+    EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -455,7 +455,10 @@ async fn do_encrypt(client: &WasmClient, opts: EncryptOptions) -> Result<Encrypt
     if client.eql_version == EqlVersion::V3 {
         let mut encrypted =
             encrypt_eql_v3(client.cipher.clone(), vec![prepared], &eql_opts).await?;
-        storage_output_v3(into_store_ciphertext_v3(encrypted.remove(0))?, column_config)
+        storage_output_v3(
+            into_store_ciphertext_v3(encrypted.remove(0))?,
+            column_config,
+        )
     } else {
         let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
         storage_output(
@@ -534,8 +537,10 @@ async fn do_encrypt_bulk(
                     .encrypt_config
                     .get(&ident)
                     .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-                results[original_idx] =
-                    Some(storage_output_v3(into_store_ciphertext_v3(eql_output)?, column_config)?);
+                results[original_idx] = Some(storage_output_v3(
+                    into_store_ciphertext_v3(eql_output)?,
+                    column_config,
+                )?);
             }
         } else {
             let encrypted =
