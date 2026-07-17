@@ -21,6 +21,17 @@ describe('inferErrorCode', () => {
     )
   })
 
+  it('maps short match needle errors', () => {
+    // Mirrors the Rust `Invalid match query on column '{column}': {source}
+    // Use a longer search term.` message — the guard that stops a
+    // zero-token needle from silently matching every row.
+    expect(
+      inferErrorCode(
+        "Invalid match query on column 'email': match query input tokenizes to nothing (2 chars after wildcard trimming; the index's minimum token length is 3): it would match every row Use a longer search term.",
+      ),
+    ).toBe('SHORT_MATCH_NEEDLE')
+  })
+
   it('maps EQL v3 unsupported-column errors', () => {
     // Mirrors the Rust `Column '{column}' cannot be represented in EQL v3: {reason}. {hint}` message.
     expect(
