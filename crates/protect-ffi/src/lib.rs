@@ -281,7 +281,7 @@ pub enum Error {
         expected: ExpectedKind,
         hint: QueryInputHint,
     },
-    #[error("Invalid match query on column '{column}': {source} Use a longer search term.")]
+    #[error("Invalid match query on column '{column}': {source}. Use a longer search term.")]
     ShortMatchNeedle {
         column: String,
         source: EncryptionError,
