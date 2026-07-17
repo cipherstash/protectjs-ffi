@@ -304,6 +304,16 @@ pub enum Error {
     },
     #[error("EQL v3 conversion failed: {0}")]
     FromV2(#[from] eql_bindings::from_v2::FromV2Error),
+    /// A natively-emitted v3 payload failed the target domain's strict parse.
+    /// Shares the `EQL v3 conversion failed` message prefix with [`Self::FromV2`]
+    /// so the JS side's `EQL_V3_CONVERSION_FAILED` error-code mapping covers
+    /// both the conversion and native emit paths.
+    #[error("EQL v3 conversion failed: native payload did not parse as {domain}: {source}")]
+    V3NativeParse {
+        domain: String,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("Invalid EQL ciphertext: {0}")]
     InvalidCiphertext(#[from] zerokms::DecryptError),
 }
@@ -2255,7 +2265,10 @@ mod tests {
             let err = prepare(&config, "zq", EqlVersion::V3).unwrap_err();
             assert!(matches!(err, Error::ShortMatchNeedle { .. }));
             let msg = err.to_string();
-            assert!(msg.contains("Invalid match query on column 'email'"), "{msg}");
+            assert!(
+                msg.contains("Invalid match query on column 'email'"),
+                "{msg}"
+            );
             assert!(msg.contains("minimum token length is 3"), "{msg}");
             assert!(!msg.contains("zq"), "must not leak the needle: {msg}");
         }

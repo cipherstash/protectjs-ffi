@@ -47,6 +47,16 @@ describe('inferErrorCode', () => {
     )
   })
 
+  it('maps native v3 payload parse failures to the same code', () => {
+    // Mirrors the Rust `EQL v3 conversion failed: native payload did not
+    // parse as {domain}: {source}` message (Error::V3NativeParse).
+    expect(
+      inferErrorCode(
+        'EQL v3 conversion failed: native payload did not parse as eql_v3_text_search_ore: missing field `ob`',
+      ),
+    ).toBe('EQL_V3_CONVERSION_FAILED')
+  })
+
   it('maps invalid EQL ciphertext errors', () => {
     expect(
       inferErrorCode('Invalid EQL ciphertext: could not parse mp_base85'),

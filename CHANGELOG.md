@@ -29,6 +29,16 @@ uses the promoted section as the GitHub release notes.
   perform bloom matching on scalar search domains — they remain jsonb/SteVec
   containment (`doc @> $1::jsonb::eql_v3.query_json` is unchanged).
 
+### Changed
+
+- **EQL v3 payloads (storage and query) are now emitted natively** via
+  cipherstash-client's `encrypt_eql_v3` instead of converting v2 payloads
+  through `from_v2` at runtime. The wire output is byte-identical
+  (pinned by scalar and SteVec equivalence tests against the `from_v2`
+  oracle); `from_v2` remains for decrypting/accepting v2 payloads. A native
+  payload that fails its target domain's strict parse surfaces as
+  `EQL_V3_CONVERSION_FAILED`, the same code conversion failures produced.
+
 ## [0.29.0] - 2026-07-09
 
 ### Added
