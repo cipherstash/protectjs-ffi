@@ -693,7 +693,15 @@ describe('eql v3 configuration errors', () => {
     })
   })
 
-  test('encrypting an indexed boolean under v3 fails with a hint', async () => {
+  // Every column's eql_v3 domain resolves when the client is built, so a
+  // column v3 cannot represent fails there rather than on the first encrypt to
+  // it — a column that is configured but never written to would otherwise
+  // never error at all. This is deliberately fatal to the whole client: a
+  // config declaring a column v3 cannot store is a configuration error, not a
+  // per-row one (see the Breaking note in CHANGELOG.md). Both configs below
+  // are valid on a v2 client: the domain constraints are version-scoped, since
+  // v2 payloads pass through unconverted.
+  test('an indexed boolean under v3 is rejected when the client is built', async () => {
     const config: EncryptConfig = {
       v: 1,
       tables: {
@@ -702,13 +710,8 @@ describe('eql v3 configuration errors', () => {
         },
       },
     }
-    const client = await newClient({ encryptConfig: config, eqlVersion: 3 })
 
-    const attempt = encrypt(client, {
-      plaintext: true,
-      column: 'flagged',
-      table: 'v3users',
-    })
+    const attempt = newClient({ encryptConfig: config, eqlVersion: 3 })
 
     await expect(attempt).rejects.toMatchObject({
       code: 'EQL_V3_UNSUPPORTED_COLUMN',
@@ -716,7 +719,7 @@ describe('eql v3 configuration errors', () => {
     await expect(attempt).rejects.toThrowError(/storage-only/)
   })
 
-  test('encrypting ordered-only text under v3 fails with a hint', async () => {
+  test('ordered-only text under v3 is rejected when the client is built', async () => {
     const config: EncryptConfig = {
       v: 1,
       tables: {
@@ -725,13 +728,8 @@ describe('eql v3 configuration errors', () => {
         },
       },
     }
-    const client = await newClient({ encryptConfig: config, eqlVersion: 3 })
 
-    const attempt = encrypt(client, {
-      plaintext: 'zzz',
-      column: 'ranked',
-      table: 'v3users',
-    })
+    const attempt = newClient({ encryptConfig: config, eqlVersion: 3 })
 
     await expect(attempt).rejects.toMatchObject({
       code: 'EQL_V3_UNSUPPORTED_COLUMN',

@@ -373,4 +373,59 @@ describe('wasm newClient validation', () => {
       }),
     ).rejects.toThrow(/getToken is not a function/)
   })
+
+  // Column domain resolution is credential-free on this build too: it runs
+  // after serde but before the clientKey decode and any ZeroKMS call, so the
+  // dummy key below is never read. The Neon suite covers the same rejection
+  // (eql-v3.test.ts); these pin the wasm wiring, which nothing else reaches —
+  // a dropped resolve call here would otherwise ship silently green.
+  const wasmOpts = (extra: Record<string, unknown>) => ({
+    strategy: { getToken: async () => ({ token: 'never-read' }) },
+    clientId: '00000000-0000-0000-0000-000000000000',
+    clientKey: 'not-read-before-the-config-is-resolved',
+    ...extra,
+  })
+
+  test('rejects a column EQL v3 cannot represent, naming its table', async () => {
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient(
+        wasmOpts({
+          eqlVersion: 3,
+          encryptConfig: {
+            v: 1,
+            tables: {
+              v3users: {
+                flagged: { cast_as: 'boolean', indexes: { unique: {} } },
+              },
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(
+      /Column 'v3users\.flagged' cannot be represented in EQL v3/,
+    )
+  })
+
+  test('accepts the same config under v2', async () => {
+    const wasm = await loadWasm<WasmModule>()
+    // The domain constraints are version-scoped — v2 payloads pass through
+    // unconverted. Reaching the clientKey decode (the step straight after
+    // resolution) is the credential-free proof that the config was accepted.
+    await expect(
+      wasm.newClient(
+        wasmOpts({
+          eqlVersion: 2,
+          encryptConfig: {
+            v: 1,
+            tables: {
+              v3users: {
+                flagged: { cast_as: 'boolean', indexes: { unique: {} } },
+              },
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/invalid clientKey/)
+  })
 })

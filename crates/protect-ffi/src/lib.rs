@@ -27,8 +27,8 @@ use cts_common::Crn;
 // Shared by the Neon exports below and the wasm module (which imports these
 // via `crate::`), so both targets resolve them through this one re-export.
 pub(crate) use eql_v3::{
-    encrypted_record_from_value, is_encrypted_value, query_output, storage_output,
-    validate_eql_version, EncryptedOutput, EqlVersion, QueryOutput,
+    encrypted_record_from_value, is_encrypted_value, query_output, storage_output, EncryptedOutput,
+    EqlVersion, OutputTarget, QueryOutput, ResolvedEncryptConfig,
 };
 use js_plaintext::JsPlaintext;
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,11 +43,7 @@ use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 use stack_auth::{AuthStrategy, SecretToken, ServerError};
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::Runtime;
 
@@ -62,10 +58,9 @@ extern crate quickcheck_macros;
 struct Client {
     cipher: Arc<ScopedZeroKMS>,
     zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
-    encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
-    /// EQL wire version this client emits. Decryption accepts both formats
-    /// regardless of this setting.
-    eql_version: EqlVersion,
+    /// Every configured column with its wire target and version, resolved by
+    /// [`ResolvedEncryptConfig::build`] when this client was built.
+    config: Arc<ResolvedEncryptConfig>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1159,22 +1154,19 @@ fn to_query_plaintext(
 ///
 /// The single seam shared by all four encrypt-query entry points (Neon +
 /// wasm, single + bulk), so the version-dependent mode logic can never
-/// diverge between builds. Returns the resolved `&ColumnConfig` alongside the
+/// diverge between builds. Returns the column's [`OutputTarget`] alongside the
 /// prepared plaintext — the caller needs it again for [`query_output`], and
-/// returning the borrow avoids a second map lookup after encryption.
+/// resolving it here avoids a second map lookup after encryption.
 fn prepare_query_plaintext<'a>(
-    encrypt_config: &'a HashMap<Identifier, ColumnConfig>,
+    config: &'a ResolvedEncryptConfig,
     table: &str,
     column: &str,
     js_plaintext: &JsPlaintext,
     index_type_name: &str,
     query_op_name: &str,
-    eql_version: EqlVersion,
-) -> Result<(PreparedPlaintext<'a>, &'a ColumnConfig), Error> {
+) -> Result<(PreparedPlaintext<'a>, OutputTarget), Error> {
     let ident = Identifier::new(table.to_string(), column.to_string());
-    let column_config = encrypt_config
-        .get(&ident)
-        .ok_or(Error::UnknownColumn(ident))?;
+    let (column_config, target) = config.resolve(&ident)?;
 
     let index = find_index_for_type(column_config, column, index_type_name)?;
     let query_op = parse_query_op(query_op_name)?;
@@ -1188,7 +1180,7 @@ fn prepare_query_plaintext<'a>(
         query_op,
         &index.index_type,
         column_config.cast_type,
-        eql_version,
+        config.eql_version(),
     )?;
 
     // A match QUERY needle that tokenizes to nothing (e.g. shorter than the
@@ -1224,7 +1216,7 @@ fn prepare_query_plaintext<'a>(
             plaintext,
             eql_operation,
         ),
-        column_config,
+        target,
     ))
 }
 
@@ -1239,15 +1231,23 @@ pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
     strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
-    // Validate before any network I/O: a bad eqlVersion should fail fast,
-    // not after ZeroKMS setup.
-    let eql_version = validate_eql_version(opts.eql_version)?;
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
         Some(s) => NodeAuthStrategy::JsBacked(NeonJsAuthStrategy::from_root(s, channel).await?),
         None => NodeAuthStrategy::Auto(Box::new(client_opts.creds.build_strategy()?)),
     };
+
+    // Validate before any network I/O: a bad eqlVersion, an unparseable
+    // encrypt config, or a column EQL v3 cannot represent should all fail
+    // fast, not after ZeroKMS setup. Runs after the strategy is built so that
+    // both this build and the wasm one report a broken strategy first — the
+    // two are the same client to a caller, and must fail the same way.
+    let config = Arc::new(ResolvedEncryptConfig::build(
+        opts.eql_version,
+        opts.encrypt_config,
+    )?);
+
     let zerokms = ZeroKMSBuilder::new(auth)
         .with_key_provider(client_opts.creds.build_key_provider()?)
         .build()
@@ -1259,8 +1259,7 @@ pub async fn new_client(
     let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(opts.encrypt_config.into_config_map()?),
-        eql_version,
+        config,
     };
 
     Ok(Boxed(client))
@@ -1324,10 +1323,7 @@ async fn encrypt(
 ) -> Result<Json<EncryptedOutput>, neon::types::extract::Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
-    let column_config = client
-        .encrypt_config
-        .get(&ident)
-        .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+    let (column_config, target) = client.config.resolve(&ident)?;
 
     let plaintext = opts
         .plaintext
@@ -1353,11 +1349,7 @@ async fn encrypt(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_ciphertext = into_store_ciphertext(encrypted.remove(0))?;
 
-    Ok(Json(storage_output(
-        eql_ciphertext,
-        client.eql_version,
-        column_config,
-    )?))
+    Ok(Json(storage_output(eql_ciphertext, target)?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1392,15 +1384,12 @@ async fn encrypt_bulk(
 
         // Build PreparedPlaintext items for this group
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut payload_data: Vec<(usize, Identifier)> = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, OutputTarget)> = Vec::with_capacity(payloads.len());
 
         for (original_idx, payload) in payloads {
             let ident = Identifier::new(payload.table.clone(), payload.column.clone());
 
-            let column_config = client
-                .encrypt_config
-                .get(&ident)
-                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
+            let (column_config, target) = client.config.resolve(&ident)?;
 
             let plaintext = payload
                 .plaintext
@@ -1415,7 +1404,7 @@ async fn encrypt_bulk(
             );
 
             prepared_plaintexts.push(prepared);
-            payload_data.push((original_idx, ident));
+            payload_data.push((original_idx, target));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -1429,16 +1418,9 @@ async fn encrypt_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_output, (original_idx, ident)) in encrypted.into_iter().zip(payload_data) {
-            let column_config = client
-                .encrypt_config
-                .get(&ident)
-                .ok_or_else(|| Error::UnknownColumn(ident.clone()))?;
-            results[original_idx] = Some(storage_output(
-                into_store_ciphertext(eql_output)?,
-                client.eql_version,
-                column_config,
-            )?);
+        for (eql_output, (original_idx, target)) in encrypted.into_iter().zip(payload_data) {
+            results[original_idx] =
+                Some(storage_output(into_store_ciphertext(eql_output)?, target)?);
         }
     }
 
@@ -1462,14 +1444,13 @@ async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryOptions>,
 ) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
-    let (prepared, column_config) = prepare_query_plaintext(
-        &client.encrypt_config,
+    let (prepared, target) = prepare_query_plaintext(
+        &client.config,
         &opts.table,
         &opts.column,
         &opts.plaintext,
         &opts.index_type,
         &opts.query_op,
-        client.eql_version,
     )?;
 
     let eql_opts = EqlEncryptOpts {
@@ -1483,11 +1464,7 @@ async fn encrypt_query(
     let mut encrypted = encrypt_eql(client.cipher.clone(), vec![prepared], &eql_opts).await?;
     let eql_output = encrypted.remove(0);
 
-    Ok(Json(query_output(
-        eql_output,
-        client.eql_version,
-        column_config,
-    )?))
+    Ok(Json(query_output(eql_output, target)?))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1518,21 +1495,20 @@ async fn encrypt_query_bulk(
             .collect();
 
         let mut prepared_plaintexts = Vec::with_capacity(payloads.len());
-        let mut payload_data: Vec<(usize, &ColumnConfig)> = Vec::with_capacity(payloads.len());
+        let mut payload_data: Vec<(usize, OutputTarget)> = Vec::with_capacity(payloads.len());
 
         for (original_idx, payload) in &payloads {
-            let (prepared, column_config) = prepare_query_plaintext(
-                &client.encrypt_config,
+            let (prepared, target) = prepare_query_plaintext(
+                &client.config,
                 &payload.table,
                 &payload.column,
                 &payload.plaintext,
                 &payload.index_type,
                 &payload.query_op,
-                client.eql_version,
             )?;
 
             prepared_plaintexts.push(prepared);
-            payload_data.push((*original_idx, column_config));
+            payload_data.push((*original_idx, target));
         }
 
         let eql_opts = EqlEncryptOpts {
@@ -1546,9 +1522,8 @@ async fn encrypt_query_bulk(
         let encrypted = encrypt_eql(client.cipher.clone(), prepared_plaintexts, &eql_opts).await?;
 
         // Place results back in original order
-        for (eql_output, (original_idx, column_config)) in encrypted.into_iter().zip(payload_data) {
-            results[original_idx] =
-                Some(query_output(eql_output, client.eql_version, column_config)?);
+        for (eql_output, (original_idx, target)) in encrypted.into_iter().zip(payload_data) {
+            results[original_idx] = Some(query_output(eql_output, target)?);
         }
     }
 
@@ -2177,14 +2152,14 @@ mod tests {
             needle: &str,
             eql_version: EqlVersion,
         ) -> Result<(), Error> {
+            let config = ResolvedEncryptConfig::resolve_all(eql_version, config.clone())?;
             prepare_query_plaintext(
-                config,
+                &config,
                 "users",
                 "email",
                 &JsPlaintext::String(needle.to_string()),
                 "match",
                 "default",
-                eql_version,
             )
             .map(|_| ())
         }
@@ -2198,7 +2173,10 @@ mod tests {
             let err = prepare(&config, "zq", EqlVersion::V3).unwrap_err();
             assert!(matches!(err, Error::ShortMatchNeedle { .. }));
             let msg = err.to_string();
-            assert!(msg.contains("Invalid match query on column 'email'"), "{msg}");
+            assert!(
+                msg.contains("Invalid match query on column 'email'"),
+                "{msg}"
+            );
             assert!(msg.contains("minimum token length is 3"), "{msg}");
             assert!(!msg.contains("zq"), "must not leak the needle: {msg}");
         }
