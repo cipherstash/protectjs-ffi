@@ -4,7 +4,10 @@ mod js_plaintext;
 mod wasm;
 
 use cipherstash_client::{
-    encryption::{EncryptionError, Plaintext, QueryOp, ScopedCipher, TypeParseError},
+    encryption::{
+        EncryptionError, IndexerInit, MatchIndexer, Plaintext, QueryOp, ScopedCipher,
+        TypeParseError,
+    },
     eql::{
         encrypt_eql, EqlCiphertext, EqlEncryptOpts, EqlError, EqlOperation, EqlOutput,
         Identifier as EqlIdentifier, PreparedPlaintext,
@@ -277,6 +280,11 @@ pub enum Error {
         received: ReceivedKind,
         expected: ExpectedKind,
         hint: QueryInputHint,
+    },
+    #[error("Invalid match query on column '{column}': {source}. Use a longer search term.")]
+    ShortMatchNeedle {
+        column: String,
+        source: EncryptionError,
     },
     #[error("Invalid JSON path '{path}': {reason}. {hint}")]
     InvalidJsonPath {
@@ -1182,6 +1190,27 @@ fn prepare_query_plaintext<'a>(
         column_config.cast_type,
         eql_version,
     )?;
+
+    // A match QUERY needle that tokenizes to nothing (e.g. shorter than the
+    // ngram token length) yields an empty bloom filter — and an empty bloom
+    // filter matches EVERY row, because the EQL comparison (query bits ⊆
+    // row bits) is vacuously true. cipherstash-client rejects this on its
+    // own query path, but the v3 scalar path deliberately runs in StoreMode
+    // (see to_query_plaintext) and store-side indexing is deliberately NOT
+    // validated (storing a short string is legal). So the query-ness is
+    // only known HERE — the seam shared by all four encrypt-query entry
+    // points (Neon + wasm, single + bulk) — and this is where the guard
+    // must live for v3.
+    if matches!(&index.index_type, IndexType::Match { .. }) {
+        if let Plaintext::Text(Some(value)) = &plaintext {
+            MatchIndexer::try_init(&index.index_type)?
+                .validate_query_input(value)
+                .map_err(|source| Error::ShortMatchNeedle {
+                    column: column.to_string(),
+                    source,
+                })?;
+        }
+    }
 
     let eql_operation = match inferred_mode {
         InferredQueryMode::QueryMode(qop) => EqlOperation::Query(&index.index_type, qop),
@@ -2107,6 +2136,100 @@ mod tests {
                 "Error should show available match index: {}",
                 err_msg
             );
+        }
+    }
+
+    // A match query needle that tokenizes to nothing (shorter than the
+    // ngram, LIKE wrappers stripped, …) mints an empty bloom filter that
+    // matches EVERY row. cipherstash-client guards its own query path, but
+    // the v3 scalar path runs in StoreMode where store-side indexing is
+    // (deliberately) unvalidated — so prepare_query_plaintext is the seam
+    // that must reject it for all four entry points, on both EQL versions.
+    mod short_match_needle_guard {
+        use super::*;
+        use cipherstash_client::schema::column::{
+            ColumnMode, ColumnType, Index, IndexType, Tokenizer,
+        };
+        use std::collections::HashMap;
+
+        fn match_config(tokenizer: Tokenizer) -> HashMap<Identifier, ColumnConfig> {
+            let config = ColumnConfig {
+                name: "email".to_string(),
+                cast_type: ColumnType::Text,
+                indexes: vec![Index::new(IndexType::Match {
+                    tokenizer,
+                    token_filters: vec![],
+                    k: 6,
+                    m: 2048,
+                    include_original: false,
+                })],
+                in_place: false,
+                mode: ColumnMode::Encrypted,
+            };
+            HashMap::from([(
+                Identifier::new("users".to_string(), "email".to_string()),
+                config,
+            )])
+        }
+
+        fn prepare(
+            config: &HashMap<Identifier, ColumnConfig>,
+            needle: &str,
+            eql_version: EqlVersion,
+        ) -> Result<(), Error> {
+            prepare_query_plaintext(
+                config,
+                "users",
+                "email",
+                &JsPlaintext::String(needle.to_string()),
+                "match",
+                "default",
+                eql_version,
+            )
+            .map(|_| ())
+        }
+
+        #[test]
+        fn v3_short_needle_is_rejected() {
+            // The load-bearing case: v3 runs StoreMode, so without this
+            // guard the empty-bloom term reaches the database and the
+            // query matches every row (rc.2 skilltester blocker B2).
+            let config = match_config(Tokenizer::Ngram { token_length: 3 });
+            let err = prepare(&config, "zq", EqlVersion::V3).unwrap_err();
+            assert!(matches!(err, Error::ShortMatchNeedle { .. }));
+            let msg = err.to_string();
+            assert!(msg.contains("Invalid match query on column 'email'"), "{msg}");
+            assert!(msg.contains("minimum token length is 3"), "{msg}");
+            assert!(!msg.contains("zq"), "must not leak the needle: {msg}");
+        }
+
+        #[test]
+        fn v2_short_needle_is_rejected_at_the_same_boundary() {
+            let config = match_config(Tokenizer::Ngram { token_length: 3 });
+            let err = prepare(&config, "bp", EqlVersion::V2).unwrap_err();
+            assert!(matches!(err, Error::ShortMatchNeedle { .. }));
+        }
+
+        #[test]
+        fn like_wrappers_do_not_count_toward_the_minimum() {
+            let config = match_config(Tokenizer::Ngram { token_length: 3 });
+            assert!(prepare(&config, "%ab%", EqlVersion::V3).is_err());
+            assert!(prepare(&config, "%abc%", EqlVersion::V3).is_ok());
+        }
+
+        #[test]
+        fn valid_needles_pass_on_both_versions() {
+            let config = match_config(Tokenizer::Ngram { token_length: 3 });
+            assert!(prepare(&config, "abc", EqlVersion::V3).is_ok());
+            assert!(prepare(&config, "Netflix", EqlVersion::V2).is_ok());
+        }
+
+        #[test]
+        fn standard_tokenizer_keeps_single_characters_queryable() {
+            // Standard has no length minimum: a one-character word is a
+            // real token and must not be rejected.
+            let config = match_config(Tokenizer::Standard);
+            assert!(prepare(&config, "a", EqlVersion::V3).is_ok());
         }
     }
 

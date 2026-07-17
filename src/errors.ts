@@ -4,6 +4,7 @@ export type ProtectErrorCode =
   | 'UNKNOWN_COLUMN'
   | 'MISSING_INDEX'
   | 'INVALID_QUERY_INPUT'
+  | 'SHORT_MATCH_NEEDLE'
   | 'INVALID_JSON_PATH'
   | 'STE_VEC_REQUIRES_JSON_CAST_AS'
   | 'MATCH_REQUIRES_TEXT'
@@ -42,6 +43,9 @@ export function inferErrorCode(message: string): ProtectErrorCode {
   }
   if (message.startsWith('Invalid query input for')) {
     return 'INVALID_QUERY_INPUT'
+  }
+  if (message.startsWith('Invalid match query on column')) {
+    return 'SHORT_MATCH_NEEDLE'
   }
   if (message.startsWith('Invalid JSON path')) {
     return 'INVALID_JSON_PATH'
