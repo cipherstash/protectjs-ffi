@@ -4,8 +4,8 @@
 //! …}`). The `eql_v3` schema generation replaces the single
 //! `eql_v2_encrypted` column type with per-capability column domains
 //! (`public.eql_v3_text_eq`, `public.eql_v3_integer_ord_ore`,
-//! `public.eql_v3_json`, …), their term-only query twins
-//! (`eql_v3.query_text_eq`, `eql_v3.query_jsonb`, …) — unprefixed, since the
+//! `public.eql_v3_json_search`, …), their term-only query twins
+//! (`eql_v3.query_text_eq`, `eql_v3.query_json`, …) — unprefixed, since the
 //! `eql_v3` schema already versions them —
 //! and a new envelope: scalars are `{v: 3, i, c, <terms>}` with no `k`
 //! discriminator; SteVec (encrypted JSONB) documents keep it
@@ -17,14 +17,17 @@
 //! formats regardless of the client's `eqlVersion` so data can be migrated
 //! incrementally.
 
-use cipherstash_client::eql::{EqlCiphertext, EqlOutput, EqlQueryPayload, SteVecQueryTerm};
+use cipherstash_client::eql::{
+    EqlCiphertext, EqlCiphertextV3, EqlOutput, EqlOutputV3, EqlQueryPayload, EqlQueryPayloadV3,
+    SteVecQueryTerm,
+};
 use cipherstash_client::schema::{
     column::ColumnType, column::IndexType, column::SteVecMode, ColumnConfig,
 };
 use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
 use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
 use eql_bindings::v3::domain_type::PUBLIC_TYPNAME_PREFIX;
-use eql_bindings::v3::jsonb::SteVecDocument;
+use eql_bindings::v3::json::SteVecDocument;
 use eql_bindings::v3::terms::Selector;
 use eql_bindings::v3::{DomainPayload, QueryPayload};
 use serde::{Deserialize, Serialize};
@@ -188,22 +191,25 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
     })?;
 
     if family == "json" {
-        // eql_v3_json carries only sv. Upstream config accepts unique/ore/ope
-        // alongside ste_vec on a JSON column, so selecting the domain anyway
-        // would silently drop those terms — fail closed instead.
+        // eql_v3_json_search carries only sv. Upstream config accepts
+        // unique/ore/ope alongside ste_vec on a JSON column, so selecting the
+        // domain anyway would silently drop those terms — fail closed instead.
         if terms.hm || terms.ob || terms.op || terms.bf {
             return Err(no_v3_domain(
                 column,
-                "eql_v3_json carries only ste_vec terms; the other configured \
+                "eql_v3_json_search carries only ste_vec terms; the other configured \
                  indexes would be silently dropped",
                 "Remove the non-ste_vec indexes from this JSON column or use \
                  eqlVersion 2.",
             ));
         }
         if !terms.sv {
+            // eql-bindings 3.0.1 defines a storage-only `eql_v3_json` domain
+            // for this shape, but protect-ffi does not emit it yet — keep
+            // failing closed rather than silently changing behaviour.
             return Err(no_v3_domain(
                 column,
-                "EQL v3 has no scalar jsonb domain for an index-less JSON column",
+                "an index-less JSON column has no searchable EQL v3 domain",
                 "Add a 'ste_vec' index or use eqlVersion 2.",
             ));
         }
@@ -214,10 +220,10 @@ pub(crate) fn target_domain_for_column(column_config: &ColumnConfig) -> Result<S
         // no mechanical conversion exists. Catch it here, where the column name
         // and a fix are in hand, instead of at encrypt time.
         return match terms.sv_mode {
-            Some(SteVecMode::Compat) => Ok(v3_domain("json")),
+            Some(SteVecMode::Compat) => Ok(v3_domain("json_search")),
             _ => Err(no_v3_domain(
                 column,
-                "eql_v3_json orders ste_vec entries by the CLLW-OPE 'op' term, but a \
+                "eql_v3_json_search orders ste_vec entries by the CLLW-OPE 'op' term, but a \
                  'standard' mode ste_vec index emits CLLW-ORE 'oc' terms, which cannot \
                  be converted",
                 "Set the ste_vec index mode to 'compat' (existing rows must be \
@@ -414,11 +420,40 @@ pub(crate) fn storage_output(
     }
 }
 
+/// Build the V3 stored output **natively** from `encrypt_eql_v3`'s payload —
+/// the runtime replacement for [`storage_output`]'s `from_v2` branch (no
+/// conversion). The client already emits the v3 envelope, so this only
+/// strict-parses it into the column's typed [`DomainPayload`] (the same strict
+/// parse `from_v2_typed` did after converting), keyed on the domain selected
+/// from the column configuration.
+///
+/// (`storage_output`'s v2→v3 branch is retained for `eqlVersion 2` clients and
+/// as the tested home of the `from_v2` converter, but the v3 runtime path no
+/// longer routes through it.)
+pub(crate) fn storage_output_v3(
+    ciphertext: EqlCiphertextV3,
+    column_config: &ColumnConfig,
+) -> Result<EncryptedOutput, Error> {
+    let domain = target_domain_for_column(column_config)?;
+    let value = serde_json::to_value(&ciphertext)?;
+    let payload = DomainPayload::parse(&domain, &value)
+        .ok_or_else(|| {
+            Error::InvariantViolation(format!(
+                "selected v3 domain {domain:?} has no DomainPayload variant"
+            ))
+        })?
+        .map_err(|source| Error::V3NativeParse {
+            domain: domain.clone(),
+            source,
+        })?;
+    Ok(EncryptedOutput::V3(payload))
+}
+
 /// A query payload in whichever wire format the client is configured for.
 /// Same untagged pass-through (and boxing) design as [`EncryptedOutput`].
 /// `V3` carries the typed [`QueryPayload`] — a term-only scalar operand
 /// (`{v, i, <terms>}`, no `c`) for the column domain's `eql_v3.query_<name>`
-/// twin, or the `eql_v3.query_jsonb` containment needle. `V3Selector` carries
+/// twin, or the `eql_v3.query_json` containment needle. `V3Selector` carries
 /// the bare selector hash for `ste_vec_selector` queries — v3 has no
 /// encrypted-selector envelope; the SQL `->`/`->>` operators take the
 /// [`Selector`] encoding (a string) as `text`. All variants are
@@ -477,6 +512,50 @@ pub(crate) fn query_output(
                 "scalar query encryption ran in query mode under eqlVersion 3".to_string(),
             )),
         },
+    }
+}
+
+/// Build the V3 query output **natively** from `encrypt_eql_v3`'s result — the
+/// runtime replacement for [`query_output`]'s `from_v2` branch (no conversion).
+///
+/// Store-mode results (scalar operands + jsonb containment) project through
+/// [`EqlCiphertextV3::into_query_operand`] — dropping the record ciphertext `c`
+/// (and, for SteVec, the envelope + per-entry `c`/`a`) — then strict-parse into
+/// the column's `query_<name>` / `query_json` [`QueryPayload`]. A jsonb path
+/// query arrives Query-mode as the bare selector hash.
+pub(crate) fn query_output_v3(
+    output: EqlOutputV3,
+    column_config: &ColumnConfig,
+) -> Result<QueryOutput, Error> {
+    match output {
+        EqlOutputV3::Store(ciphertext) => {
+            let operand = ciphertext.into_query_operand();
+            let domain = v3_query_domain_name(column_config)?;
+            let value = serde_json::to_value(&operand)?;
+            let payload = QueryPayload::parse(&domain, &value)
+                .ok_or_else(|| {
+                    Error::InvariantViolation(format!(
+                        "query domain {domain:?} has no QueryPayload variant"
+                    ))
+                })?
+                .map_err(|source| Error::V3NativeParse {
+                    domain: domain.clone(),
+                    source,
+                })?;
+            Ok(QueryOutput::V3(payload))
+        }
+        EqlOutputV3::Query(EqlQueryPayloadV3::Selector(selector)) => {
+            Ok(QueryOutput::V3Selector(Selector(selector)))
+        }
+        // Under v3 scalar Default queries and containment run Store mode
+        // (see the caller / `prepare_query_plaintext`), so a Query-mode operand
+        // or needle here is an invariant violation.
+        EqlOutputV3::Query(EqlQueryPayloadV3::Encrypted(_)) => Err(Error::InvariantViolation(
+            "scalar query encryption ran in query mode under eqlVersion 3".to_string(),
+        )),
+        EqlOutputV3::Query(EqlQueryPayloadV3::SteVec(_)) => Err(Error::InvariantViolation(
+            "ste_vec containment query ran in query mode under eqlVersion 3".to_string(),
+        )),
     }
 }
 
@@ -552,6 +631,23 @@ fn v3_target_for_column(column_config: &ColumnConfig) -> Result<TargetDomain, Er
             "selected v3 domain {domain:?} is not in the eql-bindings inventory: {e}"
         ))
     })
+}
+
+/// The `query_<name>` operand domain for a column — the query twin of its
+/// stored domain ([`target_domain_for_column`]). `eql_v3_json_search` maps to
+/// `query_json`; a scalar `eql_v3_<name>` maps to `query_<name>` by stripping
+/// the version prefix. Keys [`QueryPayload::parse`] for the native query path.
+fn v3_query_domain_name(column_config: &ColumnConfig) -> Result<String, Error> {
+    let stored = target_domain_for_column(column_config)?;
+    if stored == v3_domain("json_search") {
+        return Ok("query_json".to_string());
+    }
+    let bare = stored.strip_prefix(PUBLIC_TYPNAME_PREFIX).ok_or_else(|| {
+        Error::InvariantViolation(format!(
+            "stored domain {stored:?} lacks the {PUBLIC_TYPNAME_PREFIX} prefix"
+        ))
+    })?;
+    Ok(format!("query_{bare}"))
 }
 
 #[cfg(test)]
@@ -1015,8 +1111,8 @@ mod tests {
         }
 
         #[test]
-        fn json_with_compat_mode_ste_vec_is_json() {
-            assert_eq!(domain(ColumnType::Json, vec![ste_vec()]), "json");
+        fn json_with_compat_mode_ste_vec_is_json_search() {
+            assert_eq!(domain(ColumnType::Json, vec![ste_vec()]), "json_search");
         }
 
         #[test]
@@ -1047,7 +1143,7 @@ mod tests {
                     ColumnType::Json,
                     vec![ste_vec_with_mode(Default::default())]
                 ),
-                "json"
+                "json_search"
             );
         }
 
@@ -1062,7 +1158,7 @@ mod tests {
         #[test]
         fn json_with_ste_vec_and_unique_is_an_error() {
             // Upstream config accepts unique/ore/ope alongside ste_vec on a
-            // JSON column; eql_v3.json carries only sv, so selecting it
+            // JSON column; eql_v3_json_search carries only sv, so selecting it
             // would silently drop the other configured terms. Fail closed.
             let err = domain_err(ColumnType::Json, vec![ste_vec(), unique()]);
             assert!(
@@ -1138,13 +1234,13 @@ mod tests {
         #[test]
         fn selected_domains_carry_the_public_typname_prefix() {
             // Every public-schema column domain is versioned (`eql_v3_text_eq`,
-            // `eql_v3_json`); the query twins eql-bindings derives from them
-            // are not. Storage-only, suffixed and json domains all take it.
+            // `eql_v3_json_search`); the query twins eql-bindings derives from
+            // them are not. Storage-only, suffixed and json domains all take it.
             for (cast_type, indexes, expected) in [
                 (ColumnType::Text, vec![], "eql_v3_text"),
                 (ColumnType::Text, vec![unique()], "eql_v3_text_eq"),
                 (ColumnType::Boolean, vec![], "eql_v3_boolean"),
-                (ColumnType::Json, vec![ste_vec()], "eql_v3_json"),
+                (ColumnType::Json, vec![ste_vec()], "eql_v3_json_search"),
             ] {
                 assert_eq!(
                     target_domain_for_column(&column(cast_type, indexes)).unwrap(),
@@ -1178,6 +1274,166 @@ mod tests {
                     }),
                 ],
             )
+        }
+
+        /// A native v3 scalar payload (as `encrypt_eql_v3` emits it) carrying
+        /// the same terms as `scalar_payload(Some("aa"), Some([1, 2]),
+        /// Some(["bb"]))`. Bloom positions are small and positive, so the signed
+        /// `smallint[]` v3 form equals the v2 unsigned form.
+        fn native_text_search_scalar() -> cipherstash_client::eql::EqlCiphertextV3 {
+            use cipherstash_client::eql::{
+                EncryptedPayloadV3, EqlCiphertextV3, Identifier as EqlIdentifier,
+                EQL_SCHEMA_VERSION_V3,
+            };
+            EqlCiphertextV3::Encrypted(EncryptedPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: super::support::dummy_encrypted_record(),
+                hmac_256: Some("aa".into()),
+                bloom_filter: Some(vec![1, 2]),
+                ore_block_u64_8_256: Some(vec!["bb".into()]),
+                ope_cllw: None,
+            })
+        }
+
+        #[test]
+        fn v3_native_output_matches_the_from_v2_conversion() {
+            // The native emit path (storage_output_v3) and the from_v2 path
+            // (storage_output V3 branch) must produce the identical typed
+            // DomainPayload for the same terms — so retiring from_v2 from the
+            // runtime is behaviour-preserving.
+            let cfg = text_search_column();
+            let native = storage_output_v3(native_text_search_scalar(), &cfg).unwrap();
+            let converted = storage_output(
+                scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"])),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&converted).unwrap(),
+            );
+        }
+
+        #[test]
+        fn v3_native_output_has_the_v3_scalar_shape() {
+            let output =
+                storage_output_v3(native_text_search_scalar(), &text_search_column()).unwrap();
+            let v = serde_json::to_value(&output).unwrap();
+            assert_eq!(v["v"], 3);
+            assert!(v.get("k").is_none(), "v3 scalar payloads carry no `k`");
+            assert_eq!(v["hm"], "aa");
+            assert!(v.get("c").is_some());
+        }
+
+        fn json_column() -> ColumnConfig {
+            column(
+                ColumnType::Json,
+                vec![Index::new(IndexType::SteVec {
+                    prefix: "users/profile".to_string(),
+                    term_filters: vec![],
+                    array_index_mode: Default::default(),
+                    mode: SteVecMode::Compat,
+                })],
+            )
+        }
+
+        /// A native v3 SteVec document (as `encrypt_eql_v3` emits it) carrying
+        /// the same entries as `support::ste_vec_payload()`: root/`hm` and an
+        /// array-marked leaf/`op`.
+        fn native_ste_vec_document() -> cipherstash_client::eql::EqlCiphertextV3 {
+            use cipherstash_client::eql::{
+                EqlCiphertextV3, Identifier as EqlIdentifier, SteVecEntryTermV3, SteVecEntryV3,
+                SteVecKind, SteVecPayloadV3, EQL_SCHEMA_VERSION_V3,
+            };
+            EqlCiphertextV3::SteVec(SteVecPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                kind: SteVecKind::SteVec,
+                identifier: EqlIdentifier::new("users", "profile"),
+                ste_vec: vec![
+                    SteVecEntryV3 {
+                        selector: "root".into(),
+                        ciphertext: super::support::dummy_encrypted_record(),
+                        is_array: None,
+                        term: SteVecEntryTermV3::Hmac {
+                            hmac_256: "feedface".into(),
+                        },
+                    },
+                    SteVecEntryV3 {
+                        selector: "leaf".into(),
+                        ciphertext: super::support::dummy_encrypted_record(),
+                        is_array: Some(true),
+                        term: SteVecEntryTermV3::Ope {
+                            ope_cllw: "deadbeef".into(),
+                        },
+                    },
+                ],
+            })
+        }
+
+        #[test]
+        fn v3_native_ste_vec_output_matches_the_from_v2_conversion() {
+            // Same oracle as the scalar test above, for the SteVec document
+            // path: the native emit (storage_output_v3 parsing into
+            // eql_v3_json_search) must be byte-identical to the from_v2
+            // conversion of the equivalent v2 `k: "sv"` payload.
+            let cfg = json_column();
+            let native = storage_output_v3(native_ste_vec_document(), &cfg).unwrap();
+            let converted = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&converted).unwrap(),
+            );
+        }
+
+        #[test]
+        fn v3_native_ste_vec_output_keeps_the_sv_envelope() {
+            // Stored SteVec documents (unlike containment needles) keep the
+            // full envelope and per-entry ciphertext/array marker.
+            let output = storage_output_v3(native_ste_vec_document(), &json_column()).unwrap();
+            let v = serde_json::to_value(&output).unwrap();
+            assert_eq!(v["v"], 3);
+            assert_eq!(v["k"], "sv", "the document keeps the sv discriminator");
+            assert_eq!(v["i"]["t"], "users");
+            let sv = v["sv"].as_array().unwrap();
+            assert_eq!(sv.len(), 2);
+            assert!(sv[0].get("c").is_some(), "entries keep their ciphertext");
+            assert_eq!(sv[1]["a"], true, "the array marker is preserved");
+            assert_eq!(sv[1]["op"], "deadbeef");
+        }
+
+        #[test]
+        fn v3_native_parse_failure_is_a_conversion_error() {
+            use cipherstash_client::eql::{
+                EncryptedPayloadV3, EqlCiphertextV3, Identifier as EqlIdentifier,
+                EQL_SCHEMA_VERSION_V3,
+            };
+            // A payload missing the selected domain's required terms (hm only,
+            // but text_search_ore requires hm + ob + bf) must surface as the
+            // "EQL v3 conversion failed" error the from_v2 path produced, so
+            // the EQL_V3_CONVERSION_FAILED error-code contract holds on the
+            // native path too.
+            let incomplete = EqlCiphertextV3::Encrypted(EncryptedPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: super::support::dummy_encrypted_record(),
+                hmac_256: Some("aa".into()),
+                bloom_filter: None,
+                ore_block_u64_8_256: None,
+                ope_cllw: None,
+            });
+            let err = storage_output_v3(incomplete, &text_search_column())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.starts_with("EQL v3 conversion failed"),
+                "native parse failures must keep the conversion-failed error contract: {err}"
+            );
+            assert!(
+                err.contains("eql_v3_text_search_ore"),
+                "the error should name the target domain: {err}"
+            );
         }
 
         #[test]
@@ -1505,6 +1761,176 @@ mod tests {
             keys
         }
 
+        /// A native v3 Store-mode result (as `encrypt_eql_v3` emits for a v3
+        /// scalar query) carrying the same terms as `scalar_payload(Some("aa"),
+        /// Some([1, 2]), Some(["bb"]))`.
+        fn native_scalar_store() -> cipherstash_client::eql::EqlOutputV3 {
+            use cipherstash_client::eql::{
+                EncryptedPayloadV3, EqlCiphertextV3, EqlOutputV3, Identifier as EqlIdentifier,
+                EQL_SCHEMA_VERSION_V3,
+            };
+            EqlOutputV3::Store(EqlCiphertextV3::Encrypted(EncryptedPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: super::support::dummy_encrypted_record(),
+                hmac_256: Some("aa".into()),
+                bloom_filter: Some(vec![1, 2]),
+                ore_block_u64_8_256: Some(vec!["bb".into()]),
+                ope_cllw: None,
+            }))
+        }
+
+        #[test]
+        fn query_output_v3_native_matches_the_from_v2_query_conversion() {
+            // The native emit path (query_output_v3 via into_query_operand) and
+            // the from_v2 path (query_output V3 branch) must produce the
+            // identical typed QueryPayload for the same terms — behaviour-
+            // preserving when retiring from_v2 from the query runtime.
+            let cfg = text_search_column();
+            let native = query_output_v3(native_scalar_store(), &cfg).unwrap();
+            let converted = query_output(
+                EqlOutput::Store(scalar_payload(
+                    Some("aa"),
+                    Some(vec![1, 2]),
+                    Some(vec!["bb"]),
+                )),
+                EqlVersion::V3,
+                &cfg,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&converted).unwrap(),
+            );
+        }
+
+        #[test]
+        fn query_output_v3_scalar_operand_carries_no_c_or_k() {
+            let v = serde_json::to_value(
+                query_output_v3(native_scalar_store(), &text_search_column()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(v["v"], 3);
+            assert!(v.get("c").is_none(), "a query operand must not carry `c`");
+            assert!(v.get("k").is_none());
+            assert_eq!(v["hm"], "aa");
+        }
+
+        #[test]
+        fn query_output_v3_selector_becomes_the_bare_v3_selector() {
+            use cipherstash_client::eql::{EqlOutputV3, EqlQueryPayloadV3};
+            let out = query_output_v3(
+                EqlOutputV3::Query(EqlQueryPayloadV3::Selector("deadbeef".into())),
+                &json_column(),
+            )
+            .unwrap();
+            // V3Selector(Selector) serializes as the bare selector string (SQL text).
+            assert_eq!(
+                serde_json::to_value(&out).unwrap(),
+                serde_json::json!("deadbeef")
+            );
+        }
+
+        /// A native v3 Store-mode SteVec document (as `encrypt_eql_v3` emits
+        /// for a v3 containment query) carrying the same entries as
+        /// `support::ste_vec_payload()`.
+        fn native_ste_vec_store() -> cipherstash_client::eql::EqlOutputV3 {
+            use cipherstash_client::eql::{
+                EqlCiphertextV3, EqlOutputV3, Identifier as EqlIdentifier, SteVecEntryTermV3,
+                SteVecEntryV3, SteVecKind, SteVecPayloadV3, EQL_SCHEMA_VERSION_V3,
+            };
+            EqlOutputV3::Store(EqlCiphertextV3::SteVec(SteVecPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                kind: SteVecKind::SteVec,
+                identifier: EqlIdentifier::new("users", "profile"),
+                ste_vec: vec![
+                    SteVecEntryV3 {
+                        selector: "root".into(),
+                        ciphertext: super::support::dummy_encrypted_record(),
+                        is_array: None,
+                        term: SteVecEntryTermV3::Hmac {
+                            hmac_256: "feedface".into(),
+                        },
+                    },
+                    SteVecEntryV3 {
+                        selector: "leaf".into(),
+                        ciphertext: super::support::dummy_encrypted_record(),
+                        is_array: Some(true),
+                        term: SteVecEntryTermV3::Ope {
+                            ope_cllw: "deadbeef".into(),
+                        },
+                    },
+                ],
+            }))
+        }
+
+        #[test]
+        fn query_output_v3_native_ste_vec_matches_the_from_v2_query_conversion() {
+            // The native containment projection (into_query_operand →
+            // query_json parse) must be byte-identical to the from_v2 needle
+            // for the same document — the SteVec twin of the scalar oracle
+            // test above.
+            let cfg = json_column();
+            let native = query_output_v3(native_ste_vec_store(), &cfg).unwrap();
+            let converted =
+                query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V3, &cfg).unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&converted).unwrap(),
+            );
+        }
+
+        #[test]
+        fn query_output_v3_native_containment_needle_strips_envelope_c_and_a() {
+            let v = serde_json::to_value(
+                query_output_v3(native_ste_vec_store(), &json_column()).unwrap(),
+            )
+            .unwrap();
+            // The eql_v3.query_json needle: {sv: [{s, hm|op}]} — no envelope,
+            // no per-entry ciphertext or array marker.
+            assert!(v.get("v").is_none(), "needle carries no envelope");
+            assert!(v.get("i").is_none(), "needle carries no identifier");
+            assert!(v.get("k").is_none(), "needle carries no k");
+            let sv = v["sv"].as_array().unwrap();
+            assert_eq!(sv.len(), 2);
+            assert_eq!(sv[0]["s"], "root");
+            assert_eq!(sv[0]["hm"], "feedface");
+            assert!(sv[0].get("c").is_none(), "c is stripped from entries");
+            assert_eq!(sv[1]["op"], "deadbeef");
+            assert!(sv[1].get("a").is_none(), "a is stripped from entries");
+        }
+
+        #[test]
+        fn query_output_v3_native_parse_failure_is_a_conversion_error() {
+            use cipherstash_client::eql::{
+                EncryptedPayloadV3, EqlCiphertextV3, EqlOutputV3, Identifier as EqlIdentifier,
+                EQL_SCHEMA_VERSION_V3,
+            };
+            // Same contract as the storage path: a native operand that fails
+            // the query twin's strict parse must map to the
+            // EQL_V3_CONVERSION_FAILED error message, not a bare serde error.
+            let incomplete = EqlOutputV3::Store(EqlCiphertextV3::Encrypted(EncryptedPayloadV3 {
+                version: EQL_SCHEMA_VERSION_V3,
+                identifier: EqlIdentifier::new("users", "email"),
+                ciphertext: super::support::dummy_encrypted_record(),
+                hmac_256: Some("aa".into()),
+                bloom_filter: None,
+                ore_block_u64_8_256: None,
+                ope_cllw: None,
+            }));
+            let err = query_output_v3(incomplete, &text_search_column())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.starts_with("EQL v3 conversion failed"),
+                "native parse failures must keep the conversion-failed error contract: {err}"
+            );
+            assert!(
+                err.contains("query_text_search_ore"),
+                "the error should name the target query domain: {err}"
+            );
+        }
+
         #[test]
         fn v2_output_serializes_identically_to_the_bare_eql_output() {
             let expected = serde_json::to_string(&scalar_query()).unwrap();
@@ -1530,7 +1956,7 @@ mod tests {
         }
 
         #[test]
-        fn v3_containment_output_is_a_query_jsonb_needle() {
+        fn v3_containment_output_is_a_query_json_needle() {
             let output = query_output(
                 EqlOutput::Store(ste_vec_payload()),
                 EqlVersion::V3,
@@ -1539,7 +1965,7 @@ mod tests {
             .unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
-            // The eql_v3.query_jsonb needle: {sv: [{s, hm|oc}]} — no
+            // The eql_v3.query_json needle: {sv: [{s, hm|oc}]} — no
             // envelope, no per-entry ciphertext or array marker.
             assert!(value.get("v").is_none(), "needle carries no envelope");
             assert!(value.get("i").is_none(), "needle carries no identifier");

@@ -389,7 +389,7 @@ describe('eql v3 query encryption', async () => {
     return p
   }
 
-  test('containment query returns the query_jsonb needle', async () => {
+  test('containment query returns the query_json needle', async () => {
     const result = (await encryptQuery(client, {
       plaintext: { role: 'admin' },
       column: 'profile',

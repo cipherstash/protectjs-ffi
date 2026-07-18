@@ -100,7 +100,7 @@ describe('postgres eql_v3', () => {
         score public.eql_v3_integer_ord_ore,
         rank public.eql_v3_integer_ord_ope,
         bio public.eql_v3_text_search_ore,
-        profile public.eql_v3_json
+        profile public.eql_v3_json_search
       )
     `)
 
@@ -377,7 +377,9 @@ describe('postgres eql_v3', () => {
     )
 
     // The operand carries the FULL text_search_ore term set (hm + ob + bf),
-    // whichever indexType was queried — the bf term drives `@>` here.
+    // whichever indexType was queried — the bf term drives `@@` here (eql
+    // 3.0.1 moved fuzzy bloom matching from `@>` to the dedicated `@@`
+    // operator; `@>`/`<@` remain jsonb/SteVec containment).
     const operand = await encryptQuery(protectClient, {
       plaintext: 'quick',
       column: 'bio',
@@ -391,7 +393,7 @@ describe('postgres eql_v3', () => {
     const res: QueryResult<{ bio: EncryptedPayload }> = await pg.query(
       `
       SELECT bio::jsonb FROM encrypted_v3
-      WHERE bio @> $1::jsonb::eql_v3.query_text_search_ore
+      WHERE bio @@ $1::jsonb::eql_v3.query_text_search_ore
       `,
       [operand],
     )
@@ -402,7 +404,7 @@ describe('postgres eql_v3', () => {
     expect(decrypted).toEqual(['the quick brown fox'])
   })
 
-  test('containment: a query_jsonb needle finds the matching document', async () => {
+  test('containment: a query_json needle finds the matching document', async () => {
     const ciphertexts = await encryptBulk(protectClient, {
       plaintexts: [
         {
@@ -434,7 +436,7 @@ describe('postgres eql_v3', () => {
     const res: QueryResult<{ profile: EncryptedPayload }> = await pg.query(
       `
       SELECT profile::jsonb FROM encrypted_v3
-      WHERE profile @> $1::jsonb::eql_v3.query_jsonb
+      WHERE profile @> $1::jsonb::eql_v3.query_json
       `,
       [needle],
     )

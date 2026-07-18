@@ -15,6 +15,30 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Breaking
+
+- **EQL v3 JSON domains renamed** (eql-bindings 3.0.1 / eql 3.0.1). SteVec
+  columns now target `public.eql_v3_json_search` (was `public.eql_v3_json`)
+  and containment needles bind as `eql_v3.query_json` (was
+  `eql_v3.query_jsonb`); `public.eql_v3_json` is now a distinct storage-only
+  scalar JSON domain, which protect-ffi does not yet emit (an index-less JSON
+  column still errors under `eqlVersion: 3`). Databases must run the eql 3.0.1
+  installer, and SQL referencing the old names must be updated.
+- **Fuzzy bloom matching is the `@@` operator** in eql 3.0.1: bind match
+  queries as `col @@ $1::jsonb::eql_v3.query_<name>`. `@>`/`<@` no longer
+  perform bloom matching on scalar search domains — they remain jsonb/SteVec
+  containment (`doc @> $1::jsonb::eql_v3.query_json` is unchanged).
+
+### Changed
+
+- **EQL v3 payloads (storage and query) are now emitted natively** via
+  cipherstash-client's `encrypt_eql_v3` instead of converting v2 payloads
+  through `from_v2` at runtime. The wire output is byte-identical
+  (pinned by scalar and SteVec equivalence tests against the `from_v2`
+  oracle); `from_v2` remains for decrypting/accepting v2 payloads. A native
+  payload that fails its target domain's strict parse surfaces as
+  `EQL_V3_CONVERSION_FAILED`, the same code conversion failures produced.
+
 ## [0.29.0] - 2026-07-09
 
 ### Added

@@ -1058,9 +1058,9 @@ dependencies = [
 
 [[package]]
 name = "eql-bindings"
-version = "3.0.0"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e5f74b509a0e4b00790f29f65fb6894c012653c8dc6be975eacc39ed91c630c"
+checksum = "39a6e26dbefb089908aa10521c6efffbe3f5404f9adfa7d43e4244d41c1d6db0"
 dependencies = [
  "schemars",
  "serde",

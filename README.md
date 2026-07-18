@@ -75,7 +75,7 @@ column type is `public.eql_v3_text_eq`); the term-only query twins do not
 | `number` / `decimal` / `date` / `timestamp` | `double` / `numeric` / `date` / `timestamp` | as above | as above |
 | any scalar | — | none | storage-only domain (`eql_v3_text`, `eql_v3_integer`, …) |
 | `boolean` | `boolean` | none only | `eql_v3_boolean` (storage-only — any index errors) |
-| `json` | `json` | `ste_vec` (required, `compat` mode) | `eql_v3_json` |
+| `json` | `json` | `ste_vec` (required, `compat` mode) | `eql_v3_json_search` |
 
 Notes:
 
@@ -101,9 +101,9 @@ Notes:
 - v3 query encryption returns index-terms-only operands: scalar queries
   produce the column domain's query twin (`{v, i, <terms>}`, no `c`
   ciphertext) — bind with `col = $1::jsonb::eql_v3.query_<name>` (or the
-  ordering / `@>` match operator). The operand always carries ALL the
+  ordering operators, or `@@` for match). The operand always carries ALL the
   column domain's terms, whichever `indexType` was queried. JSON
-  containment queries produce the `eql_v3.query_jsonb` needle, and
+  containment queries produce the `eql_v3.query_json` needle, and
   `ste_vec_selector` queries return the bare selector hash (a string) for
   the `->` / `->>` operators.
 - `ope`-indexed columns map to `<family>_ord_ope` and carry the `op`
