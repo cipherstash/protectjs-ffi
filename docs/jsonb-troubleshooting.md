@@ -29,22 +29,22 @@ Error: Unsupported conversion from "String" to JsonB
 
 | Scenario | Problem | Solution |
 |----------|---------|----------|
-| `ste_vec_term` with string | Term requires JSON | Use `ste_vec_selector` or pass an object |
+| `ste_vec_term` with JSON | Ordering term requires a string or number | Use `default` for containment |
 | Path query with object | Selector requires string | Convert to JSONPath string (`$.user.name`) |
 | Storage with wrong type | Column expects different type | Check `cast_as` in config |
 
-**Fix for term queries:**
+**Choose the operation that matches the query:**
 ```typescript
-// Wrong - string for containment
+// Ordering comparison against an extracted entry
 await encryptQuery(client, {
-  plaintext: '$.user.role',      // String
-  queryOp: 'ste_vec_term'        // Expects JSON
+  plaintext: 'admin',
+  queryOp: 'ste_vec_term'
 })
 
-// Correct - object for containment
+// Containment
 await encryptQuery(client, {
-  plaintext: { user: { role: 'admin' } },  // JSON object
-  queryOp: 'ste_vec_term'
+  plaintext: { user: { role: 'admin' } },
+  queryOp: 'default'
 })
 ```
 
@@ -77,7 +77,7 @@ await encryptQuery(client, {
 await encryptQuery(client, {
   plaintext: { count: 42 },
   indexType: 'ste_vec',
-  queryOp: 'ste_vec_term'
+  queryOp: 'default'
 })
 ```
 
@@ -141,7 +141,8 @@ await encrypt(client, {
 **Valid values:**
 - `'default'` - Infers from plaintext type
 - `'ste_vec_selector'` - Path queries
-- `'ste_vec_term'` - Containment queries
+- `'ste_vec_value_selector'` - Exact scalar equality at a path
+- `'ste_vec_term'` - String/number ordering comparisons
 
 ---
 
@@ -166,7 +167,8 @@ await encrypt(client, {
    | queryOp | Expected Plaintext |
    |---------|-------------------|
    | `ste_vec_selector` | string (JSONPath) |
-   | `ste_vec_term` | object or array |
+   | `ste_vec_value_selector` | `{path, value}` with a scalar value |
+   | `ste_vec_term` | string or number |
    | `default` | inferred from type |
 
 ### Common Type Issues
@@ -187,17 +189,26 @@ const plaintext = { role: 'admin' }
 // Arrays work for containment too
 await encryptQuery(client, {
   plaintext: ['admin', 'moderator'],  // Array is valid
-  queryOp: 'ste_vec_term'
+  queryOp: 'default'
 })
 ```
 
 ---
 
-### "Path + Value" Uses Containment Semantics
+### Exact "Path + Value" Queries
 
-**Important:** When using [`@cipherstash/stack`](https://github.com/cipherstash/stack) with `{ path: "user.role", value: "admin" }`, this is converted to a containment query (`{ user: { role: "admin" } }`) with `sv` output, **not** a selector+value comparison.
+Use `ste_vec_value_selector` with exactly `{path, value}` when you need exact
+equality for one scalar at one JSON path:
 
-This is intentional behavior. The path+value syntax is syntactic sugar for containment queries.
+```typescript
+await encryptQuery(client, {
+  plaintext: { path: '$.user.role', value: 'admin' },
+  queryOp: 'ste_vec_value_selector'
+})
+```
+
+The result is a one-entry selector-only containment needle. For objects or
+arrays, use a regular `default` containment query instead.
 
 ---
 
@@ -372,11 +383,11 @@ console.log('Has selector:', result.s !== undefined)
 console.log('Has ciphertext:', result.c !== undefined)  // Should be false
 ```
 
-**Term query:**
+**Containment query:**
 ```typescript
 const result = await encryptQuery(client, {
   plaintext: { role: 'admin' },
-  queryOp: 'ste_vec_term',
+  queryOp: 'default',
   ...
 })
 
@@ -415,13 +426,13 @@ test('round-trip encryption works', async () => {
   expect(selector.s).toBeDefined()
   expect(selector.c).toBeUndefined()
 
-  // Query - term
+  // Query - containment
   const term = await encryptQuery(client, {
     plaintext: { user: { role: 'admin' } },
     table: 'users',
     column: 'profile',
     indexType: 'ste_vec',
-    queryOp: 'ste_vec_term'
+    queryOp: 'default'
   })
   expect(term.sv).toBeDefined()
 })

@@ -70,7 +70,7 @@ describe('EncryptedV3Query', () => {
       ob: ['bb'],
       bf: [1, 2],
     } satisfies TextSearchOreQuery
-    const needle: EncryptedV3Query = { sv: [{ s: 'aa', hm: 'bb' }] }
+    const needle: EncryptedV3Query = { sv: [{ s: 'aa' }] }
     const selector: EncryptedV3Query = 'deadbeef'
 
     // Scalar operands are term-only: `c` must not typecheck.

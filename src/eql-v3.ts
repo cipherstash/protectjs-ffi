@@ -98,8 +98,10 @@ import type { TimestampOrdQuery } from './eql-v3-types/TimestampOrdQuery.js'
 // Wire-field newtypes and shared envelope pieces.
 export type { BloomFilter } from './eql-v3-types/BloomFilter.js'
 export type { Ciphertext } from './eql-v3-types/Ciphertext.js'
+export type { EntryCiphertext } from './eql-v3-types/EntryCiphertext.js'
 export type { Hmac256 } from './eql-v3-types/Hmac256.js'
 export type { Identifier as EqlV3Identifier } from './eql-v3-types/Identifier.js'
+export type { KeyHeader } from './eql-v3-types/KeyHeader.js'
 export type { OpeCllw } from './eql-v3-types/OpeCllw.js'
 export type { OreBlock256 } from './eql-v3-types/OreBlock256.js'
 export type { SchemaVersion } from './eql-v3-types/SchemaVersion.js'
@@ -111,7 +113,6 @@ export type { SteVecEntry as EqlV3SteVecEntry } from './eql-v3-types/SteVecEntry
 export type { SteVecForm } from './eql-v3-types/SteVecForm.js'
 export type { SteVecQuery } from './eql-v3-types/SteVecQuery.js'
 export type { SteVecQueryEntry } from './eql-v3-types/SteVecQueryEntry.js'
-export type { SteVecTerm } from './eql-v3-types/SteVecTerm.js'
 
 // Scalar domain payloads.
 export type {

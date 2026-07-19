@@ -83,7 +83,8 @@ Notes:
   capability — a combination that would silently drop a term errors instead
   (e.g. `unique` + `match` or `ore` + `match` on text: no single domain
   carries those term sets, so add the missing index to reach a search
-  domain, split the capabilities across columns, or use `eqlVersion: 2`).
+  domain or split the capabilities across columns. Scalar-only configurations
+  may use `eqlVersion: 2`; configurations containing `ste_vec` require v3.
 - The two text search domains differ only in the ordering term they carry:
   `eql_v3_text_search_ore` carries `ob` (ORE), `eql_v3_text_search` carries
   `op` (OPE). Configuring both `ore` and `ope` selects the ORE one.
@@ -96,6 +97,9 @@ Notes:
   `cipherstash-client` default since 0.40.0). v3 orders SteVec entries by
   the CLLW-OPE `op` term; a `standard`-mode index emits CLLW-ORE `oc`, which
   has no mechanical conversion, so such a column errors at config time.
+- Configurations containing `ste_vec` default to EQL v3. Explicit
+  `eqlVersion: 2` is rejected because client 0.42 cannot represent the new
+  selector-bound SteVec envelope in the v2 wire format.
 - `decrypt` accepts **both** formats regardless of `eqlVersion`, so v2 and
   v3 data can coexist during a migration.
 - v3 query encryption returns index-terms-only operands: scalar queries
@@ -105,7 +109,9 @@ Notes:
   column domain's terms, whichever `indexType` was queried. JSON
   containment queries produce the `eql_v3.query_json` needle, and
   `ste_vec_selector` queries return the bare selector hash (a string) for
-  the `->` / `->>` operators.
+  the `->` / `->>` operators. Exact JSON equality at a path uses
+  `ste_vec_value_selector` with `{path, value}` and returns a one-entry
+  selector-only containment needle suitable for the GIN-backed `@>` operator.
 - `ope`-indexed columns map to `<family>_ord_ope` and carry the `op`
   (CLLW-OPE) term (emitted since cipherstash-client 0.38.1).
 

@@ -71,22 +71,22 @@ Query encryption follows different paths based on query type:
 flowchart LR
     IN["JSONPath String<br/>'$.user.email'"] --> JP["JsPlaintext<br/>(String variant)"]
     JP --> PT["Plaintext::Utf8Str"]
-    PT --> EE["encrypt_eql()<br/>Query mode"]
-    EE --> EC["EqlCiphertext<br/>(selector only)"]
-    EC --> OUT["Encrypted Selector<br/>{ i, v, s: '...' }"]
+    PT --> EE["encrypt_eql_v3()<br/>Query mode"]
+    EE --> EC["EqlQueryPayloadV3<br/>(selector only)"]
+    EC --> OUT["Bare selector hash<br/>'...'"]
 ```
 
-**Output:** Only selector (`s`) field, no ciphertext (`c`)
+**Output:** The bare selector hash as a string, with no ciphertext.
 
-#### Containment Query (ste_vec_term)
+#### Containment Query (default)
 
 ```mermaid
 flowchart LR
     IN["JSON Fragment<br/>{ 'role': 'admin' }"] --> JP["JsPlaintext<br/>(JsonB variant)"]
     JP --> PT["Plaintext::JsonB"]
-    PT --> EE["encrypt_eql()<br/>Store mode"]
-    EE --> EC["EqlCiphertext<br/>(with sv array)"]
-    EC --> OUT["Encrypted Query<br/>{ i, v, sv: [...] }"]
+    PT --> EE["encrypt_eql_v3()<br/>Store mode"]
+    EE --> EC["EqlCiphertextV3<br/>(with sv array)"]
+    EC --> OUT["Containment Needle<br/>{ sv: [...] }"]
 ```
 
 **Output:** SteVec entries (`sv`) array, typically with ciphertext (`c`)
@@ -203,7 +203,7 @@ const query = await encryptQuery(client, {
   table: 'users',
   column: 'profile',
   indexType: 'ste_vec',
-  queryOp: 'ste_vec_term'  // Or use 'default' with object
+  queryOp: 'default'
 })
 
 // Result: { i, v, sv: [...] }

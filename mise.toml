@@ -3,7 +3,7 @@ node = "latest"
 # zig + cargo-zigbuild are pinned to the versions proven by the successful
 # v0.27.0 release (run 28709228045). `latest` is how cargo-zigbuild 0.23.0
 # silently broke the Release workflow (its cargo-options bump dropped the
-# CARGO_BUILD_TARGET env binding — CIP-3399); pinning makes toolchain
+# CARGO_BUILD_TARGET env binding); pinning makes toolchain
 # upgrades deliberate PRs (bump here, watch the release dry-run) instead of
 # ambient breakage at release time.
 zig = "0.16.0"

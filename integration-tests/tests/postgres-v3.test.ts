@@ -203,7 +203,7 @@ describe('postgres eql_v3', () => {
     expect(decrypted).toEqual([10, 20, 30])
   })
 
-  // Real-ciphertext _ord_ope coverage (CIP-3348): cipherstash-client 0.38.1
+  // Real-ciphertext _ord_ope coverage: cipherstash-client 0.38.1
   // emits the scalar `op` (CLLW-OPE) term, so an `ope`-indexed column can be
   // produced end-to-end (0.38.0 dropped the term at encrypt time). The OPE
   // extractor is the unsuffixed `ord_term`; ORE carries the `_ore` suffix.
@@ -237,7 +237,7 @@ describe('postgres eql_v3', () => {
   })
 
   // ---------------------------------------------------------------------
-  // encryptQuery round-trips (CIP-3423): rows written via encrypt(), then
+  // encryptQuery round-trips: rows written via encrypt(), then
   // matched with term-only operands via the public SQL entry points
   // (`col <op> $1::jsonb::eql_v3.query_<name>`).
   // ---------------------------------------------------------------------
@@ -430,7 +430,6 @@ describe('postgres eql_v3', () => {
       column: 'profile',
       table: 'v3pg',
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_term',
     })
 
     const res: QueryResult<{ profile: EncryptedPayload }> = await pg.query(
@@ -470,15 +469,19 @@ describe('postgres eql_v3', () => {
 
     // `->` has text and integer overloads, so pin the argument type. The
     // extracted jsonb_entry carries the selector it matched on.
-    const res: QueryResult<{ entry: { s: string } }> = await pg.query(
-      `
-      SELECT (profile -> $1::text)::jsonb AS entry FROM encrypted_v3
-      WHERE profile -> $1::text IS NOT NULL
-      `,
-      [selector],
-    )
+    const res: QueryResult<{ entry: EncryptedPayload & { s: string } }> =
+      await pg.query(
+        `
+        SELECT (profile -> $1::text)::jsonb AS entry FROM encrypted_v3
+        WHERE profile -> $1::text IS NOT NULL
+        `,
+        [selector],
+      )
 
     expect(res.rowCount).toBe(1)
     expect(res.rows[0].entry.s).toBe(selector)
+    expect(
+      await decrypt(protectClient, { ciphertext: res.rows[0].entry }),
+    ).toBe('admin')
   })
 })

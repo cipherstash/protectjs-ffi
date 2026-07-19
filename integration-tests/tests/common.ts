@@ -88,6 +88,32 @@ export const encryptConfig: EncryptConfig = {
   },
 }
 
+// Scalar-only config used to retain explicit coverage of the EQL v2 default.
+// A mixed config containing SteVec defaults to v3 under client 0.42.
+export const scalarConfig: EncryptConfig = {
+  v: 1,
+  tables: {
+    users: {
+      email: {
+        cast_as: 'string',
+        indexes: {
+          ore: {},
+          match: {},
+          unique: {},
+        },
+      },
+      score: {
+        cast_as: 'bigint',
+        indexes: { ore: {} },
+      },
+      score_float: {
+        cast_as: 'number',
+        indexes: { ore: {} },
+      },
+    },
+  },
+}
+
 // A single JSON column with no indexes (will be treated as an opaque blob)
 export const jsonOpaque: EncryptConfig = {
   v: 1,
@@ -118,18 +144,15 @@ export const datesConfig: EncryptConfig = {
 
 // A single JSON column with an ste_vec index.
 //
-// `mode` is pinned to `standard` (CLLW-ORE, `oc` terms). cipherstash-config
-// 0.40.0 flipped the default to `compat` (CLLW-OPE, `op` terms); pinning keeps
-// these v2 tests on the ORE path that JSON columns with existing rows must
-// stay on, since the two orderings are not cross-comparable. EQL v3 accepts
-// only `compat` — see `v3Config` in eql-v3.test.ts.
+// Client 0.42 emits SteVec only in EQL v3, whose JSON domain supports the
+// `compat` CLLW-OPE (`op`) ordering term.
 export const jsonSteVec: EncryptConfig = {
   v: 1,
   tables: {
     users: {
       profile: {
         cast_as: 'json',
-        indexes: { ste_vec: { prefix: 'users/profile', mode: 'standard' } },
+        indexes: { ste_vec: { prefix: 'users/profile', mode: 'compat' } },
       },
     },
   },

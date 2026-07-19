@@ -17,6 +17,19 @@ uses the promoted section as the GitHub release notes.
 
 ### Breaking
 
+- **EQL v3 encrypted JSON uses the client 0.42 key-header envelope.** A stored
+  SteVec document is now `{v, k: "sv", i, h, sv}`: key-retrieval material is
+  stored once in `h`, each entry carries raw AEAD output in `c`, and the entry
+  selector supplies the authenticated nonce. Per-entry `hm` terms are removed;
+  exact equality uses value-inclusive selectors. Existing v3 SteVec rows must
+  be decrypted and re-encrypted because the old wire format cannot be converted
+  mechanically.
+- **`ste_vec_term` now means an ordering operand**, matching
+  cipherstash-client: it accepts a string or number for comparisons against an
+  extracted JSON entry. Use `default` with an object or array for containment.
+- Configurations containing a `ste_vec` index now default to EQL v3, and an
+  explicit `eqlVersion: 2` is rejected during client creation. Scalar-only
+  configurations retain the v2 default.
 - **EQL v3 JSON domains renamed** (eql-bindings 3.0.1 / eql 3.0.1). SteVec
   columns now target `public.eql_v3_json_search` (was `public.eql_v3_json`)
   and containment needles bind as `eql_v3.query_json` (was
@@ -31,11 +44,19 @@ uses the promoted section as the GitHub release notes.
 
 ### Changed
 
+- Bumped cipherstash-client, cts-common, stack-auth, and stack-profile to
+  0.42.0. Until the matching eql-bindings release is published, the draft pins
+  the EQL compatibility changes by commit; the generated TypeScript types and
+  integration-test SQL snapshot are refreshed from that same revision.
+- Added `ste_vec_value_selector` for exact equality at a JSON path. It accepts
+  exactly `{path: "$.field", value: <scalar>}` and emits a one-entry,
+  selector-only containment needle. Objects and arrays continue to use the
+  regular containment path.
 - **EQL v3 payloads (storage and query) are now emitted natively** via
   cipherstash-client's `encrypt_eql_v3` instead of converting v2 payloads
-  through `from_v2` at runtime. The wire output is byte-identical
-  (pinned by scalar and SteVec equivalence tests against the `from_v2`
-  oracle); `from_v2` remains for decrypting/accepting v2 payloads. A native
+  through `from_v2` at runtime. Scalar wire output remains pinned against the
+  `from_v2` oracle; SteVec v3 is intentionally no longer convertible from v2.
+  A native
   payload that fails its target domain's strict parse surfaces as
   `EQL_V3_CONVERSION_FAILED`, the same code conversion failures produced.
 
@@ -43,7 +64,7 @@ uses the promoted section as the GitHub release notes.
 
 ### Added
 
-- **EQL v3 scalar query-term encryption (CIP-3423).** On an `eqlVersion: 3`
+- **EQL v3 scalar query-term encryption.** On an `eqlVersion: 3`
   client, `encryptQuery` / `encryptQueryBulk` on a scalar index now return the
   term-only operand for the column domain's query twin — `{v: 3, i, <terms>}`
   with **no `c` ciphertext** — bindable as
@@ -74,7 +95,7 @@ uses the promoted section as the GitHub release notes.
   locked release (`mise run eql:v3:build`, `scripts/sync-eql-v3-types.sh`).
 - Bumped `eql-bindings` to `3.0.0-alpha.3` (from `0.4.2`): catalog-generated
   scalar `QueryPayload` variants, scalar term hoisting in `from_v2_query`, and
-  the CIP-3442 domain rename — query operands are `eql_v3.query_<name>` /
+  the domain rename — query operands are `eql_v3.query_<name>` /
   `eql_v3.query_jsonb` (the pre-release `jsonb_query` name is gone), column
   domains live in `public.*`.
 - The integration-test EQL v3 SQL snapshot
@@ -90,7 +111,7 @@ uses the promoted section as the GitHub release notes.
 
 ### Breaking
 
-- **EQL v3 public column domains are versioned (CIP-3472).** Every
+- **EQL v3 public column domain is versioned.** Every
   public-schema column domain gained an `eql_v3_` prefix: a column declared
   `email public.text_eq` is now `email public.eql_v3_text_eq`, and
   `public.json` is `public.eql_v3_json`. The term-only query twins are
@@ -181,7 +202,7 @@ uses the promoted section as the GitHub release notes.
 ### Fixed
 
 - Access-key auth now refreshes tokens correctly (via the `cipherstash-client`
-  bump, CIP-3233). Previously the refresher treated the absolute-epoch `expiry`
+  bump). Previously the refresher treated the absolute-epoch `expiry`
   as a relative duration, so auto-refresh never fired and every encrypt/decrypt
   began failing roughly 15 minutes after process start.
 
