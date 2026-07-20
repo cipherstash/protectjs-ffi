@@ -15,6 +15,8 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-20
+
 ### Breaking
 
 - **EQL v3 encrypted JSON uses the client 0.42 key-header envelope.** A stored
@@ -304,7 +306,8 @@ uses the promoted section as the GitHub release notes.
   changes).
 - Upgrade `cipherstash-client` to `0.35.0`.
 
-[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.26.0...v0.28.0
 [0.26.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.25.0...v0.26.0
