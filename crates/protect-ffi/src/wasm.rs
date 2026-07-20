@@ -54,7 +54,7 @@ use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
     auth_failure_message, encrypted_record_from_value, into_store_ciphertext,
     into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_output,
-    query_output_v3, storage_output, storage_output_v3, validate_eql_version, DecryptBulkOptions,
+    query_output_v3, resolve_eql_version, storage_output, storage_output_v3, DecryptBulkOptions,
     DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions, EncryptQueryBulkOptions,
     EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
 };
@@ -286,9 +286,14 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     let mut opts: NewClientOpts =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
-    // Validate before any network I/O: a bad eqlVersion should fail fast,
-    // not after ZeroKMS setup.
-    let eql_version = validate_eql_version(opts.eql_version).map_err(error_to_js)?;
+    // Resolve before any network I/O. Client 0.42's SteVec envelope is
+    // v3-only; scalar-only configurations keep the historical v2 default.
+    let encrypt_config = opts
+        .encrypt_config
+        .into_config_map()
+        .map_err(|e| js_error(&e.to_string()))?;
+    let eql_version =
+        resolve_eql_version(opts.eql_version, &encrypt_config).map_err(error_to_js)?;
 
     // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
     // `from_hex` takes a `String` for the UUID, which would force an
@@ -315,11 +320,7 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     Ok(WasmClient {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(
-            opts.encrypt_config
-                .into_config_map()
-                .map_err(|e| js_error(&e.to_string()))?,
-        ),
+        encrypt_config: Arc::new(encrypt_config),
         eql_version,
     })
 }
@@ -696,7 +697,7 @@ async fn do_decrypt_bulk(
     client: &WasmClient,
     opts: DecryptBulkOptions,
 ) -> Result<Vec<JsPlaintext>, Error> {
-    let encrypted_records: Vec<WithContext<'static>> = opts
+    let encrypted_records: Vec<WithContext<'static, crate::eql_v3::DecryptableRecord>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -725,7 +726,7 @@ async fn do_decrypt_bulk_fallible(
     // Decode each ciphertext independently so a single invalid payload turns
     // into a per-item `DecryptResult::Error` rather than aborting the whole
     // batch — matches the `*Fallible` contract.
-    let parsed: Vec<Result<WithContext<'static>, Error>> = opts
+    let parsed: Vec<Result<WithContext<'static, crate::eql_v3::DecryptableRecord>, Error>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -736,7 +737,8 @@ async fn do_decrypt_bulk_fallible(
         .collect();
 
     let mut results: Vec<Option<DecryptResult>> = (0..parsed.len()).map(|_| None).collect();
-    let mut valid_records: Vec<WithContext<'static>> = Vec::with_capacity(parsed.len());
+    let mut valid_records: Vec<WithContext<'static, crate::eql_v3::DecryptableRecord>> =
+        Vec::with_capacity(parsed.len());
     let mut valid_indices: Vec<usize> = Vec::with_capacity(parsed.len());
 
     for (idx, item) in parsed.into_iter().enumerate() {

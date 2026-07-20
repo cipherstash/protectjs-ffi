@@ -17,7 +17,7 @@ import { assertSteVec, jsonSteVec } from './common.js'
  *
  * These tests investigate and verify the behavior of:
  * 1. `encryptBulk` output structure for nested JSON with ste_vec indexes
- * 2. `encryptQueryBulk` with `ste_vec_term` queryOp for containment queries (@>, <@)
+ * 2. `encryptQueryBulk` with default containment queries (@>, <@)
  * 3. Differences between storage encryption and query encryption
  *
  * The FFI handles JSON flattening internally via the Rust cipherstash-client library.
@@ -54,7 +54,7 @@ describe('encryptBulk output structure for nested JSON', () => {
 
     expect(sv.length).toBeGreaterThan(0)
 
-    // EQL v2.3: SteVec storage places the root ciphertext at sv[0].c, not at the root.
+    // EQL v3 stores its key header at the root and raw root ciphertext at sv[0].c.
     expect(encrypted).not.toHaveProperty('c')
     expect(sv[0]).toHaveProperty('c')
 
@@ -95,10 +95,9 @@ describe('encryptBulk output structure for nested JSON', () => {
     const sv = encrypted.sv
     if (!sv) throw new Error('sv should be defined')
 
-    // Count entries by field presence. Under SteVec Standard mode (pinned by
-    // the `jsonSteVec` fixture) numeric and string values share a single
-    // orderable field `oc`, and non-orderable values (booleans, null, arrays,
-    // objects) carry an `hm` HMAC.
+    // Count entries by field presence. Client 0.42 uses value-inclusive
+    // selectors for exact matching and `op` only for ordering string/number
+    // path entries.
     const withSelector = sv.filter((e) => e.s !== undefined)
     const withHmac = sv.filter((e) => e.hm !== undefined)
     const withOreCllw = sv.filter((e) => e.oc !== undefined)
@@ -108,21 +107,17 @@ describe('encryptBulk output structure for nested JSON', () => {
     console.log('SteVec entry counts:')
     console.log(`  Total entries: ${sv.length}`)
     console.log(`  With selector (s): ${withSelector.length}`)
-    console.log(`  With HMAC (hm): ${withHmac.length}`)
-    console.log(`  With ORE CLLW (oc): ${withOreCllw.length}`)
+    console.log(`  With legacy HMAC (hm): ${withHmac.length}`)
+    console.log(`  With legacy ORE CLLW (oc): ${withOreCllw.length}`)
+    console.log(`  With OPE CLLW (op): ${withOpeCllw.length}`)
     console.log(`  With array flag (a): ${withArrayFlag.length}`)
 
     // All entries should have selectors
     expect(withSelector.length).toBe(sv.length)
 
-    // Scalar string and numeric values produce ORE CLLW (`oc`) entries
-    expect(withOreCllw.length).toBeGreaterThan(0)
-
-    // The Compat-mode CLLW-OPE key never appears in Standard mode
-    expect(withOpeCllw.length).toBe(0)
-
-    // Non-orderable values (root object, booleans, arrays) produce HMAC (`hm`) entries
-    expect(withHmac.length).toBeGreaterThan(0)
+    expect(withOpeCllw.length).toBeGreaterThan(0)
+    expect(withOreCllw.length).toBe(0)
+    expect(withHmac.length).toBe(0)
 
     // With default ArrayIndexMode (NONE), array elements should not have array flag
     expect(withArrayFlag.length).toBe(0)
@@ -167,29 +162,29 @@ describe('encryptBulk output structure for nested JSON', () => {
 })
 
 /**
- * Tests for ste_vec_term queryOp
+ * Tests for explicit default containment queries
  *
- * ste_vec_term is used for JSON containment queries (@>, <@).
+ * Object and array inputs use the default operation for JSON containment.
  */
-describe('encryptQuery/Bulk with ste_vec_term for containment', () => {
-  test('encryptQuery with ste_vec_term - simple object', async () => {
+describe('encryptQuery/Bulk with default containment', () => {
+  test('encryptQuery with default - simple object', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
     const result = await encryptQuery(client, {
       plaintext: { name: 'Alice' },
       ...profileColumn,
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_term',
+      queryOp: 'default',
     })
 
-    console.log('encryptQuery ste_vec_term simple object output:')
+    console.log('encryptQuery default containment output:')
     console.log(JSON.stringify(result, null, 2))
 
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
+    expect(result).toHaveProperty('sv')
+    expect(result).not.toHaveProperty('i')
   })
 
-  test('encryptQueryBulk with ste_vec_term produces query structure', async () => {
+  test('encryptQueryBulk with default produces query structure', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
     const queries: QueryPayload[] = [
@@ -197,7 +192,7 @@ describe('encryptQuery/Bulk with ste_vec_term for containment', () => {
         plaintext: { user: { role: 'admin' } },
         ...profileColumn,
         indexType: 'ste_vec',
-        queryOp: 'ste_vec_term',
+        queryOp: 'default',
       },
     ]
 
@@ -206,14 +201,14 @@ describe('encryptQuery/Bulk with ste_vec_term for containment', () => {
     expect(result).toHaveLength(1)
     const encrypted = result[0]
 
-    expect(encrypted).toHaveProperty('i')
-    expect(encrypted).toHaveProperty('v')
+    expect(encrypted).toHaveProperty('sv')
+    expect(encrypted).not.toHaveProperty('i')
 
-    console.log('encryptQueryBulk ste_vec_term output:')
+    console.log('encryptQueryBulk default containment output:')
     console.log(JSON.stringify(encrypted, null, 2))
   })
 
-  test('encryptQueryBulk ste_vec_term with nested query object', async () => {
+  test('encryptQueryBulk default with nested query object', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
     const queries: QueryPayload[] = [
@@ -221,21 +216,21 @@ describe('encryptQuery/Bulk with ste_vec_term for containment', () => {
         plaintext: { profile: { verified: true } },
         ...profileColumn,
         indexType: 'ste_vec',
-        queryOp: 'ste_vec_term',
+        queryOp: 'default',
       },
     ]
 
     const result = await encryptQueryBulk(client, { queries })
     const encrypted = result[0]
 
-    console.log('ste_vec_term nested query output:')
+    console.log('default nested containment output:')
     console.log(JSON.stringify(encrypted, null, 2))
 
-    expect(encrypted).toHaveProperty('i')
-    expect(encrypted).toHaveProperty('v')
+    expect(encrypted).toHaveProperty('sv')
+    expect(encrypted).not.toHaveProperty('i')
   })
 
-  test('encryptQueryBulk ste_vec_term with array value', async () => {
+  test('encryptQueryBulk default with array value', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
     const queries: QueryPayload[] = [
@@ -243,18 +238,18 @@ describe('encryptQuery/Bulk with ste_vec_term for containment', () => {
         plaintext: { tags: ['admin'] },
         ...profileColumn,
         indexType: 'ste_vec',
-        queryOp: 'ste_vec_term',
+        queryOp: 'default',
       },
     ]
 
     const result = await encryptQueryBulk(client, { queries })
     const encrypted = result[0]
 
-    console.log('ste_vec_term array containment query output:')
+    console.log('default array containment query output:')
     console.log(JSON.stringify(encrypted, null, 2))
 
-    expect(encrypted).toHaveProperty('i')
-    expect(encrypted).toHaveProperty('v')
+    expect(encrypted).toHaveProperty('sv')
+    expect(encrypted).not.toHaveProperty('i')
   })
 })
 
@@ -273,14 +268,14 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
       ],
     })
 
-    // Query encryption with ste_vec_term
+    // Query encryption with default containment
     const queried = await encryptQueryBulk(client, {
       queries: [
         {
           plaintext: jsonPayload,
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
       ],
     })
@@ -288,37 +283,37 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
     console.log('=== STORAGE (encryptBulk) ===')
     console.log(JSON.stringify(stored[0], null, 2))
 
-    console.log('\n=== QUERY (encryptQueryBulk with ste_vec_term) ===')
+    console.log('\n=== QUERY (encryptQueryBulk with default containment) ===')
     console.log(JSON.stringify(queried[0], null, 2))
 
     const storedEnc = stored[0]
     const queriedEnc = queried[0]
     assertSteVec(storedEnc)
-    assertSteVec(queriedEnc)
+    const queryNeedle = queriedEnc as { sv?: unknown[] }
 
     console.log('\n=== STRUCTURAL COMPARISON ===')
     console.log(
       `Storage has 'sv[0].c' (root ciphertext): ${storedEnc.sv?.[0]?.c !== undefined}`,
     )
     console.log(
-      `Query has 'sv[0].c' (root ciphertext): ${queriedEnc.sv?.[0]?.c !== undefined}`,
+      `Query has 'sv[0].c' (root ciphertext): ${(queryNeedle.sv?.[0] as { c?: unknown } | undefined)?.c !== undefined}`,
     )
     console.log(
       `Storage has 'sv' (flattened entries): ${storedEnc.sv !== undefined}`,
     )
     console.log(
-      `Query has 'sv' (flattened entries): ${queriedEnc.sv !== undefined}`,
+      `Query has 'sv' (flattened entries): ${queryNeedle.sv !== undefined}`,
     )
 
-    if (storedEnc.sv && queriedEnc.sv) {
+    if (storedEnc.sv && queryNeedle.sv) {
       console.log(`Storage sv count: ${storedEnc.sv.length}`)
-      console.log(`Query sv count: ${queriedEnc.sv.length}`)
+      console.log(`Query sv count: ${queryNeedle.sv.length}`)
     }
 
     expect(storedEnc).toHaveProperty('i')
     expect(storedEnc).toHaveProperty('v')
-    expect(queriedEnc).toHaveProperty('i')
-    expect(queriedEnc).toHaveProperty('v')
+    expect(queriedEnc).not.toHaveProperty('i')
+    expect(queriedEnc).not.toHaveProperty('v')
   })
 
   test('compare storage vs query (selector operation only)', async () => {
@@ -374,9 +369,7 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
     expect(storedEnc).toHaveProperty('sv')
     expect(storedEnc.sv?.[0]).toHaveProperty('c')
 
-    // Selector query should have s (selector) but not c
-    expect(querySelector[0]).toHaveProperty('s')
-    expect(querySelector[0]).not.toHaveProperty('c')
+    expect(querySelector[0]).toBeTypeOf('string')
   })
 })
 
@@ -388,7 +381,7 @@ describe('compare encryptBulk vs encryptQueryBulk for JSON', () => {
  * - column @> '{"user": {"role": "admin"}}'::jsonb
  * - column @> '{"tags": ["admin"]}'::jsonb
  */
-describe('ste_vec_term containment query patterns', () => {
+describe('default containment query patterns', () => {
   test('containment query for exact key-value match', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
@@ -399,7 +392,7 @@ describe('ste_vec_term containment query patterns', () => {
           plaintext: { role: 'admin' },
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
       ],
     })
@@ -407,8 +400,7 @@ describe('ste_vec_term containment query patterns', () => {
     console.log('Containment query for {"role": "admin"}:')
     console.log(JSON.stringify(result[0], null, 2))
 
-    expect(result[0]).toHaveProperty('i')
-    expect(result[0]).toHaveProperty('v')
+    expect(result[0]).toHaveProperty('sv')
   })
 
   test('containment query for nested path match', async () => {
@@ -421,7 +413,7 @@ describe('ste_vec_term containment query patterns', () => {
           plaintext: { user: { role: 'admin' } },
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
       ],
     })
@@ -429,8 +421,7 @@ describe('ste_vec_term containment query patterns', () => {
     console.log('Containment query for {"user": {"role": "admin"}}:')
     console.log(JSON.stringify(result[0], null, 2))
 
-    expect(result[0]).toHaveProperty('i')
-    expect(result[0]).toHaveProperty('v')
+    expect(result[0]).toHaveProperty('sv')
   })
 
   test('containment query for array element', async () => {
@@ -443,7 +434,7 @@ describe('ste_vec_term containment query patterns', () => {
           plaintext: { tags: ['admin'] },
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
       ],
     })
@@ -451,8 +442,7 @@ describe('ste_vec_term containment query patterns', () => {
     console.log('Containment query for {"tags": ["admin"]}:')
     console.log(JSON.stringify(result[0], null, 2))
 
-    expect(result[0]).toHaveProperty('i')
-    expect(result[0]).toHaveProperty('v')
+    expect(result[0]).toHaveProperty('sv')
   })
 
   test('bulk containment queries for OR conditions', async () => {
@@ -465,19 +455,19 @@ describe('ste_vec_term containment query patterns', () => {
           plaintext: { role: 'admin' },
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
         {
           plaintext: { role: 'moderator' },
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
         {
           plaintext: { status: 'active' },
           ...profileColumn,
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
+          queryOp: 'default',
         },
       ],
     })
@@ -488,8 +478,7 @@ describe('ste_vec_term containment query patterns', () => {
     for (let i = 0; i < result.length; i++) {
       console.log(`\nQuery ${i + 1}:`)
       console.log(JSON.stringify(result[i], null, 2))
-      expect(result[i]).toHaveProperty('i')
-      expect(result[i]).toHaveProperty('v')
+      expect(result[i]).toHaveProperty('sv')
     }
   })
 })
@@ -498,7 +487,7 @@ describe('type inference for ste_vec queries', () => {
   test('encryptQuery with default + object infers containment (term)', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
-    // Object plaintext with queryOp: 'default' should infer ste_vec_term
+    // Object plaintext with queryOp: 'default' selects containment.
     const result = await encryptQuery(client, {
       plaintext: { role: 'admin' },
       table: 'users',
@@ -512,8 +501,7 @@ describe('type inference for ste_vec queries', () => {
 
     // Should have sv array (containment/term behavior)
     expect(result).toHaveProperty('sv')
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
+    expect(result).not.toHaveProperty('i')
   })
 
   test('encryptQuery with default + string infers path selector', async () => {
@@ -531,15 +519,13 @@ describe('type inference for ste_vec queries', () => {
     console.log('String with default queryOp output:')
     console.log(JSON.stringify(result, null, 2))
 
-    // Should have s (selector) but not c (no ciphertext for selector-only)
-    expect(result).toHaveProperty('s')
-    expect(result).not.toHaveProperty('c')
+    expect(result).toBeTypeOf('string')
   })
 
   test('encryptQuery with default + array infers containment (term)', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
-    // Array plaintext with queryOp: 'default' should infer ste_vec_term
+    // Array plaintext with queryOp: 'default' selects containment.
     const result = await encryptQuery(client, {
       plaintext: ['admin', 'moderator'],
       table: 'users',
@@ -582,44 +568,37 @@ describe('type inference for ste_vec queries', () => {
     // First result (object) should have sv
     expect(result[0]).toHaveProperty('sv')
 
-    // Second result (string) should have s but not c
-    expect(result[1]).toHaveProperty('s')
-    expect(result[1]).not.toHaveProperty('c')
+    expect(result[1]).toBeTypeOf('string')
   })
 })
 
 describe('type inference edge cases', () => {
-  test('explicit ste_vec_term requires JSON (string throws error)', async () => {
+  test('explicit ste_vec_term accepts an ordering string', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
 
-    // ste_vec_term is for JSON containment queries (@>)
-    // Passing a string should error - containment requires JSON objects/arrays
-    await expect(
-      encryptQuery(client, {
-        plaintext: 'this is a string but we want term',
-        table: 'users',
-        column: 'profile',
-        indexType: 'ste_vec',
-        queryOp: 'ste_vec_term', // Requires JSON, not string
-      }),
-    ).rejects.toThrow(/Invalid query input for 'ste_vec_term'/)
-  })
-
-  test('explicit ste_vec_term with JSON object works', async () => {
-    const client = await newClient({ encryptConfig: jsonSteVec })
-
-    // ste_vec_term with JSON object should produce sv array for containment
     const result = await encryptQuery(client, {
-      plaintext: { role: 'admin' },
+      plaintext: 'ordered value',
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
       queryOp: 'ste_vec_term',
     })
 
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
-    expect(result).toHaveProperty('sv') // Flattened entries for containment
+    expect(result).not.toHaveProperty('sv')
+  })
+
+  test('explicit ste_vec_term rejects a JSON object', async () => {
+    const client = await newClient({ encryptConfig: jsonSteVec })
+
+    await expect(
+      encryptQuery(client, {
+        plaintext: { role: 'admin' },
+        table: 'users',
+        column: 'profile',
+        indexType: 'ste_vec',
+        queryOp: 'ste_vec_term',
+      }),
+    ).rejects.toThrow(/Invalid query input for 'ste_vec_term'/)
   })
 
   test('explicit ste_vec_selector overrides inference', async () => {
@@ -634,8 +613,7 @@ describe('type inference edge cases', () => {
       queryOp: 'ste_vec_selector', // Explicit
     })
 
-    expect(result).toHaveProperty('s')
-    expect(result).not.toHaveProperty('c')
+    expect(result).toBeTypeOf('string')
   })
 
   test('empty object infers term', async () => {
@@ -702,45 +680,21 @@ describe('type inference equivalence', () => {
   // Note: Encryption uses randomized nonces, so we compare structural properties
   // rather than full equality (toEqual would fail due to different ciphertext values)
 
-  test('inferred term produces same structure as explicit term', async () => {
+  test('exact value selector emits a single selector-only entry', async () => {
     const client = await newClient({ encryptConfig: jsonSteVec })
-    const plaintext = { role: 'admin' }
 
-    const inferred = await encryptQuery(client, {
-      plaintext,
+    const result = await encryptQuery(client, {
+      plaintext: { path: '$.role', value: 'admin' },
       table: 'users',
       column: 'profile',
       indexType: 'ste_vec',
-      queryOp: 'default', // Inferred as term
+      queryOp: 'ste_vec_value_selector',
     })
 
-    const explicit = await encryptQuery(client, {
-      plaintext,
-      table: 'users',
-      column: 'profile',
-      indexType: 'ste_vec',
-      queryOp: 'ste_vec_term', // Explicit term
-    })
-
-    // Both should have same structural properties (sv array for term)
-    expect(inferred).toHaveProperty('sv')
-    expect(explicit).toHaveProperty('sv')
-    expect(inferred).toHaveProperty('i')
-    expect(explicit).toHaveProperty('i')
-    expect(inferred).toHaveProperty('v')
-    expect(explicit).toHaveProperty('v')
-
-    assertSteVec(inferred)
-    assertSteVec(explicit)
-
-    // Identifier should match (same table/column)
-    expect(inferred.i).toEqual(explicit.i)
-
-    // Version should match
-    expect(inferred.v).toEqual(explicit.v)
-
-    // sv array should have same length (same flattening)
-    expect(inferred.sv?.length).toEqual(explicit.sv?.length)
+    const needle = result as { sv: Array<{ s: string; c?: never }> }
+    expect(needle.sv).toHaveLength(1)
+    expect(needle.sv[0]).toHaveProperty('s')
+    expect(needle.sv[0]).not.toHaveProperty('c')
   })
 
   test('inferred selector produces same structure as explicit selector', async () => {
@@ -763,20 +717,9 @@ describe('type inference equivalence', () => {
       queryOp: 'ste_vec_selector', // Explicit selector
     })
 
-    // Both should have same structural properties (s for selector)
-    expect(inferred).toHaveProperty('s')
-    expect(explicit).toHaveProperty('s')
-    expect(inferred).not.toHaveProperty('c')
-    expect(explicit).not.toHaveProperty('c')
-
-    assertSteVec(inferred)
-    assertSteVec(explicit)
-
-    // Identifier should match
-    expect(inferred.i).toEqual(explicit.i)
-
-    // Selector value should match (deterministic for same path)
-    expect(inferred.s).toEqual(explicit.s)
+    expect(inferred).toBeTypeOf('string')
+    expect(explicit).toBeTypeOf('string')
+    expect(inferred).toEqual(explicit)
   })
 })
 
@@ -837,13 +780,10 @@ describe('type inference with nested structures', () => {
       queryOp: 'default',
     })
 
-    // null as JsonB goes through StoreMode, producing sv array.
-    // EQL v2.3: the root ciphertext lives at sv[0].c, not at the root.
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
+    // null as JsonB goes through StoreMode, producing a v3 containment needle.
     expect(result).not.toHaveProperty('c')
     expect(result).toHaveProperty('sv')
-    assertSteVec(result)
-    expect(result.sv?.[0]).toHaveProperty('c')
+    const needle = result as { sv: Array<{ s: string; c?: never }> }
+    expect(needle.sv[0]).not.toHaveProperty('c')
   })
 })

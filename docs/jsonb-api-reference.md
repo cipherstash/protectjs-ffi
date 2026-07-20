@@ -98,8 +98,8 @@ Automatically infers operation from plaintext type:
 | Plaintext Type | Inferred Operation | Behavior |
 |---------------|-------------------|----------|
 | String | `ste_vec_selector` | Path query |
-| Object | `ste_vec_term` | Containment query |
-| Array | `ste_vec_term` | Containment query |
+| Object | containment | Containment query |
+| Array | containment | Containment query |
 | Number | **Error** | Not supported |
 | Boolean | **Error** | Not supported |
 
@@ -111,11 +111,11 @@ await encryptQuery(client, {
   queryOp: 'default'  // Infers ste_vec_selector
 })
 
-// Object → term
+// Object → containment needle
 await encryptQuery(client, {
   plaintext: { role: 'admin' },
   indexType: 'ste_vec',
-  queryOp: 'default'  // Infers ste_vec_term
+  queryOp: 'default'
 })
 ```
 
@@ -138,29 +138,34 @@ const selector = await encryptQuery(client, {
 // Use with: eql_v2.jsonb_path_query(profile, $selector)
 ```
 
-### `ste_vec_term`
+### `ste_vec_value_selector`
 
-Explicitly encrypts a JSON fragment for containment queries.
+Generates an exact-match selector for one scalar value at a JSON path.
 
-**Input:** Object or Array
-**Output:** `{ i, v, sv: [...] }` (flattened entries with ciphertext)
+**Input:** Exactly `{ path: string, value: string | number | boolean | null }`
+**Output:** A one-entry, selector-only containment needle
 
 ```typescript
-const term = await encryptQuery(client, {
-  plaintext: { user: { role: 'admin' } },
+const needle = await encryptQuery(client, {
+  plaintext: { path: '$.user.role', value: 'admin' },
   table: 'users',
   column: 'profile',
   indexType: 'ste_vec',
-  queryOp: 'ste_vec_term'
+  queryOp: 'ste_vec_value_selector'
 })
 
-// Use with: profile @> $term::jsonb
+// EQL v3: profile @> $needle::jsonb::eql_v3.query_json
 ```
 
-**Error Case:** Passing a string to `ste_vec_term` will throw:
-```
-Error: Unsupported conversion from "String" to JsonB
-```
+Objects and arrays are rejected because one selector cannot represent their
+contents injectively; use `default` with the object or array for containment.
+
+### `ste_vec_term`
+
+Generates the order term for a string or number. This is for `<`, `<=`, `>`,
+and `>=` comparisons against an entry extracted with a path selector. It is not
+an exact-equality or containment operand; use `ste_vec_value_selector` for exact
+equality and `default` with an object or array for containment.
 
 ---
 
@@ -168,7 +173,12 @@ Error: Unsupported conversion from "String" to JsonB
 
 ### EqlCiphertext Format
 
-By default (`eqlVersion: 2`) all encryption operations return an EQL v2.3 payload, a discriminated union keyed on `k`. Clients created with `eqlVersion: 3` return the EQL v3 shapes instead — see [EQL v3 output](#eql-v3-output-eqlversion-3) below.
+Scalar-only configurations retain the `eqlVersion: 2` default. A configuration
+containing a `ste_vec` index defaults to EQL v3 because cipherstash-client 0.42
+cannot emit the new selector-bound SteVec envelope as v2; explicitly requesting
+`eqlVersion: 2` with such a configuration is rejected during client creation.
+Clients using v3 return the shapes described in
+[EQL v3 output](#eql-v3-output-eqlversion-3) below.
 
 ```typescript
 type EqlCiphertext = EncryptedScalar | EncryptedSteVec
@@ -196,22 +206,22 @@ type SteVecEntry = {
   s: string       // Hex-encoded tokenized selector
   c: string       // Per-entry ciphertext (mp_base85) — required
   a?: boolean     // Array marker
-  hm?: string     // HMAC term — non-orderable leaves (objects, arrays, booleans, null)
-  op?: string     // CLLW OPE term — orderable leaves (strings, numbers), Compat mode (default)
+  op?: string     // CLLW OPE ordering term — path entries for strings/numbers
   oc?: string     // CLLW ORE term — orderable leaves, Standard mode (EQL v2 only)
 }
 ```
 
-Query payloads share the same `{ k, v, i, ... }` shape but omit `c` at the root (queries do not encrypt for storage). For `k = "ct"` queries, the payload carries exactly one of `hm`, `bf`, or `ob`. For `k = "sv"` queries, the FFI emits two shapes: selector queries (`ste_vec_selector`) carry a single tokenized `s`; containment queries (`ste_vec_term`) are emitted as full SteVec storage payloads with an `sv` array — see the *Output by Operation* table below.
+Query payloads share the same `{ k, v, i, ... }` shape but omit `c` at the root (queries do not encrypt for storage). For `k = "ct"` queries, the payload carries exactly one of `hm`, `bf`, or `ob`. For `k = "sv"`, path selectors carry a single tokenized `s`; exact value selectors and containment queries carry an `sv` array — see the *Output by Operation* table below.
 
-Each `sv` entry carries either `hm` or an orderable term, depending on the underlying JSON value. Which orderable term is emitted depends on the `ste_vec` index **mode**:
+Exact matching is encoded in value-inclusive selectors, so entries no longer
+carry `hm`. String and number path entries additionally carry an ordering term:
 
 | JSON value type | `compat` mode | `standard` mode |
 |-----------------|---------------|-----------------|
-| Object, array, boolean, null | `hm` (HMAC-SHA256) | `hm` (HMAC-SHA256) |
+| Object, array, boolean, null | no term | no term |
 | String, number | `op` (CLLW OPE, tagged-plaintext) | `oc` (CLLW ORE, tagged-plaintext) |
 
-Since `cipherstash-client` 0.40.0 the default is **`compat`** (`op`); it was `standard` (`oc`) before. Indexes produced under the two modes are **not cross-comparable**, so the indexing and query sides must agree, and a column whose existing rows were written under one mode must be re-encrypted to move to the other. Only `compat` can be converted to EQL v3.
+Since `cipherstash-client` 0.40.0 the default is **`compat`** (`op`); it was `standard` (`oc`) before. Indexes produced under the two modes are **not cross-comparable**, so the indexing and query sides must agree, and a column whose existing rows were written under one mode must be re-encrypted to move to the other. Client 0.42 emits SteVec only in EQL v3 and only in `compat` mode.
 
 Numeric and string values share the single orderable field — domain separation is enforced on the plaintext bit stream before encryption, so numeric ciphertexts always sort below string ciphertexts.
 
@@ -223,6 +233,7 @@ Numeric and string values share the single orderable field — domain separation
 | SteVec storage (`encrypt` on JSON column) | `k: "sv"` | `k, v, i, sv` (root ciphertext at `sv[0].c`) |
 | Scalar query (`encryptQuery` with `ore`/`match`/`unique`) | `k: "ct"` | `k, v, i` + one of `hm, bf, ob` |
 | SteVec selector query (`encryptQuery` with `ste_vec_selector`) | `k: "sv"` | `k, v, i, s` |
+| SteVec exact-value query (`ste_vec_value_selector`) | `k: "sv"` | one selector-only `sv` entry |
 | SteVec containment query (`encryptQuery` with object/array input) | `k: "sv"` | `k, v, i, sv` |
 
 ### Example Outputs
@@ -239,7 +250,7 @@ Numeric and string values share the single orderable field — domain separation
 }
 ```
 
-**SteVec storage encryption (Compat mode, the default):**
+**Legacy v2 SteVec storage payload (accepted for decryption only):**
 ```json
 {
   "k": "sv",
@@ -253,7 +264,7 @@ Numeric and string values share the single orderable field — domain separation
 }
 ```
 
-**Selector query:**
+**Legacy v2 selector query (not emitted by client 0.42):**
 ```json
 {
   "k": "sv",
@@ -288,16 +299,18 @@ envelope is `{ v: 3, i, ... }` with the shape determined by the column's
   "v": 3,
   "k": "sv",
   "i": { "t": "users", "c": "profile" },
+  "h": "document-key-header...",
   "sv": [
-    { "s": "rootselector", "hm": "rootmac", "c": "rootciphertext..." },
+    { "s": "rootselector", "c": "rootciphertext..." },
     { "s": "abc123", "op": "ghi789", "c": "..." }
   ]
 }
 ```
 
-Entry order is preserved from v2 and `sv[0]` remains the **decryption
-root**: `sv[0].c` is the record ciphertext `decrypt` uses. Reordering `sv`
-entries breaks decryption.
+`h` stores the document key-retrieval material once. Each entry's `c` is raw
+AEAD output, while its 16-byte selector supplies both the nonce and authenticated
+additional data. `sv[0]` remains the **decryption root**; changing its selector,
+ciphertext, or position causes authenticated decryption to fail.
 
 **Containment query (`eql_v3.query_json` needle):**
 ```json
@@ -309,14 +322,14 @@ entries breaks decryption.
 ```
 
 The needle carries no envelope (`v`/`i`) and no per-entry ciphertexts —
-each entry is the selector plus exactly one of `hm`/`op`, mirroring the SQL
+each entry is a selector plus an optional ordering `op`, mirroring the SQL
 cast `eql_v3.to_ste_vec_query`. Use it with the `@>`/`<@` operators against
 a `public.eql_v3_json_search` column (`WHERE doc @> $1::jsonb::eql_v3.query_json`).
 
 v3 orders SteVec entries by the CLLW-OPE `op` term, so a JSON column's
 `ste_vec` index must use the `compat` mode (the cipherstash-client default).
-A `standard`-mode index emits CLLW-ORE `oc` terms, which cannot be converted
-to v3 — protect-ffi rejects such a column at configuration time.
+A `standard`-mode index emits CLLW-ORE `oc` terms, which v3 cannot represent —
+protect-ffi rejects such a column at configuration time.
 
 **Selector (path) query:** `encryptQuery` with `queryOp: 'ste_vec_selector'`
 returns the bare selector hash as a **string** — there is no
@@ -324,8 +337,13 @@ encrypted-selector envelope in v3. Bind it as the `text` argument of the
 `->` / `->>` operators (`SELECT doc -> $1::text`); it is the same
 `Selector` encoding SteVec entries carry in `s`.
 
+**Exact value query:** `encryptQuery` with
+`queryOp: 'ste_vec_value_selector'` returns `{sv: [{s}]}` for
+`{path, value}`. Bind it as `eql_v3.query_json` and use `@>` against the
+encrypted JSON column. The GIN index can match the selector directly.
+
 **Scalar queries:** supported under `eqlVersion: 3` since the release that
-shipped CIP-3423 (see the CHANGELOG) — `encryptQuery` on a scalar column
+that introduced native v3 query operands — `encryptQuery` on a scalar column
 returns the term-only operand (`{v, i, <terms>}`, no `c`) for the column
 domain's `eql_v3.query_<name>` twin. See the README's EQL v3 section for
 the domain/operator matrix.
@@ -452,9 +470,9 @@ const config = {
 | `cast_as` | string | Yes | Must be `'json'` for JSONB. See *cast_as vocabulary* below. |
 | `indexes.ste_vec` | object | Yes* | Enables JSONB queries. Requires `cast_as: 'json'`; other values fail at `newClient` with `STE_VEC_REQUIRES_JSON_CAST_AS`. |
 | `indexes.ste_vec.prefix` | string | Yes | Unique identifier for index |
-| `indexes.ste_vec.term_filters` | array | No | Token filters for values |
+| `indexes.ste_vec.term_filters` | array | No | Optional case normalization. Only `downcase` is valid for JSON; stemming and stop-word filters are rejected. |
 | `indexes.ste_vec.array_index_mode` | string \| object | No | Controls how array elements are indexed. Defaults to `'none'`. |
-| `indexes.ste_vec.mode` | string | No | Encoding mode: `'standard'` (default) or `'compat'`. See *SteVec mode* below. |
+| `indexes.ste_vec.mode` | string | No | Encoding mode: `'compat'` (default) or legacy `'standard'`. EQL v3 requires `'compat'`. |
 | `indexes.match` | object | No | Full-text search index. Requires a text-family `cast_as` (`'text'` or `'string'`); other values fail at `newClient` with `MATCH_REQUIRES_TEXT`. |
 
 *Required for path/containment queries. Without `ste_vec`, JSON is stored as opaque blob.
@@ -478,7 +496,9 @@ The translation happens in TypeScript at the `newClient` boundary and is invisib
 
 ### SteVec mode
 
-The `mode` option controls the encoding format used for `ste_vec` index entries. The default is `'standard'`. Use `'compat'` only when you need to read data indexed by an older release that used `Compat` encoding.
+The `mode` option controls the ordering term used for `ste_vec` path entries.
+The default is `'compat'` (CLLW-OPE `op`), and EQL v3 requires it. The legacy
+`'standard'` mode emits CLLW-ORE `oc`, which EQL v3 cannot represent.
 
 **Warning:** changing `mode` on an existing column requires re-encrypting all stored data for that column; the two encodings are not cross-compatible.
 
@@ -556,7 +576,7 @@ type EncryptQueryOptions = {
   table: string
   column: string
   indexType: 'ste_vec' | 'match' | 'ore' | 'ope' | 'unique'
-  queryOp?: 'default' | 'ste_vec_selector' | 'ste_vec_term'
+  queryOp?: 'default' | 'ste_vec_selector' | 'ste_vec_value_selector' | 'ste_vec_term'
   lockContext?: { identityClaim: string[] }
   serviceToken?: CtsToken
   unverifiedContext?: Record<string, unknown>

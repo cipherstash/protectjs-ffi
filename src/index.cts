@@ -159,8 +159,9 @@ export async function decryptBulkFallible(
 /**
  * Encrypt a query term.
  *
- * Under `eqlVersion: 2` (default) this returns the v2 shapes ({@link
- * Encrypted} for JSON containment, {@link EncryptedQuery} otherwise).
+ * Scalar-only configurations default to `eqlVersion: 2` and return the v2
+ * query shapes. Configurations containing `ste_vec` default to v3; client 0.42
+ * cannot emit the selector-bound SteVec envelope as v2.
  *
  * Under `eqlVersion: 3` this returns an {@link EncryptedV3Query}:
  *
@@ -173,6 +174,8 @@ export async function decryptBulkFallible(
  *   with `doc @> $1::jsonb::eql_v3.query_json`.
  * - `ste_vec_selector` queries produce the bare selector hash (a string) —
  *   bind as the `text` argument of `->` / `->>`.
+ * - `ste_vec_value_selector` queries accept `{path, value}` and produce a
+ *   one-entry selector-only containment needle for exact equality.
  */
 export function encryptQuery(
   client: Client,
@@ -274,6 +277,8 @@ export type EncryptedSteVec = {
   k: 'sv'
   v: number
   i: { t: string; c: string }
+  /** EQL v3 document key header. Absent on legacy v2 SteVec payloads. */
+  h?: string
   /** Per-selector entries; root document ciphertext lives at `sv[0].c`. */
   sv: [SteVecEntry, ...SteVecEntry[]]
   s?: never
@@ -287,12 +292,21 @@ export type EncryptedSteVec = {
  * matched against stored values, never decrypted. It must not be passed to
  * {@link decrypt}.
  *
- * This covers the query shapes protect-ffi currently emits. cipherstash-client
- * additionally defines `k: "sv"` hmac / ore / containment query terms; the FFI
- * does not emit those today — JSON containment queries come back as an
- * {@link EncryptedSteVec} storage payload.
+ * This covers scalar terms, path selectors, exact-value selector needles, and
+ * JSON ordering terms. New SteVec storage is v3-only; the v2 forms remain in
+ * the public input union so legacy ciphertexts can still be decrypted.
  */
-export type EncryptedQuery = EncryptedScalarQuery | EncryptedSteVecSelector
+export type EncryptedQuery =
+  | EncryptedScalarQuery
+  | EncryptedSteVecSelector
+  | EncryptedSteVecQuery
+
+export type EncryptedSteVecQuery = {
+  k: 'sv'
+  v: number
+  i: { t: string; c: string }
+  c?: never
+} & ({ op: string } | { oc: string } | { q: unknown })
 
 /**
  * Scalar query term (`k: "ct"`, no ciphertext) — a `unique` / `match` / `ore`
@@ -324,19 +338,19 @@ export type EncryptedSteVecSelector = {
 /**
  * One entry inside a SteVec payload (`k: "sv"`).
  *
- * Every element carries `s` (selector), `c` (entry ciphertext), and exactly one
- * per-element equality / ordering term: `hm` for non-orderable leaves, and for
- * orderable leaves either `op` (Compat mode, the default) or `oc` (Standard
- * mode). EQL v3 accepts `hm` XOR `op` and rejects `oc`.
+ * Every element carries `s` (selector) and `c` (entry ciphertext). String and
+ * number path entries may additionally carry `op` (v3 Compat mode) or `oc`
+ * (legacy v2 Standard mode). Exact equality is encoded in value-inclusive
+ * selectors, so newly emitted entries do not carry `hm`.
  */
 export type SteVecEntry = {
   /** Hex-encoded tokenized selector — deterministic per (path, key) */
   s: string
-  /** Per-entry encrypted record (mp_base85 encoded) */
+  /** Entry ciphertext: a legacy record in v2, raw AEAD output in v3. */
   c: string
   /** Array marker — true when the selector points at a JSON array context */
   a?: boolean
-  /** Per-entry HMAC term for non-orderable leaves (objects, arrays, booleans, null) */
+  /** Legacy v2 HMAC term; client 0.42 no longer emits this field. */
   hm?: string
   /** Per-entry CLLW OPE term for orderable leaves (strings, numbers) — Compat mode, the default */
   op?: string
@@ -418,8 +432,8 @@ export type ArrayIndexMode =
  *   default; EQL v2 only.
  *
  * The two orderings are not cross-comparable, so a column cannot change mode
- * without re-encrypting. Pin `standard` on v2 JSON columns that already hold
- * rows.
+ * without re-encrypting. Client 0.42 emits SteVec only through EQL v3, so new
+ * configurations must use `compat`.
  */
 export type SteVecMode = 'compat' | 'standard'
 
@@ -576,7 +590,11 @@ export type DecryptBulkOptions = {
 // Query encryption types
 export type IndexTypeName = 'ste_vec' | 'match' | 'ore' | 'ope' | 'unique'
 
-export type QueryOpName = 'default' | 'ste_vec_selector' | 'ste_vec_term'
+export type QueryOpName =
+  | 'default'
+  | 'ste_vec_selector'
+  | 'ste_vec_value_selector'
+  | 'ste_vec_term'
 
 export type EncryptQueryOptions = {
   plaintext: JsPlaintext

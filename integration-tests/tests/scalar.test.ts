@@ -13,8 +13,8 @@ import {
 import {
   assertScalar,
   assertSteVec,
-  encryptConfig,
   jsonSteVec,
+  scalarConfig as encryptConfig,
 } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>

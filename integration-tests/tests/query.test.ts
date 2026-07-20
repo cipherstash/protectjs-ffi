@@ -11,7 +11,26 @@ import {
 } from '@cipherstash/protect-ffi'
 
 // Import shared encryptConfig from common.js
-import { assertScalar, assertSteVec, encryptConfig } from './common.js'
+import { encryptConfig } from './common.js'
+
+type V3ScalarQuery = {
+  v: number
+  i: { t: string; c: string }
+  c?: never
+  k?: never
+  hm?: string
+  bf?: number[]
+  ob?: string[]
+  op?: string
+}
+
+function assertScalar(payload: unknown): asserts payload is V3ScalarQuery {
+  if (typeof payload !== 'object' || payload === null || !('i' in payload)) {
+    throw new Error('expected an EQL v3 scalar query operand')
+  }
+  expect(payload).not.toHaveProperty('c')
+  expect(payload).not.toHaveProperty('k')
+}
 
 type UserColumn = Identifier<typeof encryptConfig>
 
@@ -41,11 +60,7 @@ describe('encryptQuery for ste_vec indexes', () => {
       queryOp: 'ste_vec_selector',
     })
 
-    // ste_vec selectors should NOT have a 'c' field (SEM only payloads)
-    expect(result).not.toHaveProperty('c')
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
-    expect(result).toHaveProperty('s') // selector field
+    expect(result).toBeTypeOf('string')
   })
 
   test('should handle different JSON path selectors for ste_vec', async () => {
@@ -61,10 +76,7 @@ describe('encryptQuery for ste_vec indexes', () => {
         queryOp: 'ste_vec_selector',
       })
 
-      expect(result).not.toHaveProperty('c')
-      expect(result).toHaveProperty('i')
-      expect(result).toHaveProperty('v')
-      expect(result).toHaveProperty('s') // selector field
+      expect(result).toBeTypeOf('string')
     }
   })
 
@@ -80,14 +92,12 @@ describe('encryptQuery for ste_vec indexes', () => {
     console.log('OBJECT + DEFAULT queryOp output:')
     console.log(JSON.stringify(result, null, 2))
 
-    // JSON object with default queryOp should produce sv array for containment queries.
-    // Under EQL v2.3 the root ciphertext lives at sv[0].c, not at the root.
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
-    assertSteVec(result)
+    // A v3 containment needle has no storage envelope.
     expect(result).toHaveProperty('sv') // Flattened entries for containment matching
-    expect(Array.isArray(result.sv)).toBe(true)
+    expect(Array.isArray((result as { sv: unknown }).sv)).toBe(true)
     expect(result).not.toHaveProperty('c')
+    expect(result).not.toHaveProperty('i')
+    expect(result).not.toHaveProperty('v')
   })
 
   test('should encrypt string path with explicit ste_vec_selector', async () => {
@@ -103,9 +113,7 @@ describe('encryptQuery for ste_vec indexes', () => {
     console.log('STRING + STE_VEC_SELECTOR output:')
     console.log(JSON.stringify(result, null, 2))
 
-    expect(result).toHaveProperty('i')
-    expect(result).toHaveProperty('v')
-    expect(result).toHaveProperty('s') // selector field
+    expect(result).toBeTypeOf('string')
   })
 })
 
@@ -282,7 +290,7 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
     expect(results[2]).toHaveProperty('ob')
   })
 
-  test('should preserve lockContext across bulk queries', async () => {
+  test('should forward lockContext for bulk queries', async () => {
     const client = await newClient({ encryptConfig })
     const lockContext = {
       identityClaim: ['user123'],
@@ -303,43 +311,13 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
       },
     ]
 
-    const results = await encryptQueryBulk(client, { queries })
-
-    expect(results).toHaveLength(2)
-    // Both results should be valid encrypted queries
-    expect(results[0]).toHaveProperty('i')
-    expect(results[1]).toHaveProperty('i')
-  })
-
-  test('should handle queries with different lockContext values', async () => {
-    const client = await newClient({ encryptConfig })
-
-    const queries: QueryPayload[] = [
-      {
-        plaintext: 'email1@example.com',
-        ...emailColumn,
-        indexType: 'ore',
-        lockContext: {
-          identityClaim: ['user1'],
-        },
-      },
-      {
-        plaintext: 'email2@example.com',
-        ...emailColumn,
-        indexType: 'ore',
-        lockContext: {
-          identityClaim: ['user2'],
-        },
-      },
-    ]
-
-    const results = await encryptQueryBulk(client, { queries })
-
-    expect(results).toHaveLength(2)
-    // Both should have ORE fields
-    expect(results[0]).toHaveProperty('ob')
-    expect(results[1]).toHaveProperty('ob')
-  })
+    // The integration-test client is not a service token. ZeroKMS rejecting
+    // the identity claim proves the bulk path forwarded the lock context;
+    // silently dropping it would make this request succeed.
+    await expect(encryptQueryBulk(client, { queries })).rejects.toThrowError(
+      /Request forbidden/,
+    )
+  }, 10000)
 
   test('should preserve order with identical index types and different plaintexts', async () => {
     const client = await newClient({ encryptConfig })

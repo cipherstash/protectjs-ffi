@@ -170,7 +170,7 @@ describe('eql v3 scalar round-trips', async () => {
       keys: v3WireKeys<IntegerOrdOre>()('v', 'i', 'c', 'ob'),
     },
     // ope maps onto the _ord_ope domains, carrying op (CLLW-OPE) — emitted
-    // since cipherstash-client 0.38.1 (CIP-3348)
+    // since cipherstash-client 0.38.1
     {
       column: 'rank',
       plaintext: 7,
@@ -353,18 +353,15 @@ describe('eql v3 ste_vec round-trip', async () => {
 
     const doc = expectV3SteVec(ciphertext)
     expect(Object.keys(doc).sort()).toEqual(
-      v3WireKeys<SteVecDocument>()('v', 'k', 'i', 'sv'),
+      v3WireKeys<SteVecDocument>()('v', 'k', 'i', 'h', 'sv'),
     )
+    expect(doc.h).toBeTypeOf('string')
     expect(doc.sv.length).toBeGreaterThan(0)
     for (const entry of doc.sv) {
       expect(entry.s).toBeTypeOf('string')
       expect(entry.c).toBeTypeOf('string')
       const term = entry as unknown as Record<string, unknown>
-      expect(
-        ('hm' in term && term.hm !== undefined) !==
-          ('op' in term && term.op !== undefined),
-        'exactly one of hm/op per entry',
-      ).toBe(true)
+      expect(term.hm, 'exact equality is encoded in selectors').toBeUndefined()
       expect(
         'oc' in term && term.oc !== undefined,
         'EQL v3 rejects the legacy CLLW-ORE `oc` term',
@@ -395,7 +392,6 @@ describe('eql v3 query encryption', async () => {
       column: 'profile',
       table: 'v3users',
       indexType: 'ste_vec',
-      queryOp: 'ste_vec_term',
     })) as SteVecQuery & Record<string, unknown>
 
     // The needle has no envelope and no per-entry ciphertexts.
@@ -407,9 +403,23 @@ describe('eql v3 query encryption', async () => {
       expect(entry.s).toBeTypeOf('string')
       const e = entry as unknown as Record<string, unknown>
       expect(e.c).toBeUndefined()
-      expect(e.hm !== undefined || e.op !== undefined).toBe(true)
+      expect(e.hm).toBeUndefined()
       expect(e.oc).toBeUndefined()
     }
+  })
+
+  test('exact path/value query returns one selector-only needle entry', async () => {
+    const result = (await encryptQuery(client, {
+      plaintext: { path: '$.role', value: 'admin' },
+      column: 'profile',
+      table: 'v3users',
+      indexType: 'ste_vec',
+      queryOp: 'ste_vec_value_selector',
+    })) as SteVecQuery & Record<string, unknown>
+
+    expect(result.sv).toHaveLength(1)
+    expect(result.sv[0].s).toBeTypeOf('string')
+    expect(result.sv[0].op).toBeUndefined()
   })
 
   test('containment query via default queryOp with an object also converts', async () => {
@@ -532,7 +542,6 @@ describe('eql v3 query encryption', async () => {
           column: 'profile',
           table: 'v3users',
           indexType: 'ste_vec',
-          queryOp: 'ste_vec_term',
         },
         {
           plaintext: '$.role',
@@ -602,7 +611,18 @@ describe('isEncrypted', async () => {
 })
 
 describe('mixed-version decrypt (data migration)', async () => {
-  const v2Client = await newClient({ encryptConfig: v3Config })
+  const v2Config: EncryptConfig = {
+    v: 1,
+    tables: {
+      v3users: {
+        email: {
+          cast_as: 'string',
+          indexes: { unique: {} },
+        },
+      },
+    },
+  }
+  const v2Client = await newClient({ encryptConfig: v2Config, eqlVersion: 2 })
   const v3Client = await newClient({ encryptConfig: v3Config, eqlVersion: 3 })
 
   test('a v3 client decrypts v2 payloads', async () => {

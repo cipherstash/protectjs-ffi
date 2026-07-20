@@ -8,30 +8,34 @@
 //! (`eql_v3.query_text_eq`, `eql_v3.query_json`, …) — unprefixed, since the
 //! `eql_v3` schema already versions them —
 //! and a new envelope: scalars are `{v: 3, i, c, <terms>}` with no `k`
-//! discriminator; SteVec (encrypted JSONB) documents keep it
-//! (`{v: 3, k: "sv", i, sv}`).
+//! discriminator; SteVec (encrypted JSONB) documents keep it and add one
+//! document key header (`{v: 3, k: "sv", i, h, sv}`).
 //!
-//! Payloads are converted, not re-encrypted: cipherstash-client still emits
-//! v2, and [`eql_bindings::from_v2`] rewrites the wire shape for the target
-//! domain selected from the column configuration. Decryption accepts BOTH
-//! formats regardless of the client's `eqlVersion` so data can be migrated
-//! incrementally.
+//! Client 0.42 emits both versions natively. Scalar v2 payloads retain a
+//! conversion path for compatibility, but v3 SteVec documents must be
+//! re-encrypted because their key-header envelope and selector-bound entry
+//! ciphertexts have no mechanical v2 conversion. Decryption accepts BOTH
+//! stored formats regardless of the client's `eqlVersion`.
 
 use cipherstash_client::eql::{
     EqlCiphertext, EqlCiphertextV3, EqlOutput, EqlOutputV3, EqlQueryPayload, EqlQueryPayloadV3,
-    SteVecQueryTerm,
+    SteVecPayloadV3, SteVecQueryTerm,
 };
 use cipherstash_client::schema::{
     column::ColumnType, column::IndexType, column::SteVecMode, ColumnConfig,
 };
-use cipherstash_client::zerokms::{self, EncryptedRecord, WithContext};
+use cipherstash_client::zerokms::{
+    self, Decryptable, EncryptedRecord, RecordWithNonce, RetrieveKeyPayload, WithContext,
+};
 use eql_bindings::from_v2::{from_v2_query_typed, from_v2_typed, is_v3_payload, TargetDomain};
 use eql_bindings::v3::domain_type::PUBLIC_TYPNAME_PREFIX;
-use eql_bindings::v3::json::SteVecDocument;
+use eql_bindings::v3::json::SteVecEntry as EqlV3SteVecEntry;
 use eql_bindings::v3::terms::Selector;
 use eql_bindings::v3::{DomainPayload, QueryPayload};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::convert::Infallible;
+use uuid::Uuid;
 
 use crate::Error;
 
@@ -466,6 +470,7 @@ pub(crate) enum QueryOutput {
     V2(Box<EqlOutput>),
     V3(QueryPayload),
     V3Selector(Selector),
+    V3SteVecTerm(cipherstash_client::eql::EncryptedQueryPayloadV3),
 }
 
 /// Wrap an encrypt-query result in the client's configured wire format.
@@ -522,7 +527,8 @@ pub(crate) fn query_output(
 /// [`EqlCiphertextV3::into_query_operand`] — dropping the record ciphertext `c`
 /// (and, for SteVec, the envelope + per-entry `c`/`a`) — then strict-parse into
 /// the column's `query_<name>` / `query_json` [`QueryPayload`]. A jsonb path
-/// query arrives Query-mode as the bare selector hash.
+/// query arrives Query-mode as the bare selector hash. An exact path/value
+/// query also arrives in Query mode as a one-entry SteVec containment needle.
 pub(crate) fn query_output_v3(
     output: EqlOutputV3,
     column_config: &ColumnConfig,
@@ -547,15 +553,27 @@ pub(crate) fn query_output_v3(
         EqlOutputV3::Query(EqlQueryPayloadV3::Selector(selector)) => {
             Ok(QueryOutput::V3Selector(Selector(selector)))
         }
-        // Under v3 scalar Default queries and containment run Store mode
-        // (see the caller / `prepare_query_plaintext`), so a Query-mode operand
-        // or needle here is an invariant violation.
-        EqlOutputV3::Query(EqlQueryPayloadV3::Encrypted(_)) => Err(Error::InvariantViolation(
-            "scalar query encryption ran in query mode under eqlVersion 3".to_string(),
-        )),
-        EqlOutputV3::Query(EqlQueryPayloadV3::SteVec(_)) => Err(Error::InvariantViolation(
-            "ste_vec containment query ran in query mode under eqlVersion 3".to_string(),
-        )),
+        EqlOutputV3::Query(EqlQueryPayloadV3::SteVec(needle)) => {
+            let domain = v3_query_domain_name(column_config)?;
+            let value = serde_json::to_value(&needle)?;
+            let payload = QueryPayload::parse(&domain, &value)
+                .ok_or_else(|| {
+                    Error::InvariantViolation(format!(
+                        "query domain {domain:?} has no QueryPayload variant"
+                    ))
+                })?
+                .map_err(|source| Error::V3NativeParse {
+                    domain: domain.clone(),
+                    source,
+                })?;
+            Ok(QueryOutput::V3(payload))
+        }
+        // Scalar Default queries run Store mode, but an explicit SteVecTerm
+        // ordering query is represented by the client as an ordinary one-term
+        // `{v, i, op}` operand for comparison with an extracted JSON entry.
+        EqlOutputV3::Query(EqlQueryPayloadV3::Encrypted(term)) => {
+            Ok(QueryOutput::V3SteVecTerm(term))
+        }
     }
 }
 
@@ -564,16 +582,16 @@ pub(crate) fn query_output_v3(
 ///
 /// Probes the v3 envelope FIRST, then falls back to the typed v2
 /// [`EqlCiphertext`] parse (the historical shape). The order matters: a v3
-/// SteVec document carries both `v: 3` and `k: "sv"`, and the v2 parse is
-/// internally tagged on `k` without pinning `v`, so attempted first it would
-/// mis-accept the document as a v2 SteVec payload. [`is_v3_payload`] requires
-/// `v == 3` exactly, so no v2 payload can take the v3 branch. Decrypt is
+/// SteVec document carries both `v: 3` and `k: "sv"`; probing it first also
+/// ensures the key-header envelope takes the selector-aware decryption path.
+/// [`is_v3_payload`] requires `v == 3` exactly, so no v2 payload can take the
+/// v3 branch. Decrypt is
 /// deliberately version-agnostic — it must keep working across data
 /// migrations regardless of the client's `eqlVersion` setting.
 pub(crate) fn encrypted_record_from_value(
     value: serde_json::Value,
     encryption_context: Vec<zerokms::Context>,
-) -> Result<WithContext<'static>, Error> {
+) -> Result<WithContext<'static, DecryptableRecord>, Error> {
     if is_v3_payload(&value) {
         return Ok(WithContext {
             record: v3_root_record(&value)?,
@@ -583,31 +601,128 @@ pub(crate) fn encrypted_record_from_value(
     // Not v3 — a parse failure here reports the v2 shape (the shape the
     // overwhelming majority of stored data still has).
     let ciphertext = EqlCiphertext::deserialize(&value).map_err(Error::Parse)?;
-    crate::encrypted_record_from_mp_base85(ciphertext, encryption_context)
+    let legacy = crate::encrypted_record_from_mp_base85(ciphertext, encryption_context)?;
+    Ok(WithContext {
+        record: DecryptableRecord::Standard(legacy.record),
+        context: legacy.context,
+    })
+}
+
+/// A homogeneous decrypt input for mixed v2/scalar and v3 SteVec batches.
+///
+/// Classic EQL records derive their nonce from the record IV. Client 0.42's
+/// SteVec entries derive it from the stored selector and bind that selector
+/// into the AEAD AAD, so preserving the variant through ZeroKMS decryption is
+/// required for authentication as well as correctness.
+#[derive(Debug)]
+pub(crate) enum DecryptableRecord {
+    Standard(EncryptedRecord),
+    SteVec(RecordWithNonce),
+}
+
+#[cfg(test)]
+impl DecryptableRecord {
+    fn encrypted_record(&self) -> &EncryptedRecord {
+        match self {
+            Self::Standard(record) => record,
+            Self::SteVec(record) => &record.record,
+        }
+    }
+}
+
+impl Decryptable for DecryptableRecord {
+    type Error = Infallible;
+
+    fn keyset_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Standard(record) => record.keyset_id(),
+            Self::SteVec(record) => record.keyset_id(),
+        }
+    }
+
+    fn retrieve_key_payload(&self) -> Result<RetrieveKeyPayload<'_>, Self::Error> {
+        match self {
+            Self::Standard(record) => record.retrieve_key_payload(),
+            Self::SteVec(record) => record.retrieve_key_payload(),
+        }
+    }
+
+    fn into_encrypted_record(self) -> Result<EncryptedRecord, Self::Error> {
+        match self {
+            Self::Standard(record) => record.into_encrypted_record(),
+            Self::SteVec(record) => record.into_encrypted_record(),
+        }
+    }
+
+    fn nonce_override(&self) -> Option<[u8; 12]> {
+        match self {
+            Self::Standard(record) => record.nonce_override(),
+            Self::SteVec(record) => record.nonce_override(),
+        }
+    }
+
+    fn aad_selector(&self) -> Option<[u8; 16]> {
+        match self {
+            Self::Standard(record) => record.aad_selector(),
+            Self::SteVec(record) => record.aad_selector(),
+        }
+    }
 }
 
 /// Extract the record ciphertext from a v3 stored payload.
 ///
 /// Scalars keep the mp_base85 record at the top-level `c`; SteVec documents
-/// carry it on the FIRST `sv` entry (`sv[0].c`, the root-selector entry —
-/// same invariant as v2, see `encrypted_record_from_mp_base85`).
+/// carry raw AEAD output on the FIRST `sv` entry (`sv[0].c`) plus one
+/// document key header (`h`). The root selector supplies the entry nonce and
+/// AAD, so all three fields must remain paired through decryption.
 ///
 /// The scalar arm reads `c` directly instead of parsing one of the ~40
 /// generated domain structs: decrypt receives a bare ciphertext with no
 /// column configuration, so the specific domain cannot be known here, and
 /// the only field decryption needs is `c` (already shape-checked by
 /// [`is_v3_payload`]). The structured SteVec arm goes through the typed
-/// [`SteVecDocument`] so entry structure is validated before we trust
-/// `sv[0]`.
-fn v3_root_record(value: &serde_json::Value) -> Result<EncryptedRecord, Error> {
-    if let Some(c) = value.get("c").and_then(serde_json::Value::as_str) {
-        return EncryptedRecord::from_mp_base85(c).map_err(Error::from);
+/// [`SteVecPayloadV3`] so the key header and raw entry ciphertext are decoded
+/// by cipherstash-client's canonical wire types before we trust `sv[0]`.
+fn v3_root_record(value: &serde_json::Value) -> Result<DecryptableRecord, Error> {
+    // EQL's `->` operator grafts the document metadata and key header onto the
+    // selected entry. Its top-level `c` is raw entry ciphertext, not the
+    // self-contained scalar record format, so this arm must precede scalars.
+    if value.get("h").is_some() && value.get("s").is_some() {
+        let entry = EqlV3SteVecEntry::deserialize(value).map_err(Error::Parse)?;
+        let header = entry.h.ok_or_else(|| {
+            Error::InvariantViolation("Missing key header in v3 SteVec entry".to_string())
+        })?;
+        let key_header = zerokms::KeyHeader::from_mp_base85(&header.0)?;
+        let ciphertext = base85::decode(&entry.c.0)
+            .map_err(zerokms::DecryptError::from)
+            .map_err(Error::from)?;
+        let selector = decode_ste_vec_selector(&entry.s.0)?;
+        return Ok(DecryptableRecord::SteVec(
+            key_header.record_with_selector(ciphertext, selector),
+        ));
     }
-    let document = SteVecDocument::deserialize(value).map_err(Error::Parse)?;
-    let root = document.sv.first().ok_or_else(|| {
+    if let Some(c) = value.get("c").and_then(serde_json::Value::as_str) {
+        return EncryptedRecord::from_mp_base85(c)
+            .map(DecryptableRecord::Standard)
+            .map_err(Error::from);
+    }
+    let document = SteVecPayloadV3::deserialize(value).map_err(Error::Parse)?;
+    let root = document.ste_vec.first().ok_or_else(|| {
         Error::InvariantViolation("Missing root entry in v3 SteVec payload".to_string())
     })?;
-    EncryptedRecord::from_mp_base85(&root.c.0).map_err(Error::from)
+    let selector = decode_ste_vec_selector(&root.selector)?;
+    Ok(DecryptableRecord::SteVec(
+        document
+            .key_header
+            .record_with_selector(root.ciphertext.clone(), selector),
+    ))
+}
+
+fn decode_ste_vec_selector(selector: &str) -> Result<[u8; 16], Error> {
+    hex::decode(selector)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(Error::InvalidSteVecSelector)
 }
 
 /// True when `value` is a stored EQL payload in either wire format.
@@ -664,7 +779,7 @@ mod tests {
         };
         use cipherstash_client::schema::column::{ColumnMode, ColumnType, Index};
         use cipherstash_client::schema::ColumnConfig;
-        use cipherstash_client::zerokms::EncryptedRecord;
+        use cipherstash_client::zerokms::{EncryptedRecord, KeyHeader};
 
         pub(super) fn dummy_encrypted_record() -> EncryptedRecord {
             EncryptedRecord {
@@ -674,6 +789,17 @@ mod tests {
                 descriptor: "users/email".to_string(),
                 keyset_id: None,
                 decryption_policy: None,
+            }
+        }
+
+        pub(super) fn dummy_key_header() -> KeyHeader {
+            let record = dummy_encrypted_record();
+            KeyHeader {
+                iv: record.iv,
+                tag: record.tag,
+                descriptor: "users/profile".to_string(),
+                keyset_id: record.keyset_id,
+                decryption_policy: record.decryption_policy,
             }
         }
 
@@ -717,18 +843,16 @@ mod tests {
                         selector: "root".into(),
                         ciphertext: dummy_encrypted_record(),
                         is_array: None,
-                        term: SteVecEntryTerm::Hmac {
-                            hmac_256: "feedface".into(),
-                        },
+                        term: None,
                     },
                     SteVecEntry {
                         selector: "leaf".into(),
                         ciphertext: dummy_encrypted_record(),
                         is_array: Some(true),
                         // CLLW-OPE: the only sv ordering term v3 can carry.
-                        term: SteVecEntryTerm::Ope {
+                        term: Some(SteVecEntryTerm::Ope {
                             ope_cllw: "deadbeef".into(),
-                        },
+                        }),
                     },
                 ],
             })
@@ -744,9 +868,9 @@ mod tests {
                     selector: "leaf".into(),
                     ciphertext: dummy_encrypted_record(),
                     is_array: Some(true),
-                    term: SteVecEntryTerm::OreCllw {
+                    term: Some(SteVecEntryTerm::OreCllw {
                         ore_cllw_8: "deadbeef".into(),
-                    },
+                    }),
                 }],
             })
         }
@@ -1351,40 +1475,33 @@ mod tests {
                 version: EQL_SCHEMA_VERSION_V3,
                 kind: SteVecKind::SteVec,
                 identifier: EqlIdentifier::new("users", "profile"),
+                key_header: super::support::dummy_key_header(),
                 ste_vec: vec![
                     SteVecEntryV3 {
                         selector: "root".into(),
-                        ciphertext: super::support::dummy_encrypted_record(),
+                        ciphertext: vec![1; 16],
                         is_array: None,
-                        term: SteVecEntryTermV3::Hmac {
-                            hmac_256: "feedface".into(),
-                        },
+                        term: None,
                     },
                     SteVecEntryV3 {
                         selector: "leaf".into(),
-                        ciphertext: super::support::dummy_encrypted_record(),
+                        ciphertext: vec![2; 16],
                         is_array: Some(true),
-                        term: SteVecEntryTermV3::Ope {
+                        term: Some(SteVecEntryTermV3::Ope {
                             ope_cllw: "deadbeef".into(),
-                        },
+                        }),
                     },
                 ],
             })
         }
 
         #[test]
-        fn v3_native_ste_vec_output_matches_the_from_v2_conversion() {
-            // Same oracle as the scalar test above, for the SteVec document
-            // path: the native emit (storage_output_v3 parsing into
-            // eql_v3_json_search) must be byte-identical to the from_v2
-            // conversion of the equivalent v2 `k: "sv"` payload.
+        fn v2_ste_vec_document_cannot_be_converted_to_v3() {
+            // The v3 key-header envelope and selector-derived entry nonces
+            // have no v2 representation. Legacy v2 documents must be
+            // decrypted and re-encrypted rather than mechanically converted.
             let cfg = json_column();
-            let native = storage_output_v3(native_ste_vec_document(), &cfg).unwrap();
-            let converted = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
-            assert_eq!(
-                serde_json::to_value(&native).unwrap(),
-                serde_json::to_value(&converted).unwrap(),
-            );
+            assert!(storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).is_err());
         }
 
         #[test]
@@ -1398,7 +1515,9 @@ mod tests {
             assert_eq!(v["i"]["t"], "users");
             let sv = v["sv"].as_array().unwrap();
             assert_eq!(sv.len(), 2);
+            assert!(v.get("h").is_some(), "the document carries one key header");
             assert!(sv[0].get("c").is_some(), "entries keep their ciphertext");
+            assert!(sv[0].get("hm").is_none(), "exact match uses selectors");
             assert_eq!(sv[1]["a"], true, "the array marker is preserved");
             assert_eq!(sv[1]["op"], "deadbeef");
         }
@@ -1456,8 +1575,9 @@ mod tests {
             // EncryptedOutput::V3 carries the typed DomainPayload
             // (from_v2_typed) instead of the shape-erased Value (from_v2).
             // Both are #[serde(untagged)], so the FFI wire output must carry
-            // exactly the from_v2 keys and values — for a scalar domain and
-            // for the SteVec document domain. (JSON object key ORDER is the
+            // exactly the from_v2 keys and values for scalar domains. SteVec
+            // documents are intentionally excluded: v3's key-header envelope
+            // cannot be derived from a v2 document. (JSON object key ORDER is the
             // one permitted difference: a Value serializes keys
             // alphabetically, the typed structs in schema wire order
             // `v, i, c, <terms>`. Key order carries no meaning in JSON and
@@ -1476,23 +1596,6 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(&output).unwrap(),
                 from_v2(&scalar_v2, scalar_target).unwrap(),
-            );
-
-            let sv_cfg = column(
-                ColumnType::Json,
-                vec![Index::new(IndexType::SteVec {
-                    prefix: "users/profile".to_string(),
-                    term_filters: vec![],
-                    array_index_mode: Default::default(),
-                    mode: SteVecMode::Compat,
-                })],
-            );
-            let sv_v2 = serde_json::to_value(ste_vec_payload()).unwrap();
-
-            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &sv_cfg).unwrap();
-            assert_eq!(
-                serde_json::to_value(&output).unwrap(),
-                from_v2(&sv_v2, TargetDomain::Json).unwrap(),
             );
         }
 
@@ -1590,7 +1693,7 @@ mod tests {
         #[test]
         fn v3_ope_term_flows_through_to_the_ord_ope_domain() {
             // cipherstash-client 0.38.1 emits the scalar `op` (CLLW-OPE)
-            // term (CIP-3348), so an ope-indexed column can reach its
+            // term, so an ope-indexed column can reach its
             // _ord_ope domain: v, i, c, op and nothing else.
             let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ope)]);
             let output = storage_output(ope_scalar_payload("cc"), EqlVersion::V3, &cfg).unwrap();
@@ -1630,7 +1733,7 @@ mod tests {
                     mode: SteVecMode::Compat,
                 })],
             );
-            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
+            let output = storage_output_v3(native_ste_vec_document(), &cfg).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
             assert_eq!(value["v"], 3);
@@ -1638,11 +1741,15 @@ mod tests {
                 value["k"], "sv",
                 "SteVec documents keep the k form discriminator"
             );
+            assert!(
+                value["h"].is_string(),
+                "one key header is stored per document"
+            );
             let sv = value["sv"].as_array().unwrap();
             assert_eq!(sv.len(), 2);
-            // sv[0] is the decryption root — order must survive conversion.
+            // sv[0] is the decryption root — order must survive parsing.
             assert_eq!(sv[0]["s"], "root");
-            assert_eq!(sv[0]["hm"], "feedface");
+            assert!(sv[0].get("hm").is_none(), "exact match uses selectors");
             assert!(sv[0]["c"].is_string());
             assert_eq!(sv[1]["s"], "leaf");
             assert_eq!(sv[1]["op"], "deadbeef");
@@ -1831,6 +1938,78 @@ mod tests {
             );
         }
 
+        fn native_ste_vec_query() -> cipherstash_client::eql::EqlOutputV3 {
+            use cipherstash_client::eql::{
+                EqlOutputV3, EqlQueryPayloadV3, SteVecQueryEntryV3, SteVecQueryPayloadV3,
+            };
+            EqlOutputV3::Query(EqlQueryPayloadV3::SteVec(SteVecQueryPayloadV3 {
+                ste_vec: vec![SteVecQueryEntryV3 {
+                    selector: "deadbeef".into(),
+                    term: None,
+                }],
+            }))
+        }
+
+        #[test]
+        fn query_output_v3_value_selector_is_a_termless_containment_needle() {
+            let out = query_output_v3(native_ste_vec_query(), &json_column()).unwrap();
+
+            assert_eq!(
+                serde_json::to_value(&out).unwrap(),
+                serde_json::json!({"sv": [{"s": "deadbeef"}]})
+            );
+        }
+
+        #[test]
+        fn query_output_v3_ste_vec_needle_rejects_a_scalar_query_domain() {
+            let err = query_output_v3(native_ste_vec_query(), &text_search_column()).unwrap_err();
+            assert!(matches!(
+                err,
+                Error::V3NativeParse { ref domain, .. }
+                    if domain == "query_text_search_ore"
+            ));
+        }
+
+        #[test]
+        fn query_output_v3_ste_vec_needle_rejects_a_domain_without_a_query_variant() {
+            let storage_only = column(ColumnType::Text, vec![]);
+            let err = query_output_v3(native_ste_vec_query(), &storage_only).unwrap_err();
+            assert!(matches!(&err, Error::InvariantViolation(_)));
+            assert!(
+                err.to_string().contains("has no QueryPayload variant"),
+                "names the missing query variant: {err}"
+            );
+        }
+
+        #[test]
+        fn query_output_v3_ste_vec_ordering_term_keeps_the_one_term_operand() {
+            use cipherstash_client::eql::{
+                EncryptedQueryPayloadV3, EqlOutputV3, EqlQueryPayloadV3, Identifier,
+                EQL_SCHEMA_VERSION_V3,
+            };
+            let out = query_output_v3(
+                EqlOutputV3::Query(EqlQueryPayloadV3::Encrypted(EncryptedQueryPayloadV3 {
+                    version: EQL_SCHEMA_VERSION_V3,
+                    identifier: Identifier::new("users", "profile"),
+                    hmac_256: None,
+                    bloom_filter: None,
+                    ore_block_u64_8_256: None,
+                    ope_cllw: Some("deadbeef".into()),
+                })),
+                &json_column(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                serde_json::to_value(&out).unwrap(),
+                serde_json::json!({
+                    "v": 3,
+                    "i": {"t": "users", "c": "profile"},
+                    "op": "deadbeef"
+                })
+            );
+        }
+
         /// A native v3 Store-mode SteVec document (as `encrypt_eql_v3` emits
         /// for a v3 containment query) carrying the same entries as
         /// `support::ste_vec_payload()`.
@@ -1843,40 +2022,31 @@ mod tests {
                 version: EQL_SCHEMA_VERSION_V3,
                 kind: SteVecKind::SteVec,
                 identifier: EqlIdentifier::new("users", "profile"),
+                key_header: super::support::dummy_key_header(),
                 ste_vec: vec![
                     SteVecEntryV3 {
                         selector: "root".into(),
-                        ciphertext: super::support::dummy_encrypted_record(),
+                        ciphertext: vec![1; 16],
                         is_array: None,
-                        term: SteVecEntryTermV3::Hmac {
-                            hmac_256: "feedface".into(),
-                        },
+                        term: None,
                     },
                     SteVecEntryV3 {
                         selector: "leaf".into(),
-                        ciphertext: super::support::dummy_encrypted_record(),
+                        ciphertext: vec![2; 16],
                         is_array: Some(true),
-                        term: SteVecEntryTermV3::Ope {
+                        term: Some(SteVecEntryTermV3::Ope {
                             ope_cllw: "deadbeef".into(),
-                        },
+                        }),
                     },
                 ],
             }))
         }
 
         #[test]
-        fn query_output_v3_native_ste_vec_matches_the_from_v2_query_conversion() {
-            // The native containment projection (into_query_operand →
-            // query_json parse) must be byte-identical to the from_v2 needle
-            // for the same document — the SteVec twin of the scalar oracle
-            // test above.
+        fn v2_ste_vec_query_cannot_be_converted_to_v3() {
             let cfg = json_column();
-            let native = query_output_v3(native_ste_vec_store(), &cfg).unwrap();
-            let converted =
-                query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V3, &cfg).unwrap();
-            assert_eq!(
-                serde_json::to_value(&native).unwrap(),
-                serde_json::to_value(&converted).unwrap(),
+            assert!(
+                query_output(EqlOutput::Store(ste_vec_payload()), EqlVersion::V3, &cfg,).is_err()
             );
         }
 
@@ -1886,7 +2056,7 @@ mod tests {
                 query_output_v3(native_ste_vec_store(), &json_column()).unwrap(),
             )
             .unwrap();
-            // The eql_v3.query_json needle: {sv: [{s, hm|op}]} — no envelope,
+            // The eql_v3.query_json needle: {sv: [{s, op?}]} — no envelope,
             // no per-entry ciphertext or array marker.
             assert!(v.get("v").is_none(), "needle carries no envelope");
             assert!(v.get("i").is_none(), "needle carries no identifier");
@@ -1894,7 +2064,7 @@ mod tests {
             let sv = v["sv"].as_array().unwrap();
             assert_eq!(sv.len(), 2);
             assert_eq!(sv[0]["s"], "root");
-            assert_eq!(sv[0]["hm"], "feedface");
+            assert!(sv[0].get("hm").is_none(), "exact match uses selectors");
             assert!(sv[0].get("c").is_none(), "c is stripped from entries");
             assert_eq!(sv[1]["op"], "deadbeef");
             assert!(sv[1].get("a").is_none(), "a is stripped from entries");
@@ -1957,15 +2127,10 @@ mod tests {
 
         #[test]
         fn v3_containment_output_is_a_query_json_needle() {
-            let output = query_output(
-                EqlOutput::Store(ste_vec_payload()),
-                EqlVersion::V3,
-                &json_column(),
-            )
-            .unwrap();
+            let output = query_output_v3(native_ste_vec_store(), &json_column()).unwrap();
 
             let value = serde_json::to_value(&output).unwrap();
-            // The eql_v3.query_json needle: {sv: [{s, hm|oc}]} — no
+            // The eql_v3.query_json needle: {sv: [{s, op?}]} — no
             // envelope, no per-entry ciphertext or array marker.
             assert!(value.get("v").is_none(), "needle carries no envelope");
             assert!(value.get("i").is_none(), "needle carries no identifier");
@@ -1973,7 +2138,7 @@ mod tests {
             let sv = value["sv"].as_array().unwrap();
             assert_eq!(sv.len(), 2);
             assert_eq!(sv[0]["s"], "root");
-            assert_eq!(sv[0]["hm"], "feedface");
+            assert!(sv[0].get("hm").is_none(), "exact match uses selectors");
             assert!(sv[0].get("c").is_none(), "c is stripped from entries");
             assert_eq!(sv[1]["s"], "leaf");
             assert_eq!(sv[1]["op"], "deadbeef");
@@ -1985,22 +2150,9 @@ mod tests {
             // The QueryOutput::V3 wire form must be byte-identical to what
             // the shape-erased from_v2_query Value produced — protect-ffi
             // serializes it straight across the FFI boundary. Pinned for the
-            // containment needle AND a scalar term-only operand.
+            // a scalar term-only operand. SteVec documents cannot be
+            // mechanically converted because v3 requires a key header.
             use eql_bindings::from_v2::from_v2_query;
-
-            let ciphertext = ste_vec_payload();
-            let v2_value = serde_json::to_value(&ciphertext).unwrap();
-            let erased = from_v2_query(&v2_value, TargetDomain::Json).unwrap();
-
-            let output =
-                query_output(EqlOutput::Store(ciphertext), EqlVersion::V3, &json_column()).unwrap();
-            let typed = serde_json::to_value(&output).unwrap();
-
-            // Value equality: identical keys and values. Key ORDER differs
-            // (the typed struct serializes in schema wire order, the erased
-            // Value alphabetically) — semantically meaningless for jsonb,
-            // same caveat as the storage-path pin above.
-            assert_eq!(typed, erased);
 
             let scalar_ct = scalar_payload(Some("aa"), Some(vec![1, 2]), Some(vec!["bb"]));
             let scalar_v2 = serde_json::to_value(&scalar_ct).unwrap();
@@ -2026,7 +2178,7 @@ mod tests {
         fn v3_scalar_store_output_is_a_term_only_operand() {
             // A scalar Store envelope hoists to the column domain's query
             // twin (eql_v3.query_text_search): all the domain's terms, the
-            // envelope, and — the point of CIP-3423 — NO ciphertext.
+            // envelope and NO ciphertext.
             let output = query_output(
                 EqlOutput::Store(scalar_payload(
                     Some("aa"),
@@ -2091,7 +2243,7 @@ mod tests {
         #[test]
         fn v3_integer_ord_ope_operand_carries_op_only() {
             // ope-indexed int column → eql_v3.query_integer_ord_ope: {v, i,
-            // op} (CIP-3348's CLLW-OPE term reaches the query twin too).
+            // op} (the CLLW-OPE term reaches the query twin too).
             let cfg = column(ColumnType::Int, vec![Index::new(IndexType::Ope)]);
             let output = query_output(
                 EqlOutput::Store(ope_scalar_payload("cc")),
@@ -2180,7 +2332,7 @@ mod tests {
     }
 
     mod dual_format_decrypt {
-        use super::support::{column, scalar_payload, ste_vec_payload};
+        use super::support::{column, dummy_key_header, scalar_payload, ste_vec_payload};
         use super::*;
         use cipherstash_client::schema::column::{Index, IndexType};
         use serde_json::json;
@@ -2207,6 +2359,10 @@ mod tests {
         }
 
         fn v3_ste_vec_value() -> serde_json::Value {
+            use cipherstash_client::eql::{
+                EqlCiphertextV3, Identifier, SteVecEntryV3, SteVecKind, SteVecPayloadV3,
+                EQL_SCHEMA_VERSION_V3,
+            };
             let cfg = column(
                 ColumnType::Json,
                 vec![Index::new(IndexType::SteVec {
@@ -2216,7 +2372,22 @@ mod tests {
                     mode: SteVecMode::Compat,
                 })],
             );
-            let output = storage_output(ste_vec_payload(), EqlVersion::V3, &cfg).unwrap();
+            let output = storage_output_v3(
+                EqlCiphertextV3::SteVec(SteVecPayloadV3 {
+                    version: EQL_SCHEMA_VERSION_V3,
+                    kind: SteVecKind::SteVec,
+                    identifier: Identifier::new("users", "profile"),
+                    key_header: dummy_key_header(),
+                    ste_vec: vec![SteVecEntryV3 {
+                        selector: "00000000000000000000000000000000".to_string(),
+                        ciphertext: vec![1; 16],
+                        is_array: None,
+                        term: None,
+                    }],
+                }),
+                &cfg,
+            )
+            .unwrap();
             serde_json::to_value(&output).unwrap()
         }
 
@@ -2226,25 +2397,40 @@ mod tests {
             #[test]
             fn decodes_a_v2_scalar_payload() {
                 let record = encrypted_record_from_value(v2_scalar_value(), vec![]).unwrap();
-                assert_eq!(record.record.descriptor, "users/email");
+                assert_eq!(record.record.encrypted_record().descriptor, "users/email");
             }
 
             #[test]
             fn decodes_a_v2_ste_vec_payload_from_the_root_entry() {
                 let record = encrypted_record_from_value(v2_ste_vec_value(), vec![]).unwrap();
-                assert_eq!(record.record.descriptor, "users/email");
+                assert_eq!(record.record.encrypted_record().descriptor, "users/email");
             }
 
             #[test]
             fn decodes_a_v3_scalar_payload() {
                 let record = encrypted_record_from_value(v3_scalar_value(), vec![]).unwrap();
-                assert_eq!(record.record.descriptor, "users/email");
+                assert_eq!(record.record.encrypted_record().descriptor, "users/email");
             }
 
             #[test]
             fn decodes_a_v3_ste_vec_document_from_sv_0() {
                 let record = encrypted_record_from_value(v3_ste_vec_value(), vec![]).unwrap();
-                assert_eq!(record.record.descriptor, "users/email");
+                assert_eq!(record.record.encrypted_record().descriptor, "users/profile");
+                assert!(matches!(record.record, DecryptableRecord::SteVec(_)));
+            }
+
+            #[test]
+            fn decodes_a_v3_ste_vec_entry_with_grafted_metadata() {
+                let document = v3_ste_vec_value();
+                let mut entry = document["sv"][0].clone();
+                let object = entry.as_object_mut().unwrap();
+                object.insert("v".to_string(), document["v"].clone());
+                object.insert("i".to_string(), document["i"].clone());
+                object.insert("h".to_string(), document["h"].clone());
+
+                let record = encrypted_record_from_value(entry, vec![]).unwrap();
+                assert_eq!(record.record.encrypted_record().descriptor, "users/profile");
+                assert!(matches!(record.record, DecryptableRecord::SteVec(_)));
             }
 
             #[test]
@@ -2263,12 +2449,8 @@ mod tests {
 
             #[test]
             fn rejects_a_v3_document_with_an_empty_sv() {
-                let value = json!({
-                    "v": 3,
-                    "k": "sv",
-                    "i": {"t": "users", "c": "profile"},
-                    "sv": []
-                });
+                let mut value = v3_ste_vec_value();
+                value["sv"] = json!([]);
                 let err = encrypted_record_from_value(value, vec![]).unwrap_err();
                 // The v3-specific message also pins ROUTING: the error must
                 // come from v3_root_record, not the v2 SteVec arm (whose
@@ -2278,23 +2460,33 @@ mod tests {
                     "mentions the missing root entry via the v3 branch: {err}"
                 );
             }
+
+            #[test]
+            fn rejects_a_v3_document_with_a_malformed_selector() {
+                let mut value = v3_ste_vec_value();
+                value["sv"][0]["s"] = json!("deadbeef");
+                assert!(matches!(
+                    encrypted_record_from_value(value, vec![]).unwrap_err(),
+                    Error::InvalidSteVecSelector
+                ));
+
+                let mut value = v3_ste_vec_value();
+                value["sv"][0]["s"] = json!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
+                assert!(matches!(
+                    encrypted_record_from_value(value, vec![]).unwrap_err(),
+                    Error::InvalidSteVecSelector
+                ));
+            }
         }
 
         #[test]
-        fn v2_parse_accepts_a_v3_document_so_v3_must_be_probed_first() {
-            // A v3 SteVec document carries BOTH `v: 3` and `k: "sv"`. The
-            // v2 EqlCiphertext parse is internally tagged on `k` and does
-            // not pin `v`, so it accepts the v3 document as a v2 SteVec
-            // payload. This canary pins why encrypted_record_from_value
-            // probes v3 BEFORE attempting the v2 parse — if it ever
-            // fails, cipherstash-client started rejecting `v: 3` and the
-            // v3-first ordering became belt-and-braces.
+        fn v2_parse_rejects_the_v3_key_header_document() {
+            // Client 0.42's v3 SteVec entry ciphertext is raw AEAD output and
+            // its key material is stored once in `h`; the v2 parser expects a
+            // self-contained encrypted record in every entry.
             assert!(
-                EqlCiphertext::deserialize(&v3_ste_vec_value()).is_ok(),
-                "the v2 parse no longer accepts a v3 SteVec document — \
-                 cipherstash-client now pins `v`, so the v3-first probe in \
-                 encrypted_record_from_value is belt-and-braces and this \
-                 canary can be deleted"
+                EqlCiphertext::deserialize(&v3_ste_vec_value()).is_err(),
+                "the v2 parser must not accept a v3 key-header document"
             );
         }
 

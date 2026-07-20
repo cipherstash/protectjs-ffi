@@ -119,7 +119,8 @@ describe('SteVec output structure', () => {
     expect(ciphertext).toHaveProperty('sv')
     expect(ciphertext).toHaveProperty('i')
     expect(ciphertext).toHaveProperty('v')
-    // EQL v2.3 places the root ciphertext at sv[0].c — not at the root.
+    expect(ciphertext).toHaveProperty('h')
+    // EQL v3 places raw root ciphertext at sv[0].c and key material in h.
     expect(ciphertext).not.toHaveProperty('c')
 
     // Validate entry structure uses new field names
@@ -202,16 +203,11 @@ describe('SteVec index field generation', () => {
     })
   })
 
-  // Under SteVec Standard mode (pinned by the `jsonSteVec` fixture; no longer
-  // the library default as of cipherstash-config 0.40.0), numeric and string
-  // values share a single orderable field `oc` — the old `ocf`/`ocv` split has
-  // been collapsed via tagged-plaintext encoding. Non-orderable values
-  // (booleans, null, arrays, objects) carry an `hm` HMAC field instead.
-  //
-  // Each test also asserts the Compat-mode `op` key is absent, so a client
-  // that emitted both terms could not pass on the `oc` assertion alone.
-  describe('ORE index field (oc)', () => {
-    test('should include ORE field (oc) for numeric values', async () => {
+  // EQL v3 uses the Compat-mode `op` term for ordering string and number path
+  // entries. Exact equality for every JSON scalar is selector presence, so
+  // entries do not carry `hm`.
+  describe('OPE index field (op)', () => {
+    test('should include OPE field (op) for numeric values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
       const ciphertext = await encrypt(client, {
@@ -224,18 +220,17 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const sv = ciphertext.sv ?? []
 
-      const entriesWithOre = sv.filter((e) => e.oc !== undefined)
-      expect(entriesWithOre.length).toBeGreaterThan(0)
+      const entriesWithOpe = sv.filter((e) => e.op !== undefined)
+      expect(entriesWithOpe.length).toBeGreaterThan(0)
 
-      for (const entry of entriesWithOre) {
-        expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithOpe) {
+        expect(entry.op).toMatch(/^[0-9a-f]+$/i)
       }
 
-      // The Compat-mode CLLW-OPE key must not appear in Standard mode.
-      expect(sv.filter((e) => e.op !== undefined)).toHaveLength(0)
+      expect(sv.filter((e) => e.oc !== undefined)).toHaveLength(0)
     })
 
-    test('should include ORE field (oc) for string values', async () => {
+    test('should include OPE field (op) for string values', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
       const ciphertext = await encrypt(client, {
@@ -248,24 +243,21 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const sv = ciphertext.sv ?? []
 
-      const entriesWithOre = sv.filter((e) => e.oc !== undefined)
-      expect(entriesWithOre.length).toBeGreaterThan(0)
+      const entriesWithOpe = sv.filter((e) => e.op !== undefined)
+      expect(entriesWithOpe.length).toBeGreaterThan(0)
 
-      for (const entry of entriesWithOre) {
-        expect(entry.oc).toMatch(/^[0-9a-f]+$/i)
+      for (const entry of entriesWithOpe) {
+        expect(entry.op).toMatch(/^[0-9a-f]+$/i)
       }
 
-      // The Compat-mode CLLW-OPE key must not appear in Standard mode.
-      expect(sv.filter((e) => e.op !== undefined)).toHaveLength(0)
+      expect(sv.filter((e) => e.oc !== undefined)).toHaveLength(0)
     })
   })
 
-  describe('HMAC index field (hm)', () => {
-    test('should include HMAC entry for the root object', async () => {
+  describe('value-inclusive selector entries', () => {
+    test('the root object has a term-less selector entry', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
-      // The root object (and any nested object, array, boolean, or null)
-      // produces an HMAC entry under Standard mode.
       const ciphertext = await encrypt(client, {
         plaintext: { name: 'test', email: 'test@example.com' },
         table: 'users',
@@ -276,15 +268,12 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const sv = ciphertext.sv ?? []
 
-      const entriesWithHm = sv.filter((e) => e.hm !== undefined)
-      expect(entriesWithHm.length).toBeGreaterThan(0)
-
-      for (const entry of entriesWithHm) {
-        expect(entry.hm).toMatch(/^[0-9a-f]+$/i)
-      }
+      expect(sv[0]).toHaveProperty('s')
+      expect(sv[0].hm).toBeUndefined()
+      expect(sv[0].op).toBeUndefined()
     })
 
-    test('should include HMAC entries for boolean values', async () => {
+    test('boolean exact-match entries carry selectors without HMAC terms', async () => {
       const client = await newClient({ encryptConfig: jsonSteVec })
 
       const ciphertext = await encrypt(client, {
@@ -297,12 +286,8 @@ describe('SteVec index field generation', () => {
       expect(ciphertext.sv).toBeDefined()
       const sv = ciphertext.sv ?? []
 
-      const entriesWithHm = sv.filter((e) => e.hm !== undefined)
-      expect(entriesWithHm.length).toBeGreaterThan(0)
-
-      for (const entry of entriesWithHm) {
-        expect(entry.hm).toMatch(/^[0-9a-f]+$/i)
-      }
+      expect(sv.filter((e) => e.hm !== undefined)).toHaveLength(0)
+      expect(sv.filter((e) => e.op === undefined).length).toBeGreaterThan(0)
     })
   })
 })

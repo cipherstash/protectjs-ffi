@@ -10,9 +10,6 @@ cross.log
 mise.local.toml
 cipherstash.secret.toml
 cipherstash-*.sql
-# The EQL v3 installer is a committed snapshot (no v3 release artifact yet) —
-# refresh it from a sibling encrypt-query-language checkout via `mise run eql:v3:build`.
-!integration-tests/sql/cipherstash-encrypt-v3.sql
 .env
 
 # Test coverage

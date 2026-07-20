@@ -126,6 +126,8 @@ impl ReceivedKind {
 pub enum ExpectedKind {
     JsonObjectOrArray,
     StringPathOrJsonObjectOrArray,
+    StringOrNumber,
+    ValueSelectorObject,
 }
 
 impl std::fmt::Display for ExpectedKind {
@@ -135,6 +137,11 @@ impl std::fmt::Display for ExpectedKind {
             Self::StringPathOrJsonObjectOrArray => {
                 write!(f, "String (JSON path) or JSON object/array")
             }
+            Self::StringOrNumber => write!(f, "String or Number"),
+            Self::ValueSelectorObject => write!(
+                f,
+                "JSON object {{\"path\": <JSON path string>, \"value\": <scalar JSON value>}}"
+            ),
         }
     }
 }
@@ -143,6 +150,7 @@ impl std::fmt::Display for ExpectedKind {
 #[derive(Debug, Clone, Copy)]
 pub enum QueryOpKind {
     SteVecTerm,
+    SteVecValueSelector,
     SteVecDefault,
 }
 
@@ -150,6 +158,7 @@ impl std::fmt::Display for QueryOpKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SteVecTerm => write!(f, "ste_vec_term"),
+            Self::SteVecValueSelector => write!(f, "ste_vec_value_selector"),
             Self::SteVecDefault => write!(f, "ste_vec (default)"),
         }
     }
@@ -195,6 +204,8 @@ pub enum QueryInputHint {
     WrapBooleanInObject,
     UsePathOrObject,
     BigIntNotJson,
+    UseOrderingScalar,
+    UseValueSelectorObject,
 }
 
 impl std::fmt::Display for QueryInputHint {
@@ -206,6 +217,8 @@ impl std::fmt::Display for QueryInputHint {
             Self::WrapBooleanInObject => write!(f, "Wrap the boolean in a JSON object to query by value: {{\"field\": <boolean>}}."),
             Self::UsePathOrObject => write!(f, "Use a JSON path string like '$.field' for path queries, or a JSON object like {{\"field\": value}} for containment queries."),
             Self::BigIntNotJson => write!(f, "BigInt values cannot appear in JSON documents; wrap a Number within the safe integer range in a JSON object instead: {{\"field\": <number>}}."),
+            Self::UseOrderingScalar => write!(f, "Use a String or Number for ordering comparisons. For exact equality at a path, use queryOp: 'ste_vec_value_selector'."),
+            Self::UseValueSelectorObject => write!(f, "Use exactly {{\"path\": \"$.field\", \"value\": <string, number, boolean, or null>}}. Objects and arrays require a containment query."),
         }
     }
 }
@@ -296,6 +309,10 @@ pub enum Error {
     Config(#[from] ConfigError),
     #[error("Invalid eqlVersion {0}: expected 2 or 3")]
     InvalidEqlVersion(u8),
+    #[error(
+        "eqlVersion 2 cannot emit ste_vec ciphertexts with cipherstash-client 0.42; use eqlVersion 3"
+    )]
+    SteVecRequiresV3,
     #[error("Column '{column}' cannot be represented in EQL v3: {reason}. {hint}")]
     NoV3Domain {
         column: String,
@@ -316,6 +333,8 @@ pub enum Error {
     },
     #[error("Invalid EQL ciphertext: {0}")]
     InvalidCiphertext(#[from] zerokms::DecryptError),
+    #[error("Invalid EQL ciphertext: v3 SteVec selector must be 16 bytes of hexadecimal")]
+    InvalidSteVecSelector,
 }
 
 /// JS-backed [`AuthStrategy`] for the Neon build.
@@ -764,7 +783,8 @@ struct EnsureKeysetResult {
 struct NewClientOptions {
     encrypt_config: CanonicalEncryptionConfig,
     client_opts: Option<ClientOpts>,
-    /// EQL wire version to emit: 2 (default) or 3. Sits alongside
+    /// EQL wire version to emit: 2 or 3. When omitted, SteVec configurations
+    /// use v3 and scalar-only configurations retain the v2 default. Sits alongside
     /// `encrypt_config` (not in `client_opts`, which carries credentials +
     /// keyset) because it configures the encryption output format.
     eql_version: Option<u8>,
@@ -814,7 +834,8 @@ struct EncryptQueryOptions {
     table: String,
     /// The index type to use: "ste_vec", "match", "ore", "unique"
     index_type: String,
-    /// The query operation: "default", "ste_vec_selector", "ste_vec_term"
+    /// The query operation: "default", "ste_vec_selector",
+    /// "ste_vec_value_selector", or "ste_vec_term"
     #[serde(default = "default_query_op")]
     query_op: String,
     lock_context: Option<LockContext>,
@@ -823,6 +844,25 @@ struct EncryptQueryOptions {
 
 fn default_query_op() -> String {
     "default".to_string()
+}
+
+fn resolve_eql_version(
+    requested: Option<u8>,
+    encrypt_config: &HashMap<Identifier, ColumnConfig>,
+) -> Result<EqlVersion, Error> {
+    let has_ste_vec = encrypt_config.values().any(|column| {
+        column
+            .indexes
+            .iter()
+            .any(|index| matches!(index.index_type, IndexType::SteVec { .. }))
+    });
+
+    match (requested, has_ste_vec) {
+        (Some(version), true) if version == EqlVersion::V2 as u8 => Err(Error::SteVecRequiresV3),
+        (Some(version), _) => validate_eql_version(Some(version)),
+        (None, true) => Ok(EqlVersion::V3),
+        (None, false) => validate_eql_version(None),
+    }
 }
 
 /// Options for bulk query encryption
@@ -995,6 +1035,7 @@ fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
     match query_op {
         "default" => Ok(QueryOp::Default),
         "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
+        "ste_vec_value_selector" => Ok(QueryOp::SteVecValueSelector),
         "ste_vec_term" => Ok(QueryOp::SteVecTerm),
         _ => Err(Error::UnknownQueryOp(query_op.to_string())),
     }
@@ -1019,7 +1060,8 @@ enum InferredQueryMode {
 ///
 /// Query mode has different type semantics than storage mode:
 /// - SteVecSelector: Always string (JSON path like "$.user.email") → QueryMode
-/// - SteVecTerm: Always JSON (fragment to match with @>) → StoreMode (produces sv array)
+/// - SteVecValueSelector: `{path, value}` exact-match input → QueryMode
+/// - SteVecTerm: String/number ordering operand → QueryMode
 /// - Default: For SteVec indexes, infers from plaintext type:
 ///   - String → QueryMode with SteVecSelector (path queries)
 ///   - Json (Object/Array) → StoreMode (containment queries need sv array)
@@ -1052,58 +1094,109 @@ fn to_query_plaintext(
                 InferredQueryMode::QueryMode(QueryOp::SteVecSelector),
             ))
         }
-        QueryOp::SteVecTerm => {
-            // Term queries expect a JSON fragment to match with @>
-            // Provide helpful errors for wrong types
-            match js_plaintext {
-                JsPlaintext::String(s) => {
+        QueryOp::SteVecValueSelector => {
+            let value = match js_plaintext {
+                JsPlaintext::JsonB(value) => value,
+                JsPlaintext::String(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
-                        received: ReceivedKind::String(s.clone()),
-                        expected: ExpectedKind::JsonObjectOrArray,
-                        hint: QueryInputHint::UseSelectorForPath,
+                        query_op: QueryOpKind::SteVecValueSelector,
+                        received: ReceivedKind::String(value.clone()),
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
                     });
                 }
-                JsPlaintext::Number(n) => {
+                JsPlaintext::Number(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
-                        received: ReceivedKind::Number(*n),
-                        expected: ExpectedKind::JsonObjectOrArray,
-                        hint: QueryInputHint::WrapNumberInObject,
+                        query_op: QueryOpKind::SteVecValueSelector,
+                        received: ReceivedKind::Number(*value),
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
                     });
                 }
-                JsPlaintext::Boolean(b) => {
+                JsPlaintext::Boolean(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
-                        received: ReceivedKind::Boolean(*b),
-                        expected: ExpectedKind::JsonObjectOrArray,
-                        hint: QueryInputHint::WrapBooleanInObject,
+                        query_op: QueryOpKind::SteVecValueSelector,
+                        received: ReceivedKind::Boolean(*value),
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
                     });
                 }
-                JsPlaintext::BigInt(v) => {
+                JsPlaintext::BigInt(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
-                        received: ReceivedKind::BigInt(*v),
-                        expected: ExpectedKind::JsonObjectOrArray,
-                        hint: QueryInputHint::BigIntNotJson,
+                        query_op: QueryOpKind::SteVecValueSelector,
+                        received: ReceivedKind::BigInt(*value),
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
                     });
-                }
-                JsPlaintext::JsonB(_) => {
-                    // This is the expected type - proceed
                 }
                 JsPlaintext::Date(_) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
+                        query_op: QueryOpKind::SteVecValueSelector,
                         received: ReceivedKind::Date,
-                        expected: ExpectedKind::JsonObjectOrArray,
-                        hint: QueryInputHint::WrapInObject,
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
                     });
                 }
-            }
-            // Use Store mode to produce sv array for containment matching
+            };
+
+            let valid = value
+                .as_object()
+                .filter(|object| object.len() == 2)
+                .and_then(|object| {
+                    let path = object.get("path")?.as_str()?;
+                    let value = object.get("value")?;
+                    (!value.is_object() && !value.is_array()).then_some(path)
+                });
+            let Some(path) = valid else {
+                return Err(Error::InvalidQueryInput {
+                    query_op: QueryOpKind::SteVecValueSelector,
+                    received: ReceivedKind::from_json(value),
+                    expected: ExpectedKind::ValueSelectorObject,
+                    hint: QueryInputHint::UseValueSelectorObject,
+                });
+            };
+            validate_json_path(path)?;
+
             let plaintext = js_plaintext.to_plaintext_with_type(ColumnType::Json)?;
-            Ok((plaintext, InferredQueryMode::StoreMode))
+            Ok((
+                plaintext,
+                InferredQueryMode::QueryMode(QueryOp::SteVecValueSelector),
+            ))
         }
+        QueryOp::SteVecTerm => match js_plaintext {
+            JsPlaintext::String(s) => {
+                let plaintext = Plaintext::Text(Some(s.clone()));
+                Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecTerm)))
+            }
+            JsPlaintext::Number(n) => {
+                let plaintext = Plaintext::Float(Some(*n));
+                Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecTerm)))
+            }
+            JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
+                query_op: QueryOpKind::SteVecTerm,
+                received: ReceivedKind::Boolean(*b),
+                expected: ExpectedKind::StringOrNumber,
+                hint: QueryInputHint::UseOrderingScalar,
+            }),
+            JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
+                query_op: QueryOpKind::SteVecTerm,
+                received: ReceivedKind::BigInt(*v),
+                expected: ExpectedKind::StringOrNumber,
+                hint: QueryInputHint::UseOrderingScalar,
+            }),
+            JsPlaintext::JsonB(value) => Err(Error::InvalidQueryInput {
+                query_op: QueryOpKind::SteVecTerm,
+                received: ReceivedKind::from_json(value),
+                expected: ExpectedKind::StringOrNumber,
+                hint: QueryInputHint::UseOrderingScalar,
+            }),
+            JsPlaintext::Date(_) => Err(Error::InvalidQueryInput {
+                query_op: QueryOpKind::SteVecTerm,
+                received: ReceivedKind::Date,
+                expected: ExpectedKind::StringOrNumber,
+                hint: QueryInputHint::UseOrderingScalar,
+            }),
+        },
         QueryOp::Default => {
             // For SteVec indexes with Default queryOp, infer from plaintext type
             if matches!(index_type, IndexType::SteVec { .. }) {
@@ -1249,9 +1342,11 @@ pub async fn new_client(
     Json(opts): Json<NewClientOptions>,
     strategy: Option<Root<JsObject>>,
 ) -> Result<Boxed<Client>, neon::types::extract::Error> {
-    // Validate before any network I/O: a bad eqlVersion should fail fast,
-    // not after ZeroKMS setup.
-    let eql_version = validate_eql_version(opts.eql_version)?;
+    // Parse the config and resolve the version before any network I/O. Client
+    // 0.42's SteVec key-header envelope is v3-only; scalar-only clients retain
+    // the historical v2 default.
+    let encrypt_config = opts.encrypt_config.into_config_map()?;
+    let eql_version = resolve_eql_version(opts.eql_version, &encrypt_config)?;
     let client_opts = opts.client_opts.unwrap_or_default();
 
     let auth = match strategy {
@@ -1269,7 +1364,7 @@ pub async fn new_client(
     let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(opts.encrypt_config.into_config_map()?),
+        encrypt_config: Arc::new(encrypt_config),
         eql_version,
     };
 
@@ -1668,7 +1763,7 @@ async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
 ) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
-    let encrypted_records: Vec<WithContext<'static>> = opts
+    let encrypted_records: Vec<WithContext<'static, eql_v3::DecryptableRecord>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -1711,7 +1806,7 @@ async fn decrypt_bulk_fallible(
     // Decode each ciphertext independently so a single invalid payload turns
     // into a per-item `DecryptResult::Error` rather than aborting the whole
     // batch — matches the `*Fallible` contract.
-    let parsed: Vec<Result<WithContext<'static>, Error>> = opts
+    let parsed: Vec<Result<WithContext<'static, eql_v3::DecryptableRecord>, Error>> = opts
         .ciphertexts
         .into_iter()
         .map(|payload| {
@@ -1721,7 +1816,8 @@ async fn decrypt_bulk_fallible(
         .collect();
 
     let mut results: Vec<Option<DecryptResult>> = (0..parsed.len()).map(|_| None).collect();
-    let mut valid_records: Vec<WithContext<'static>> = Vec::with_capacity(parsed.len());
+    let mut valid_records: Vec<WithContext<'static, eql_v3::DecryptableRecord>> =
+        Vec::with_capacity(parsed.len());
     let mut valid_indices: Vec<usize> = Vec::with_capacity(parsed.len());
 
     for (idx, item) in parsed.into_iter().enumerate() {
@@ -1887,7 +1983,7 @@ mod tests {
     mod is_encrypted {
         use super::*;
         use cipherstash_client::eql::{
-            EncryptedPayload, SteVecEntry, SteVecEntryTerm, SteVecPayload, EQL_SCHEMA_VERSION,
+            EncryptedPayload, SteVecEntry, SteVecPayload, EQL_SCHEMA_VERSION,
         };
         use cipherstash_client::zerokms::EncryptedRecord;
         use serde_json::json;
@@ -1928,9 +2024,7 @@ mod tests {
                     selector: "deadbeef".into(),
                     ciphertext: dummy_encrypted_record(),
                     is_array: None,
-                    term: SteVecEntryTerm::Hmac {
-                        hmac_256: "feedface".into(),
-                    },
+                    term: None,
                 }],
             });
             let value = serde_json::to_value(&payload).unwrap();
@@ -2066,6 +2160,12 @@ mod tests {
         }
 
         #[test]
+        fn parse_query_op_ste_vec_value_selector() {
+            let result = parse_query_op("ste_vec_value_selector");
+            assert!(matches!(result, Ok(QueryOp::SteVecValueSelector)));
+        }
+
+        #[test]
         fn parse_query_op_ste_vec_term() {
             let result = parse_query_op("ste_vec_term");
             assert!(matches!(result, Ok(QueryOp::SteVecTerm)));
@@ -2077,6 +2177,69 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert!(err.to_string().contains("Unknown query operation"));
+        }
+    }
+
+    mod eql_version_resolution {
+        use super::*;
+        use cipherstash_client::schema::column::{ColumnMode, ColumnType, Index};
+
+        fn ste_vec_config() -> HashMap<Identifier, ColumnConfig> {
+            HashMap::from([(
+                Identifier::new("users", "profile"),
+                ColumnConfig {
+                    name: "profile".to_string(),
+                    cast_type: ColumnType::Json,
+                    indexes: vec![Index::new(IndexType::SteVec {
+                        prefix: "users/profile".to_string(),
+                        term_filters: vec![],
+                        array_index_mode: Default::default(),
+                        mode: Default::default(),
+                    })],
+                    in_place: false,
+                    mode: ColumnMode::Encrypted,
+                },
+            )])
+        }
+
+        #[test]
+        fn omitted_version_uses_v3_for_ste_vec() {
+            assert_eq!(
+                resolve_eql_version(None, &ste_vec_config()).unwrap(),
+                EqlVersion::V3
+            );
+        }
+
+        #[test]
+        fn explicit_v2_is_rejected_for_ste_vec() {
+            assert!(matches!(
+                resolve_eql_version(Some(2), &ste_vec_config()),
+                Err(Error::SteVecRequiresV3)
+            ));
+        }
+
+        #[test]
+        fn explicit_v3_is_accepted_for_ste_vec() {
+            assert_eq!(
+                resolve_eql_version(Some(3), &ste_vec_config()).unwrap(),
+                EqlVersion::V3
+            );
+        }
+
+        #[test]
+        fn scalar_only_config_retains_the_v2_default() {
+            assert_eq!(
+                resolve_eql_version(None, &HashMap::new()).unwrap(),
+                EqlVersion::V2
+            );
+        }
+
+        #[test]
+        fn scalar_only_config_honours_an_explicit_v2() {
+            assert_eq!(
+                resolve_eql_version(Some(2), &HashMap::new()).unwrap(),
+                EqlVersion::V2
+            );
         }
     }
 
@@ -2461,10 +2624,41 @@ mod tests {
 
             let err_msg = result.unwrap_err().to_string();
             assert!(
-                err_msg.contains("BigInt") && err_msg.contains("JSON"),
-                "error should explain BigInt cannot appear in JSON documents: {}",
+                err_msg.contains("BigInt") && err_msg.contains("String or Number"),
+                "error should explain the accepted ordering scalar types: {}",
                 err_msg
             );
+        }
+
+        #[test]
+        fn test_ste_vec_term_rejects_boolean_and_date() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            for js_plaintext in [
+                JsPlaintext::Boolean(true),
+                JsPlaintext::Date(chrono::Utc::now()),
+            ] {
+                let err = to_query_plaintext(
+                    &js_plaintext,
+                    QueryOp::SteVecTerm,
+                    &index_type,
+                    ColumnType::Json,
+                    EqlVersion::V3,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    err,
+                    Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        ..
+                    }
+                ));
+            }
         }
 
         #[test]
@@ -2544,8 +2738,8 @@ mod tests {
         }
 
         #[test]
-        fn test_explicit_ste_vec_term_uses_store_mode() {
-            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"key": "value"}));
+        fn test_explicit_ste_vec_term_string_uses_query_mode() {
+            let js_plaintext = JsPlaintext::String("value".to_string());
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
@@ -2561,10 +2755,39 @@ mod tests {
                 EqlVersion::V2,
             );
 
-            // Explicit SteVecTerm uses StoreMode to produce sv array for containment
             assert!(matches!(
                 result,
-                Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
+                Ok((
+                    Plaintext::Text(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecTerm)
+                ))
+            ));
+        }
+
+        #[test]
+        fn test_explicit_ste_vec_term_number_uses_query_mode() {
+            let js_plaintext = JsPlaintext::Number(42.5);
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecTerm,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Float(Some(42.5)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecTerm)
+                ))
             ));
         }
 
@@ -2598,8 +2821,8 @@ mod tests {
         }
 
         #[test]
-        fn test_ste_vec_term_with_string_error_is_helpful() {
-            let js_plaintext = JsPlaintext::String("admin".to_string());
+        fn test_ste_vec_term_with_json_error_is_helpful() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({"role": "admin"}));
             let index_type = IndexType::SteVec {
                 prefix: "test/col".to_string(),
                 term_filters: vec![],
@@ -2623,18 +2846,168 @@ mod tests {
                 "Error should mention ste_vec_term: {}",
                 err_msg
             );
-            // Should say what was received
             assert!(
-                err_msg.contains("String"),
-                "Error should mention received String: {}",
+                err_msg.contains("JSON object"),
+                "Error should mention the received JSON object: {}",
                 err_msg
             );
-            // Should suggest using ste_vec_selector for paths
             assert!(
-                err_msg.contains("ste_vec_selector") || err_msg.contains("path"),
-                "Error should suggest ste_vec_selector for paths: {}",
+                err_msg.contains("ste_vec_value_selector") || err_msg.contains("ordering"),
+                "Error should explain term and exact-match operations: {}",
                 err_msg
             );
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_uses_query_mode() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({
+                "path": "$.user.email",
+                "value": "dan@example.com"
+            }));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let result = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecValueSelector,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            );
+
+            assert!(matches!(
+                result,
+                Ok((
+                    Plaintext::Json(Some(_)),
+                    InferredQueryMode::QueryMode(QueryOp::SteVecValueSelector)
+                ))
+            ));
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_container_values() {
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({
+                "path": "$.user",
+                "value": {"role": "admin"}
+            }));
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            let err = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecValueSelector,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            )
+            .unwrap_err();
+
+            assert!(err.to_string().contains("containment query"));
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_malformed_shapes() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            for bad in [
+                serde_json::json!({"path": "$.a"}),
+                serde_json::json!({"value": "x"}),
+                serde_json::json!({"path": "$.a", "value": "x", "extra": 1}),
+                serde_json::json!({"path": 123, "value": "x"}),
+                serde_json::json!({"path": "$.a", "value": [1, 2]}),
+            ] {
+                let err = to_query_plaintext(
+                    &JsPlaintext::JsonB(bad.clone()),
+                    QueryOp::SteVecValueSelector,
+                    &index_type,
+                    ColumnType::Json,
+                    EqlVersion::V3,
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        &err,
+                        Error::InvalidQueryInput {
+                            query_op: QueryOpKind::SteVecValueSelector,
+                            ..
+                        }
+                    ),
+                    "{bad} should be rejected: {err}"
+                );
+            }
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_invalid_json_path() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({
+                "path": "role",
+                "value": "admin"
+            }));
+
+            let err = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecValueSelector,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            )
+            .unwrap_err();
+            assert!(matches!(err, Error::InvalidJsonPath { .. }));
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_non_json_inputs() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            for js_plaintext in [
+                JsPlaintext::String("$.role".to_string()),
+                JsPlaintext::Number(42.0),
+                JsPlaintext::Boolean(true),
+                JsPlaintext::BigInt(42),
+                JsPlaintext::Date(chrono::Utc::now()),
+            ] {
+                let err = to_query_plaintext(
+                    &js_plaintext,
+                    QueryOp::SteVecValueSelector,
+                    &index_type,
+                    ColumnType::Json,
+                    EqlVersion::V3,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    err,
+                    Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecValueSelector,
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
+                        ..
+                    }
+                ));
+            }
         }
 
         #[test]
