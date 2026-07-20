@@ -15,6 +15,18 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`match.include_original` no longer reaches query-term generation**
+  (#134). The flag is a storage-only option — it asks the indexer to add the
+  whole (filtered, untokenized) value as an extra bloom term so the stored
+  filter can also answer whole-value equality. Query blooms must stay
+  token-only (EQL matches by bit-subset, so a whole-needle term would make
+  substring queries match nothing), so `newClient` now builds a query-side
+  copy of the config with `include_original` forced off and every
+  `encryptQuery` / `encryptQueryBulk` path (native and wasm, v2 and v3) uses
+  it. The config remains accepted as-is for storage encryption.
+
 ## [0.30.0] - 2026-07-20
 
 ### Breaking

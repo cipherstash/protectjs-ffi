@@ -53,10 +53,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
     auth_failure_message, encrypted_record_from_value, into_store_ciphertext,
-    into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_output,
-    query_output_v3, resolve_eql_version, storage_output, storage_output_v3, DecryptBulkOptions,
-    DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions, EncryptQueryBulkOptions,
-    EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
+    into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_config_map,
+    query_output, query_output_v3, resolve_eql_version, storage_output, storage_output_v3,
+    DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -219,6 +219,10 @@ pub struct WasmClient {
     cipher: Arc<ScopedCipher<JsAuthStrategy>>,
     zerokms: Arc<ZeroKMSWithClientKey<JsAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// `encrypt_config` with `include_original` forced off on every match
+    /// index — what the encrypt-query entry points use, so query blooms stay
+    /// token-only. See [`query_config_map`].
+    query_config: Arc<HashMap<Identifier, ColumnConfig>>,
     /// EQL wire version this client emits. Decryption accepts both formats
     /// regardless of this setting.
     eql_version: EqlVersion,
@@ -317,10 +321,13 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
         .await
         .map_err(|e| js_error(&e.to_string()))?;
 
+    let encrypt_config = Arc::new(encrypt_config);
+    let query_config = query_config_map(&encrypt_config);
     Ok(WasmClient {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(encrypt_config),
+        encrypt_config,
+        query_config,
         eql_version,
     })
 }
@@ -574,7 +581,7 @@ async fn do_encrypt_query(
     opts: EncryptQueryOptions,
 ) -> Result<QueryOutput, Error> {
     let (prepared, column_config) = prepare_query_plaintext(
-        &client.encrypt_config,
+        &client.query_config,
         &opts.table,
         &opts.column,
         &opts.plaintext,
@@ -629,7 +636,7 @@ async fn do_encrypt_query_bulk(
 
         for (original_idx, payload) in &payloads {
             let (prepared, column_config) = prepare_query_plaintext(
-                &client.encrypt_config,
+                &client.query_config,
                 &payload.table,
                 &payload.column,
                 &payload.plaintext,

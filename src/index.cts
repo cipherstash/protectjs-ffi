@@ -415,6 +415,13 @@ export type MatchIndexOpts = {
   token_filters?: TokenFilter[]
   k?: number
   m?: number
+  /**
+   * Storage-only option: adds the whole (filtered, untokenized) value as an
+   * extra bloom term so the stored filter can also answer whole-value
+   * equality. It never shapes query terms — `encryptQuery` /
+   * `encryptQueryBulk` always emit token-only blooms, otherwise a substring
+   * query's bloom could never be a subset of a row's bits.
+   */
   include_original?: boolean
 }
 

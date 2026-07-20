@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
+  type EncryptConfig,
   type Identifier,
   ProtectError,
   type QueryPayload,
@@ -476,4 +477,71 @@ describe('encryptQueryBulk error handling', () => {
     // Bulk operations should fail if any query is invalid
     await expect(encryptQueryBulk(client, { queries })).rejects.toThrowError()
   })
+})
+
+describe('match include_original is storage-only', () => {
+  const configWithIncludeOriginal = (
+    include_original: boolean,
+  ): EncryptConfig => ({
+    v: 1,
+    tables: {
+      users: {
+        email: {
+          cast_as: 'string',
+          indexes: {
+            ore: {},
+            unique: {},
+            match: {
+              tokenizer: { kind: 'ngram', token_length: 3 },
+              token_filters: [{ kind: 'downcase' }],
+              k: 6,
+              m: 2048,
+              include_original,
+            },
+          },
+        },
+      },
+    },
+  })
+
+  // Bloom bit ORDER is nondeterministic; sort before comparing bit SETS.
+  const bloomBits = (payload: unknown): number[] => {
+    const bf =
+      typeof payload === 'object' && payload !== null && 'bf' in payload
+        ? payload.bf
+        : undefined
+    if (!Array.isArray(bf)) {
+      throw new Error('expected a bloom filter on the query payload')
+    }
+    return [...bf].sort((a, b) => a - b)
+  }
+
+  for (const eqlVersion of [2, 3] as const) {
+    test(`eqlVersion ${eqlVersion}: query blooms are token-only regardless of the flag`, async () => {
+      const flagged = await newClient({
+        encryptConfig: configWithIncludeOriginal(true),
+        eqlVersion,
+      })
+      const plain = await newClient({
+        encryptConfig: configWithIncludeOriginal(false),
+        eqlVersion,
+      })
+
+      const query = {
+        plaintext: 'ada@example.com',
+        ...emailColumn,
+        indexType: 'match',
+      } as const
+
+      const withFlag = await encryptQuery(flagged, query)
+      const withoutFlag = await encryptQuery(plain, query)
+
+      // include_original may add a whole-value term to STORED blooms, but the
+      // query bloom must never carry one: EQL matches by bit-subset, so a
+      // whole-needle term would make substring queries match nothing (#134).
+      // Identical bit sets across the two configs prove the flag is stripped
+      // from query generation.
+      expect(bloomBits(withFlag)).toEqual(bloomBits(withoutFlag))
+    })
+  }
 })
