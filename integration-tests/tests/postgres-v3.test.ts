@@ -21,9 +21,8 @@ import { beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import { v3WireKeys } from './common'
 
 // Requires the eql_v3 schema: `mise run eql:v3:install` (part of `mise
-// setup`) installs the committed snapshot sql/cipherstash-encrypt-v3.sql,
-// which is extracted from the locked eql-bindings release — refresh it with
-// `mise run eql:v3:build` after bumping eql-bindings.
+// setup`) installs the SQL bundled with the exact @cipherstash/eql version
+// locked by the integration-test package.
 //
 // The config -> eql_v3 domain mapping is asserted, not assumed: each
 // payload's exact key set is checked against the vendored domain type

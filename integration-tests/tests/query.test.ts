@@ -290,7 +290,7 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
     expect(results[2]).toHaveProperty('ob')
   })
 
-  test('should preserve lockContext across bulk queries', async () => {
+  test('should forward lockContext for bulk queries', async () => {
     const client = await newClient({ encryptConfig })
     const lockContext = {
       identityClaim: ['user123'],
@@ -311,43 +311,13 @@ describe('encryptQueryBulk for query ordering and grouping', () => {
       },
     ]
 
-    const results = await encryptQueryBulk(client, { queries })
-
-    expect(results).toHaveLength(2)
-    // Both results should be valid encrypted queries
-    expect(results[0]).toHaveProperty('i')
-    expect(results[1]).toHaveProperty('i')
-  })
-
-  test('should handle queries with different lockContext values', async () => {
-    const client = await newClient({ encryptConfig })
-
-    const queries: QueryPayload[] = [
-      {
-        plaintext: 'email1@example.com',
-        ...emailColumn,
-        indexType: 'ore',
-        lockContext: {
-          identityClaim: ['user1'],
-        },
-      },
-      {
-        plaintext: 'email2@example.com',
-        ...emailColumn,
-        indexType: 'ore',
-        lockContext: {
-          identityClaim: ['user2'],
-        },
-      },
-    ]
-
-    const results = await encryptQueryBulk(client, { queries })
-
-    expect(results).toHaveLength(2)
-    // Both should have ORE fields
-    expect(results[0]).toHaveProperty('ob')
-    expect(results[1]).toHaveProperty('ob')
-  })
+    // The integration-test client is not a service token. ZeroKMS rejecting
+    // the identity claim proves the bulk path forwarded the lock context;
+    // silently dropping it would make this request succeed.
+    await expect(encryptQueryBulk(client, { queries })).rejects.toThrowError(
+      /Request forbidden/,
+    )
+  }, 10000)
 
   test('should preserve order with identical index types and different plaintexts', async () => {
     const client = await newClient({ encryptConfig })

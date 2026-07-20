@@ -45,9 +45,9 @@ uses the promoted section as the GitHub release notes.
 ### Changed
 
 - Bumped cipherstash-client, cts-common, stack-auth, and stack-profile to
-  0.42.0. Until the matching eql-bindings release is published, the draft pins
-  the EQL compatibility changes by commit; the generated TypeScript types and
-  integration-test SQL snapshot are refreshed from that same revision.
+  0.42.0 and eql-bindings to 3.0.2. The generated TypeScript types are
+  refreshed from the locked Rust crate; integration tests install SQL from the
+  exact matching @cipherstash/eql 3.0.2 npm package.
 - Added `ste_vec_value_selector` for exact equality at a JSON path. It accepts
   exactly `{path: "$.field", value: <scalar>}` and emits a one-entry,
   selector-only containment needle. Objects and arrays continue to use the

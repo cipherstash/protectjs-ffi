@@ -23,54 +23,15 @@ description = "Install CipherStash encrypt SQL into the database"
 dir = "{{ config_root }}/integration-tests"
 run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-"
 
-# The installer is a COMMITTED snapshot (sql/cipherstash-encrypt-v3.sql — the
-# one exception to the cipherstash-*.sql gitignore rule) extracted from the
-# locked eql-bindings release, which bundles its exact install SQL
-# (eql_bindings::sql::INSTALL_SQL). That is what CI, contributors, and
-# `mise run setup` install — setup uses the committed snapshot as-is and never
-# rebuilds it. This task is the OPT-IN refresh: run it explicitly after
-# bumping eql-bindings, then commit the diff. Extracting from the crate (via
-# the print_eql_v3_sql example) guarantees the SQL the tests install is
-# exactly the release the Rust conversion code links against. The output is
-# still verified — it must create the eql_v3 schema and must not create
-# eql_v2 — before it is allowed to overwrite the committed snapshot.
-["eql:v3:build"]
-description = "Rebuild the committed EQL v3 SQL snapshot from the locked eql-bindings release (opt-in; verifies the output is the eql_v3 installer before overwriting)"
-dir = "{{ config_root }}/integration-tests"
-run = """
-set -e
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-(cd .. && cargo run --quiet -p protect-ffi --example print_eql_v3_sql) > "$tmp"
-if ! grep -q 'CREATE SCHEMA eql_v3;' "$tmp"; then
-    echo "error: the bundled installer does not create the eql_v3 schema — the committed snapshot was left untouched." >&2
-    exit 1
-fi
-if grep -Eq 'CREATE SCHEMA (IF NOT EXISTS )?eql_v2' "$tmp"; then
-    echo "error: the bundled installer creates the eql_v2 schema — this looks like the v2 installer, not eql_v3. The committed snapshot was left untouched." >&2
-    exit 1
-fi
-mv "$tmp" sql/cipherstash-encrypt-v3.sql
-trap - EXIT
-echo "sql/cipherstash-encrypt-v3.sql rebuilt from the locked eql-bindings release — commit the diff if the snapshot changed"
-"""
-
 ["eql:v3:install"]
-description = "Install the EQL v3 SQL into the database"
+description = "Install EQL v3 from the locked @cipherstash/eql package"
 dir = "{{ config_root }}/integration-tests"
 run = """
-if [ ! -f sql/cipherstash-encrypt-v3.sql ]; then
-    echo "warning: sql/cipherstash-encrypt-v3.sql not found — skipping EQL v3 install (the snapshot is committed; check the working tree)"
-    exit 0
-fi
-cat sql/cipherstash-encrypt-v3.sql | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-
+node --input-type=module -e "import { readInstallSql } from '@cipherstash/eql/sql'; process.stdout.write(readInstallSql())" | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-
 """
 
-# Installs the COMMITTED EQL v3 snapshot as-is. Rebuilding the snapshot from
-# a sibling encrypt-query-language checkout is deliberately NOT part of setup —
-# run `mise run eql:v3:build` explicitly when the eql_v3 branch moves.
 [setup]
-description = "Set up the integration test environment (installs the committed EQL v3 snapshot; rebuild it explicitly with eql:v3:build)"
+description = "Set up the integration test environment"
 dir = "{{ config_root }}/integration-tests"
 run = [
     "npm ci",

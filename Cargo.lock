@@ -1058,8 +1058,9 @@ dependencies = [
 
 [[package]]
 name = "eql-bindings"
-version = "3.0.1-alpha.0"
-source = "git+https://github.com/cipherstash/encrypt-query-language?rev=4aa408b9fdb06733aa24cfbe3d38f7be5d8c755b#4aa408b9fdb06733aa24cfbe3d38f7be5d8c755b"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b7387c1c6751ad390e07094f02cd4817b61ed4e5b971813d5a4bd023afca5fe"
 dependencies = [
  "schemars",
  "serde",

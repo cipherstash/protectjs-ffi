@@ -15,7 +15,7 @@ base85 = "2.0.0"
 chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
 cipherstash-client = { version = "=0.42.0", features = ["tokio"] }
 cts-common = { version = "=0.42.0", default-features = false }
-eql-bindings = { git = "https://github.com/cipherstash/encrypt-query-language", rev = "4aa408b9fdb06733aa24cfbe3d38f7be5d8c755b" }
+eql-bindings = { version = "=3.0.2" }
 stack-auth = { version = "=0.42.0" }
 hex = "0.4.3"
 once_cell = "1.20.2"
