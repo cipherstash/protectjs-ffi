@@ -27,7 +27,15 @@ run = "cat sql/cipherstash-encrypt.sql | docker exec -i protect-ffi-postgres psq
 description = "Install EQL v3 from the locked @cipherstash/eql package"
 dir = "{{ config_root }}/integration-tests"
 run = """
-node --input-type=module -e "import { readInstallSql } from '@cipherstash/eql/sql'; process.stdout.write(readInstallSql())" | docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f-
+set -e
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+node --input-type=module -e "import { readInstallSql } from '@cipherstash/eql/sql'; process.stdout.write(readInstallSql())" > "$tmp"
+if [ ! -s "$tmp" ]; then
+    echo "error: @cipherstash/eql returned an empty EQL v3 installer" >&2
+    exit 1
+fi
+docker exec -i protect-ffi-postgres psql postgresql://cipherstash:password@postgres:5432/cipherstash -f- < "$tmp"
 """
 
 [setup]

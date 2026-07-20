@@ -45,16 +45,16 @@ When storing JSONB data, the flow is:
 flowchart LR
     IN["JSON Object<br/>{ 'user': { 'role': 'admin' } }"] --> JP["JsPlaintext<br/>(JsonB variant)"]
     JP --> PT["Plaintext::JsonB"]
-    PT -- "flatten" --> EE["encrypt_eql()<br/>Store mode"]
-    EE --> EC["EqlCiphertext<br/>(unified format)"]
-    EC --> OUT["EQL Ciphertext<br/>{ i, v, c, sv: [...] }"]
+    PT -- "flatten" --> EE["encrypt_eql_v3()<br/>Store mode"]
+    EE --> EC["EqlCiphertextV3<br/>(SteVec document)"]
+    EC --> OUT["EQL Ciphertext<br/>{ v: 3, k: 'sv', i, h, sv: [...] }"]
 ```
 
 **Key Points:**
 - `EqlOperation::Store` is used
-- Root ciphertext (`c`) is produced for decryption
-- SteVec entries (`sv`) are produced for querying
-- Each entry contains searchable encrypted metadata (selector, blake3, ORE, etc.)
+- The document key header (`h`) is stored once for decryption
+- SteVec entries (`sv`) carry the selector (`s`) and raw AEAD ciphertext (`c`)
+- Ordered string/number path entries may also carry an `op` term
 
 **Update Semantics:**
 - There is **no partial in-place update** of encrypted JSON fields
@@ -89,7 +89,9 @@ flowchart LR
     EC --> OUT["Containment Needle<br/>{ sv: [...] }"]
 ```
 
-**Output:** SteVec entries (`sv`) array, typically with ciphertext (`c`)
+**Output:** An `eql_v3.query_json` needle containing only `{sv: [{s, op?}]}`.
+The document envelope (`v`, `k`, `i`, `h`) and entry ciphertext (`c`) are
+removed before the needle crosses the FFI boundary.
 
 ---
 
@@ -114,19 +116,17 @@ When JSON is encrypted with a `ste_vec` index, it is "flattened" into a vector o
 
 | Path | Value | Index Fields |
 |------|-------|--------------|
-| `$.user.name` | `"alice"` | s, b3, ocv |
-| `$.user.age` | `30` | s, b3, ocf |
-| `$.user.tags[0]` | `"admin"` | s, b3, ocv, a=true |
-| `$.user.tags[1]` | `"moderator"` | s, b3, ocv, a=true |
+| `$.user.name` | `"alice"` | s, c, op |
+| `$.user.age` | `30` | s, c, op |
+| `$.user.tags[0]` | `"admin"` | s, c, a=true, op |
+| `$.user.tags[1]` | `"moderator"` | s, c, a=true, op |
 
 ### Index Fields in SteVec Entries
 
 | Field | Name | Purpose | Generated For |
 |-------|------|---------|---------------|
-| `s` | Selector | Encrypted path identifier | All entries |
-| `b3` | Blake3 | Exact match hash | All leaf values |
-| `ocf` | ORE Fixed | Range comparison (64-bit) | Numeric values |
-| `ocv` | ORE Variable | Range comparison (variable) | String values |
+| `s` | Selector | Path or path-and-value identifier | All entries |
+| `op` | OPE term | Ordering comparison | Ordered string/number path entries |
 | `a` | Array Flag | Indicates array membership | Array elements |
 | `c` | Ciphertext | Encrypted value | All entries |
 
@@ -172,7 +172,7 @@ const ciphertext = await encrypt(client, {
   column: 'profile'
 })
 
-// Result: { i, v, c, sv: [...] }
+// Result: { v: 3, k: 'sv', i, h, sv: [{ s, c, a?, op? }, ...] }
 ```
 
 ### 4. Encrypt Path Selector Query
@@ -189,7 +189,7 @@ const selector = await encryptQuery(client, {
   queryOp: 'ste_vec_selector'  // Or use 'default' with string
 })
 
-// Result: { i, v, s: "..." }
+// Result: "..." (the bare selector hash)
 ```
 
 ### 5. Encrypt Containment Query
@@ -206,19 +206,18 @@ const query = await encryptQuery(client, {
   queryOp: 'default'
 })
 
-// Result: { i, v, sv: [...] }
+// Result: { sv: [{ s, op? }, ...] }
 ```
 
 ### 6. Use with SQL
 
 ```sql
--- Path selection
-SELECT * FROM users
-WHERE eql_v2.jsonb_path_exists(profile, $selector);
+-- Path selection / extraction
+SELECT profile -> $1::text FROM users;
 
 -- Containment
 SELECT * FROM users
-WHERE profile @> $query::jsonb;
+WHERE profile @> $1::jsonb::eql_v3.query_json;
 ```
 
 ---
@@ -229,12 +228,14 @@ If using the full [`@cipherstash/stack`](https://github.com/cipherstash/stack) l
 
 | @cipherstash/stack Pattern | Translates To | Output |
 |-------------------|---------------|--------|
-| `{ path: "user.email" }` | `encryptQuery` with `$.user.email` selector | `{ s }` |
-| `{ path: "user.role", value: "admin" }` | `encryptQuery` with `{ user: { role: "admin" } }` term | `{ sv }` |
+| `{ path: "user.email" }` | `encryptQuery` with `$.user.email` selector | bare selector string |
+| `{ path: "user.role", value: "admin" }` | `encryptQuery` with `ste_vec_value_selector` | `{ sv: [{ s }] }` |
 | `{ contains: { role: "admin" } }` | `encryptQuery` with term | `{ sv }` |
 | `{ containedBy: { role: "admin" } }` | `encryptQuery` with term | `{ sv }` |
 
-**Note:** Path+value queries use containment semantics (not selector+value comparison). The path is used to build a nested object structure for the containment query.
+**Note:** Path+value queries use a value-inclusive selector and return a
+one-entry containment needle. General object/array containment still flattens
+the supplied JSON fragment into a multi-entry needle.
 
 See the [@cipherstash/stack source](https://github.com/cipherstash/stack) for implementation details.
 

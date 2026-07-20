@@ -1938,25 +1938,46 @@ mod tests {
             );
         }
 
-        #[test]
-        fn query_output_v3_value_selector_is_a_termless_containment_needle() {
+        fn native_ste_vec_query() -> cipherstash_client::eql::EqlOutputV3 {
             use cipherstash_client::eql::{
                 EqlOutputV3, EqlQueryPayloadV3, SteVecQueryEntryV3, SteVecQueryPayloadV3,
             };
-            let out = query_output_v3(
-                EqlOutputV3::Query(EqlQueryPayloadV3::SteVec(SteVecQueryPayloadV3 {
-                    ste_vec: vec![SteVecQueryEntryV3 {
-                        selector: "deadbeef".into(),
-                        term: None,
-                    }],
-                })),
-                &json_column(),
-            )
-            .unwrap();
+            EqlOutputV3::Query(EqlQueryPayloadV3::SteVec(SteVecQueryPayloadV3 {
+                ste_vec: vec![SteVecQueryEntryV3 {
+                    selector: "deadbeef".into(),
+                    term: None,
+                }],
+            }))
+        }
+
+        #[test]
+        fn query_output_v3_value_selector_is_a_termless_containment_needle() {
+            let out = query_output_v3(native_ste_vec_query(), &json_column()).unwrap();
 
             assert_eq!(
                 serde_json::to_value(&out).unwrap(),
                 serde_json::json!({"sv": [{"s": "deadbeef"}]})
+            );
+        }
+
+        #[test]
+        fn query_output_v3_ste_vec_needle_rejects_a_scalar_query_domain() {
+            let err = query_output_v3(native_ste_vec_query(), &text_search_column()).unwrap_err();
+            assert!(matches!(
+                err,
+                Error::V3NativeParse { ref domain, .. }
+                    if domain == "query_text_search_ore"
+            ));
+        }
+
+        #[test]
+        fn query_output_v3_ste_vec_needle_rejects_a_domain_without_a_query_variant() {
+            let storage_only = column(ColumnType::Text, vec![]);
+            let err = query_output_v3(native_ste_vec_query(), &storage_only).unwrap_err();
+            assert!(matches!(&err, Error::InvariantViolation(_)));
+            assert!(
+                err.to_string().contains("has no QueryPayload variant"),
+                "names the missing query variant: {err}"
             );
         }
 
@@ -2438,6 +2459,23 @@ mod tests {
                     err.to_string().contains("root entry in v3 SteVec payload"),
                     "mentions the missing root entry via the v3 branch: {err}"
                 );
+            }
+
+            #[test]
+            fn rejects_a_v3_document_with_a_malformed_selector() {
+                let mut value = v3_ste_vec_value();
+                value["sv"][0]["s"] = json!("deadbeef");
+                assert!(matches!(
+                    encrypted_record_from_value(value, vec![]).unwrap_err(),
+                    Error::InvalidSteVecSelector
+                ));
+
+                let mut value = v3_ste_vec_value();
+                value["sv"][0]["s"] = json!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
+                assert!(matches!(
+                    encrypted_record_from_value(value, vec![]).unwrap_err(),
+                    Error::InvalidSteVecSelector
+                ));
             }
         }
 

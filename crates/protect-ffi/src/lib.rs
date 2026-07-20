@@ -2219,9 +2219,25 @@ mod tests {
         }
 
         #[test]
+        fn explicit_v3_is_accepted_for_ste_vec() {
+            assert_eq!(
+                resolve_eql_version(Some(3), &ste_vec_config()).unwrap(),
+                EqlVersion::V3
+            );
+        }
+
+        #[test]
         fn scalar_only_config_retains_the_v2_default() {
             assert_eq!(
                 resolve_eql_version(None, &HashMap::new()).unwrap(),
+                EqlVersion::V2
+            );
+        }
+
+        #[test]
+        fn scalar_only_config_honours_an_explicit_v2() {
+            assert_eq!(
+                resolve_eql_version(Some(2), &HashMap::new()).unwrap(),
                 EqlVersion::V2
             );
         }
@@ -2615,6 +2631,37 @@ mod tests {
         }
 
         #[test]
+        fn test_ste_vec_term_rejects_boolean_and_date() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            for js_plaintext in [
+                JsPlaintext::Boolean(true),
+                JsPlaintext::Date(chrono::Utc::now()),
+            ] {
+                let err = to_query_plaintext(
+                    &js_plaintext,
+                    QueryOp::SteVecTerm,
+                    &index_type,
+                    ColumnType::Json,
+                    EqlVersion::V3,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    err,
+                    Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecTerm,
+                        ..
+                    }
+                ));
+            }
+        }
+
+        #[test]
         fn test_non_ste_vec_default_with_bigint_uses_column_type() {
             // An ore/unique query term on a bigint column accepts a bigint
             // and converts it via the column's cast type — the same path
@@ -2864,6 +2911,103 @@ mod tests {
             .unwrap_err();
 
             assert!(err.to_string().contains("containment query"));
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_malformed_shapes() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            for bad in [
+                serde_json::json!({"path": "$.a"}),
+                serde_json::json!({"value": "x"}),
+                serde_json::json!({"path": "$.a", "value": "x", "extra": 1}),
+                serde_json::json!({"path": 123, "value": "x"}),
+                serde_json::json!({"path": "$.a", "value": [1, 2]}),
+            ] {
+                let err = to_query_plaintext(
+                    &JsPlaintext::JsonB(bad.clone()),
+                    QueryOp::SteVecValueSelector,
+                    &index_type,
+                    ColumnType::Json,
+                    EqlVersion::V3,
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        &err,
+                        Error::InvalidQueryInput {
+                            query_op: QueryOpKind::SteVecValueSelector,
+                            ..
+                        }
+                    ),
+                    "{bad} should be rejected: {err}"
+                );
+            }
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_invalid_json_path() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+            let js_plaintext = JsPlaintext::JsonB(serde_json::json!({
+                "path": "role",
+                "value": "admin"
+            }));
+
+            let err = to_query_plaintext(
+                &js_plaintext,
+                QueryOp::SteVecValueSelector,
+                &index_type,
+                ColumnType::Json,
+                EqlVersion::V3,
+            )
+            .unwrap_err();
+            assert!(matches!(err, Error::InvalidJsonPath { .. }));
+        }
+
+        #[test]
+        fn test_ste_vec_value_selector_rejects_non_json_inputs() {
+            let index_type = IndexType::SteVec {
+                prefix: "test/col".to_string(),
+                term_filters: vec![],
+                array_index_mode: Default::default(),
+                mode: Default::default(),
+            };
+
+            for js_plaintext in [
+                JsPlaintext::String("$.role".to_string()),
+                JsPlaintext::Number(42.0),
+                JsPlaintext::Boolean(true),
+                JsPlaintext::BigInt(42),
+                JsPlaintext::Date(chrono::Utc::now()),
+            ] {
+                let err = to_query_plaintext(
+                    &js_plaintext,
+                    QueryOp::SteVecValueSelector,
+                    &index_type,
+                    ColumnType::Json,
+                    EqlVersion::V3,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    err,
+                    Error::InvalidQueryInput {
+                        query_op: QueryOpKind::SteVecValueSelector,
+                        expected: ExpectedKind::ValueSelectorObject,
+                        hint: QueryInputHint::UseValueSelectorObject,
+                        ..
+                    }
+                ));
+            }
         }
 
         #[test]
