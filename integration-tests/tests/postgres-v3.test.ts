@@ -57,6 +57,18 @@ const encryptConfig: EncryptConfig = {
   },
 }
 
+const v2EmailOnlyConfig: EncryptConfig = {
+  v: 1,
+  tables: {
+    v3pg: {
+      email: {
+        cast_as: 'text',
+        indexes: { unique: {} },
+      },
+    },
+  },
+}
+
 // Exact wire key sets, compile-time-checked against the vendored eql_v3
 // domain types (see v3WireKeys).
 const textEqKeys = v3WireKeys<TextEq>()('v', 'i', 'c', 'hm')
@@ -155,7 +167,10 @@ describe('postgres eql_v3', () => {
   })
 
   test('the domain CHECK rejects a v2 payload', async () => {
-    const v2Client = await newClient({ encryptConfig })
+    const v2Client = await newClient({
+      encryptConfig: v2EmailOnlyConfig,
+      eqlVersion: 2,
+    })
     const v2Email = await encrypt(v2Client, {
       plaintext: 'v2@example.com',
       column: 'email',
