@@ -321,8 +321,8 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
         .await
         .map_err(|e| js_error(&e.to_string()))?;
 
+    let query_config = query_config_map(encrypt_config.clone());
     let encrypt_config = Arc::new(encrypt_config);
-    let query_config = query_config_map(&encrypt_config);
     Ok(WasmClient {
         cipher: Arc::new(cipher),
         zerokms,

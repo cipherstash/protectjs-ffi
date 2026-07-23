@@ -1273,38 +1273,26 @@ fn to_query_plaintext(
 /// operands run in Store mode (see [`to_query_plaintext`]), and query-mode
 /// terms are produced by the same match indexer that honours storage options.
 ///
-/// Built once at client construction; when no match index sets the flag the
-/// storage map is shared instead of copied.
+/// Built once at client construction from a copy of the storage config.
 fn query_config_map(
-    encrypt_config: &Arc<HashMap<Identifier, ColumnConfig>>,
+    encrypt_config: HashMap<Identifier, ColumnConfig>,
 ) -> Arc<HashMap<Identifier, ColumnConfig>> {
-    let has_include_original = encrypt_config.values().any(|config| {
-        config.indexes.iter().any(|index| {
-            matches!(
-                &index.index_type,
-                IndexType::Match {
-                    include_original: true,
-                    ..
+    Arc::new(
+        encrypt_config
+            .into_iter()
+            .map(|(ident, mut config)| {
+                for index in &mut config.indexes {
+                    if let IndexType::Match {
+                        include_original, ..
+                    } = &mut index.index_type
+                    {
+                        *include_original = false;
+                    }
                 }
-            )
-        })
-    });
-    if !has_include_original {
-        return Arc::clone(encrypt_config);
-    }
-
-    let mut stripped = encrypt_config.as_ref().clone();
-    for config in stripped.values_mut() {
-        for index in &mut config.indexes {
-            if let IndexType::Match {
-                include_original, ..
-            } = &mut index.index_type
-            {
-                *include_original = false;
-            }
-        }
-    }
-    Arc::new(stripped)
+                (ident, config)
+            })
+            .collect(),
+    )
 }
 
 /// Resolve a query payload's column config and build its [`PreparedPlaintext`]:
@@ -1416,8 +1404,8 @@ pub async fn new_client(
     let zerokms = Arc::new(zerokms);
     let cipher = ScopedZeroKMS::init(zerokms.clone(), client_opts.keyset).await?;
 
+    let query_config = query_config_map(encrypt_config.clone());
     let encrypt_config = Arc::new(encrypt_config);
-    let query_config = query_config_map(&encrypt_config);
     let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
@@ -3222,21 +3210,19 @@ mod tests {
 
         fn config_map(
             columns: Vec<(&str, &str, Vec<Index>)>,
-        ) -> Arc<HashMap<Identifier, ColumnConfig>> {
-            Arc::new(
-                columns
-                    .into_iter()
-                    .map(|(table, column, indexes)| {
-                        let config = indexes
-                            .into_iter()
-                            .fold(ColumnConfig::build(column), ColumnConfig::add_index);
-                        (
-                            Identifier::new(table.to_string(), column.to_string()),
-                            config,
-                        )
-                    })
-                    .collect(),
-            )
+        ) -> HashMap<Identifier, ColumnConfig> {
+            columns
+                .into_iter()
+                .map(|(table, column, indexes)| {
+                    let config = indexes
+                        .into_iter()
+                        .fold(ColumnConfig::build(column), ColumnConfig::add_index);
+                    (
+                        Identifier::new(table.to_string(), column.to_string()),
+                        config,
+                    )
+                })
+                .collect()
         }
 
         fn include_original_flags(
@@ -3267,7 +3253,7 @@ mod tests {
                 ("users", "name", vec![match_index(false)]),
             ]);
 
-            let query_config = query_config_map(&encrypt_config);
+            let query_config = query_config_map(encrypt_config);
 
             assert_eq!(
                 include_original_flags(&query_config, "users", "email"),
@@ -3287,7 +3273,7 @@ mod tests {
                 vec![match_index(true), Index::new(IndexType::Ore)],
             )]);
 
-            let query_config = query_config_map(&encrypt_config);
+            let query_config = query_config_map(encrypt_config.clone());
 
             // The storage map keeps the flag: include_original stays honoured
             // for stored blooms.
@@ -3301,19 +3287,6 @@ mod tests {
                 .indexes
                 .iter()
                 .any(|index| matches!(index.index_type, IndexType::Ore)));
-        }
-
-        #[test]
-        fn shares_the_storage_map_when_no_flag_is_set() {
-            let encrypt_config = config_map(vec![(
-                "users",
-                "email",
-                vec![match_index(false), Index::new(IndexType::Ore)],
-            )]);
-
-            let query_config = query_config_map(&encrypt_config);
-
-            assert!(Arc::ptr_eq(&encrypt_config, &query_config));
         }
     }
 }
