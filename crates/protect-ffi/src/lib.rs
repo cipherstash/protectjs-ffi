@@ -63,6 +63,10 @@ struct Client {
     cipher: Arc<ScopedZeroKMS>,
     zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// `encrypt_config` with `include_original` forced off on every match
+    /// index — what the encrypt-query entry points use, so query blooms stay
+    /// token-only. See [`query_config_map`].
+    query_config: Arc<HashMap<Identifier, ColumnConfig>>,
     /// EQL wire version this client emits. Decryption accepts both formats
     /// regardless of this setting.
     eql_version: EqlVersion,
@@ -1256,6 +1260,41 @@ fn to_query_plaintext(
     }
 }
 
+/// Build the column-config map the encrypt-query entry points use:
+/// `encrypt_config` with `include_original` forced off on every match index.
+///
+/// `include_original: true` is a STORAGE option — it asks the indexer to add
+/// the whole (filtered, untokenized) value as an extra bloom term so the
+/// stored filter can also answer whole-value equality. A query bloom must
+/// stay token-only: EQL matches by bit-subset (query bits ⊆ row bits), so a
+/// whole-needle term in a substring query's bloom is never covered by the
+/// row's per-token bits and the query matches nothing (#134). The flag would
+/// otherwise reach query-term generation on two paths: v3 scalar Default
+/// operands run in Store mode (see [`to_query_plaintext`]), and query-mode
+/// terms are produced by the same match indexer that honours storage options.
+///
+/// Built once at client construction from a copy of the storage config.
+fn query_config_map(
+    encrypt_config: HashMap<Identifier, ColumnConfig>,
+) -> Arc<HashMap<Identifier, ColumnConfig>> {
+    Arc::new(
+        encrypt_config
+            .into_iter()
+            .map(|(ident, mut config)| {
+                for index in &mut config.indexes {
+                    if let IndexType::Match {
+                        include_original, ..
+                    } = &mut index.index_type
+                    {
+                        *include_original = false;
+                    }
+                }
+                (ident, config)
+            })
+            .collect(),
+    )
+}
+
 /// Resolve a query payload's column config and build its [`PreparedPlaintext`]:
 /// column lookup, index resolution, query-op parsing, plaintext conversion +
 /// mode inference ([`to_query_plaintext`]), and `EqlOperation` selection.
@@ -1265,8 +1304,12 @@ fn to_query_plaintext(
 /// diverge between builds. Returns the resolved `&ColumnConfig` alongside the
 /// prepared plaintext — the caller needs it again for [`query_output`], and
 /// returning the borrow avoids a second map lookup after encryption.
+///
+/// Callers pass the client's `query_config` (see [`query_config_map`]), not
+/// its `encrypt_config`, so storage-only index options never shape query
+/// terms.
 fn prepare_query_plaintext<'a>(
-    encrypt_config: &'a HashMap<Identifier, ColumnConfig>,
+    query_config: &'a HashMap<Identifier, ColumnConfig>,
     table: &str,
     column: &str,
     js_plaintext: &JsPlaintext,
@@ -1275,7 +1318,7 @@ fn prepare_query_plaintext<'a>(
     eql_version: EqlVersion,
 ) -> Result<(PreparedPlaintext<'a>, &'a ColumnConfig), Error> {
     let ident = Identifier::new(table.to_string(), column.to_string());
-    let column_config = encrypt_config
+    let column_config = query_config
         .get(&ident)
         .ok_or(Error::UnknownColumn(ident))?;
 
@@ -1361,10 +1404,13 @@ pub async fn new_client(
     let zerokms = Arc::new(zerokms);
     let cipher = ScopedZeroKMS::init(zerokms.clone(), client_opts.keyset).await?;
 
+    let query_config = query_config_map(encrypt_config.clone());
+    let encrypt_config = Arc::new(encrypt_config);
     let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(encrypt_config),
+        encrypt_config,
+        query_config,
         eql_version,
     };
 
@@ -1596,7 +1642,7 @@ async fn encrypt_query(
     Json(opts): Json<EncryptQueryOptions>,
 ) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
     let (prepared, column_config) = prepare_query_plaintext(
-        &client.encrypt_config,
+        &client.query_config,
         &opts.table,
         &opts.column,
         &opts.plaintext,
@@ -1659,7 +1705,7 @@ async fn encrypt_query_bulk(
 
         for (original_idx, payload) in &payloads {
             let (prepared, column_config) = prepare_query_plaintext(
-                &client.encrypt_config,
+                &client.query_config,
                 &payload.table,
                 &payload.column,
                 &payload.plaintext,
@@ -3145,6 +3191,102 @@ mod tests {
                 result,
                 Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
             ));
+        }
+    }
+
+    mod query_config_map {
+        use super::*;
+        use cipherstash_client::schema::column::{TokenFilter, Tokenizer};
+
+        fn match_index(include_original: bool) -> Index {
+            Index::new(IndexType::Match {
+                tokenizer: Tokenizer::Ngram { token_length: 3 },
+                token_filters: vec![TokenFilter::Downcase],
+                k: 6,
+                m: 2048,
+                include_original,
+            })
+        }
+
+        fn config_map(
+            columns: Vec<(&str, &str, Vec<Index>)>,
+        ) -> HashMap<Identifier, ColumnConfig> {
+            columns
+                .into_iter()
+                .map(|(table, column, indexes)| {
+                    let config = indexes
+                        .into_iter()
+                        .fold(ColumnConfig::build(column), ColumnConfig::add_index);
+                    (
+                        Identifier::new(table.to_string(), column.to_string()),
+                        config,
+                    )
+                })
+                .collect()
+        }
+
+        fn include_original_flags(
+            map: &HashMap<Identifier, ColumnConfig>,
+            table: &str,
+            column: &str,
+        ) -> Vec<bool> {
+            map[&Identifier::new(table.to_string(), column.to_string())]
+                .indexes
+                .iter()
+                .filter_map(|index| match &index.index_type {
+                    IndexType::Match {
+                        include_original, ..
+                    } => Some(*include_original),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn strips_include_original_from_every_match_index() {
+            let encrypt_config = config_map(vec![
+                (
+                    "users",
+                    "email",
+                    vec![match_index(true), Index::new(IndexType::Ore)],
+                ),
+                ("users", "name", vec![match_index(false)]),
+            ]);
+
+            let query_config = query_config_map(encrypt_config);
+
+            assert_eq!(
+                include_original_flags(&query_config, "users", "email"),
+                vec![false]
+            );
+            assert_eq!(
+                include_original_flags(&query_config, "users", "name"),
+                vec![false]
+            );
+        }
+
+        #[test]
+        fn leaves_the_storage_config_and_other_indexes_untouched() {
+            let encrypt_config = config_map(vec![(
+                "users",
+                "email",
+                vec![match_index(true), Index::new(IndexType::Ore)],
+            )]);
+
+            let query_config = query_config_map(encrypt_config.clone());
+
+            // The storage map keeps the flag: include_original stays honoured
+            // for stored blooms.
+            assert_eq!(
+                include_original_flags(&encrypt_config, "users", "email"),
+                vec![true]
+            );
+            // Non-match indexes survive the copy.
+            let ident = Identifier::new("users".to_string(), "email".to_string());
+            assert!(query_config[&ident]
+                .indexes
+                .iter()
+                .any(|index| matches!(index.index_type, IndexType::Ore)));
         }
     }
 }
