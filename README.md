@@ -30,7 +30,7 @@ You will be prompted to sign in or create an account.
 ## Exploring
 
 After building `protect-ffi`, you can explore its exports at the Node console.
-Credentials must be available for the call to `newClient()` to succeed — resolved from the CipherStash profile store, from environment variables, or from an explicit `strategy` passed to `newClient()`. For local development the simplest option is `npx stash auth login`, which populates the profile store. Alternatively, set `CS_WORKSPACE_CRN`, `CS_ACCESS_KEY`, and the `CS_CLIENT_ID`/`CS_CLIENT_KEY` keypair in your environment.
+Credentials must be available for the call to `newClient()` to succeed — resolved from the CipherStash profile store, from environment variables, or from an explicit `authStrategy` passed to `newClient()`. For local development the simplest option is `npx stash auth login`, which populates the profile store. Alternatively, set `CS_WORKSPACE_CRN`, `CS_ACCESS_KEY`, and the `CS_CLIENT_ID`/`CS_CLIENT_KEY` keypair in your environment.
 
 ```sh
 $ npm i

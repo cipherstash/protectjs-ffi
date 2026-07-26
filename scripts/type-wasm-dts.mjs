@@ -57,6 +57,7 @@ const dtsPath = resolve(here, '..', 'dist', 'wasm', 'protect_ffi.d.ts')
  */
 const IMPORT_BLOCK = `import type {
   AuthStrategy,
+  CanonicalEncryptConfig,
   DecryptBulkOptions,
   DecryptOptions,
   Encrypted,
@@ -67,7 +68,7 @@ const IMPORT_BLOCK = `import type {
   EncryptQueryBulkOptions,
   EncryptQueryOptions,
   JsPlaintext,
-  NewClientOptions,
+  KeysetIdentifier,
 } from "../../lib/types.js";
 import type { EncryptedV3Query } from "../../lib/eql-v3.js";
 
@@ -83,13 +84,46 @@ const WASM_ONLY_TYPES = `
 /**
  * \`newClient\` options for this build.
  *
- * \`strategy\` is REQUIRED here, where the Neon entry makes it optional: wasm
- * has no env or filesystem fallback, so \`new_client\` rejects with
- * "opts.strategy is required" before it reaches serde. Declaring it required
- * turns a runtime rejection into a compile error.
+ * This is NOT the Neon entry's \`NewClientOptions\`. The two \`newClient\`
+ * functions are the one place the bindings genuinely take different shapes,
+ * because the Neon entry has a JS wrapper (\`src/index.cts\`) that preprocesses
+ * its options and the wasm entry deserializes what it is given:
+ *
+ * - **Credentials are top level**, not nested under \`clientOpts\`, and
+ *   \`clientId\` / \`clientKey\` are REQUIRED. The Neon wrapper fills these from
+ *   \`CS_CLIENT_ID\` / \`CS_CLIENT_KEY\` via \`withEnvCredentials\`, and falls back
+ *   to \`~/.cipherstash/secretkey.json\`. wasm has neither, so the caller
+ *   supplies them. A \`clientOpts\` object here is silently ignored by serde.
+ * - **\`encryptConfig\` must already be canonical.** The Neon wrapper runs
+ *   \`normalizeEncryptConfig\` for you; wasm deserializes straight into
+ *   \`CanonicalEncryptionConfig\`, so \`cast_as: 'string' | 'number' | 'bigint'\`
+ *   reaches the Rust untranslated and fails there. Use
+ *   {@link CanonicalEncryptConfig} — \`text\` / \`float\` / \`big_int\`.
+ * - **\`authStrategy\` is required.** wasm has no env or filesystem fallback,
+ *   so \`new_client\` rejects with "opts.authStrategy is required" before serde
+ *   runs. Declaring it required turns that into a compile error.
  */
-export type WasmNewClientOptions = Omit<NewClientOptions, "strategy"> & {
-  strategy: AuthStrategy;
+export type WasmNewClientOptions = {
+  /** Canonical \`cast_as\` vocabulary — NOT the public \`EncryptConfig\`. */
+  encryptConfig: CanonicalEncryptConfig;
+  /** UUID of the client key. Required: no env or profile fallback here. */
+  clientId: string;
+  /** Hex-encoded v1 client key. Required, for the same reason. */
+  clientKey: string;
+  /** Defaults to the client's default keyset when omitted. */
+  keyset?: KeysetIdentifier;
+  /** EQL wire version to emit. Defaults to 2. */
+  eqlVersion?: 2 | 3;
+  /**
+   * Auth strategy — anything with \`getToken(): Promise<…>\`. Required on this
+   * build.
+   */
+  authStrategy: AuthStrategy;
+  /**
+   * @deprecated Renamed to \`authStrategy\`. Still honoured at runtime while
+   * deprecated, but pass \`authStrategy\` — it wins when both are set.
+   */
+  strategy?: AuthStrategy;
 };
 
 /**

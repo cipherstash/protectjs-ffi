@@ -1,42 +1,40 @@
-import type { CastAs, Column, EncryptConfig } from './index.cjs'
+// Imports from `./types.js`, not `./index.cjs`. Both work, but index.cts
+// imports THIS module, so going through it was a circular import — and the
+// canonical types now have to be reachable from the wasm `.d.ts`, which must
+// not resolve the Neon entry.
+import type {
+  CanonicalCastAs,
+  CanonicalColumn,
+  CanonicalEncryptConfig,
+  CastAs,
+  Column,
+  EncryptConfig,
+} from './types.js'
 
 /**
- * The `cast_as` vocabulary the native addon (cipherstash-config's
- * `CanonicalEncryptionConfig`) accepts. The public `CastAs` union contains
- * three JS-only members (`string`, `number`, `bigint`) that are remapped to
- * their canonical equivalents (`text`, `float`, `big_int`) before being
- * handed to the native side.
+ * @deprecated Renamed to {@link CanonicalCastAs} and moved to `./types.js`,
+ * where both entries can reach it. "Canonical" over "Native" because the wasm
+ * build accepts this vocabulary too — it is the Rust core's, not the Node
+ * addon's.
  */
-export type NativeCastAs =
-  | 'text'
-  | 'float'
-  | 'big_int'
-  | 'boolean'
-  | 'date'
-  | 'decimal'
-  | 'int'
-  | 'json'
-  | 'small_int'
-  | 'timestamp'
+export type NativeCastAs = CanonicalCastAs
 
 /**
- * The native addon uses a different `cast_as` vocabulary than the public JS
- * API. These three JS values have no direct equivalent and are remapped to
- * their canonical names.
+ * The Rust core uses a different `cast_as` vocabulary than the public JS API.
+ * These three JS values have no direct equivalent and are remapped to their
+ * canonical names.
  */
-const CAST_AS_REMAP: Record<'string' | 'number' | 'bigint', NativeCastAs> = {
+const CAST_AS_REMAP: Record<'string' | 'number' | 'bigint', CanonicalCastAs> = {
   string: 'text',
   number: 'float',
   bigint: 'big_int',
 }
 
-/** A column after normalization — `cast_as` is in the canonical vocabulary. */
-export type NativeColumn = Omit<Column, 'cast_as'> & { cast_as?: NativeCastAs }
+/** @deprecated Renamed to {@link CanonicalColumn} in `./types.js`. */
+export type NativeColumn = CanonicalColumn
 
-/** An encrypt config in the vocabulary the native addon expects. */
-export type NativeEncryptConfig = Omit<EncryptConfig, 'tables'> & {
-  tables: Record<string, Record<string, NativeColumn>>
-}
+/** @deprecated Renamed to {@link CanonicalEncryptConfig} in `./types.js`. */
+export type NativeEncryptConfig = CanonicalEncryptConfig
 
 /**
  * Translate a public `EncryptConfig` into the vocabulary the native addon

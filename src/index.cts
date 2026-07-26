@@ -107,7 +107,9 @@ export function newClient(opts: NewClientOptions): Promise<Client> {
         clientOpts: withEnvCredentials(opts.clientOpts),
         eqlVersion: opts.eqlVersion,
       },
-      opts.strategy,
+      // `strategy` is the old name for `authStrategy`, kept working while it is
+      // deprecated. The new name wins when both are set.
+      opts.authStrategy ?? opts.strategy,
     ),
   )
 }

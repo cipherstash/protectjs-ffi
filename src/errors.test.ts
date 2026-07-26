@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferErrorCode, normalizeError, ProtectError } from './errors.js'
+import { ProtectError, inferErrorCode, normalizeError } from './errors.js'
 
 describe('inferErrorCode', () => {
   it('maps invariant violations', () => {

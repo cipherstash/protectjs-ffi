@@ -45,10 +45,32 @@ uses the promoted section as the GitHub release notes.
   entry, so **its public surface is unchanged**.
 
 - **Two wasm-only types, for the places the bindings genuinely differ.**
-  `WasmNewClientOptions` makes `strategy` required. `WasmDecryptResult` omits
-  `code`, which Rust never emits — the Neon wrapper infers it in JS from the
-  error message, so on this entry the field is absent rather than
-  optional-and-never-set.
+  `WasmNewClientOptions` describes the wasm `newClient`, which does NOT take
+  the Neon entry's `NewClientOptions`: credentials are top level and required
+  (`clientId` / `clientKey` — there is no `clientOpts`, no env fallback, no
+  `~/.cipherstash`), `encryptConfig` must already be in the canonical
+  `cast_as` vocabulary (the Neon wrapper runs `normalizeEncryptConfig` for
+  you; wasm deserializes straight into `CanonicalEncryptionConfig`), and
+  `authStrategy` is required. `WasmDecryptResult` omits `code`, which Rust
+  never emits — the Neon wrapper infers it in JS from the error message, so on
+  this entry the field is absent rather than optional-and-never-set.
+
+- `CanonicalCastAs`, `CanonicalColumn`, and `CanonicalEncryptConfig` are now
+  public, in `types.ts`. They were `NativeCastAs` / `NativeColumn` /
+  `NativeEncryptConfig`, internal to `normalizeEncryptConfig.ts`. The old
+  names remain as deprecated aliases. Renamed because the vocabulary is the
+  Rust core's, not the Node addon's — the wasm build requires it too, and now
+  says so in its types.
+
+### Changed
+
+- **`newClient`'s `strategy` option is now `authStrategy`**, matching
+  `@cipherstash/stack`'s `config.authStrategy` so one concept has one name
+  across the stack. Both entries accept it.
+
+  `strategy` still works and is marked `@deprecated`; `authStrategy` wins if
+  both are set. No caller breaks today, but move over — the old name will be
+  removed.
 
 [#142]: https://github.com/cipherstash/protectjs-ffi/issues/142
 

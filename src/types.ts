@@ -203,6 +203,49 @@ export type CastAs =
   | 'timestamp'
   | 'json'
 
+/**
+ * The `cast_as` vocabulary the Rust core actually accepts
+ * (cipherstash-config's `CanonicalEncryptionConfig`).
+ *
+ * Three members of the public {@link CastAs} union are JS-only spellings with
+ * no canonical equivalent — `string`, `number`, and `bigint` map to `text`,
+ * `float`, and `big_int`. `normalizeEncryptConfig` performs that translation.
+ */
+export type CanonicalCastAs =
+  | 'text'
+  | 'float'
+  | 'big_int'
+  | 'boolean'
+  | 'date'
+  | 'decimal'
+  | 'int'
+  | 'json'
+  | 'small_int'
+  | 'timestamp'
+
+/** A {@link Column} whose `cast_as` is in the canonical vocabulary. */
+export type CanonicalColumn = Omit<Column, 'cast_as'> & {
+  cast_as?: CanonicalCastAs
+}
+
+/**
+ * An encrypt config in the vocabulary the Rust core expects.
+ *
+ * Which entry normalizes into this shape differs, and it matters:
+ *
+ * - The Neon entry takes the public {@link EncryptConfig} and runs
+ *   `normalizeEncryptConfig` for you inside `newClient`.
+ * - The wasm entry deserializes straight into
+ *   `CanonicalEncryptionConfig`, so the CALLER must supply this shape. A
+ *   public `cast_as: 'string'` reaches the Rust untranslated and fails there.
+ *
+ * That is why the wasm `newClient` declares this type rather than
+ * {@link EncryptConfig}.
+ */
+export type CanonicalEncryptConfig = Omit<EncryptConfig, 'tables'> & {
+  tables: Record<string, Record<string, CanonicalColumn>>
+}
+
 // Extract the tables from a specific config
 type TablesOf<C extends EncryptConfig> = C['tables']
 
@@ -277,6 +320,14 @@ export type NewClientOptions = {
    * every ZeroKMS request and `clientOpts.creds` is ignored for auth (the
    * client key is still required). Without this, the native side builds an
    * AutoStrategy from env / profile / `clientOpts.creds`.
+   *
+   * Named to match `@cipherstash/stack`'s `config.authStrategy`, so one
+   * concept has one name across the stack.
+   */
+  authStrategy?: AuthStrategy
+  /**
+   * @deprecated Renamed to {@link NewClientOptions.authStrategy}. Still
+   * honoured — `authStrategy` wins when both are set — but it will be removed.
    */
   strategy?: AuthStrategy
   /**

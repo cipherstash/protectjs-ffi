@@ -34,7 +34,7 @@ import type {
 } from '../dist/wasm/protect_ffi.js'
 
 declare const client: WasmClient
-declare const strategy: WasmNewClientOptions['strategy']
+declare const authStrategy: WasmNewClientOptions['authStrategy']
 
 // --- the shared option types are reachable from this entry at all ----------
 // Before #142 none of these names existed here, and every `opts` was `any`.
@@ -136,18 +136,73 @@ export async function noCodeField(): Promise<void> {
   }
 }
 
-// --- newClient requires a strategy on this build --------------------------
-// wasm has no env / filesystem fallback: `new_client` rejects with
-// "opts.strategy is required" before serde runs. A compile error beats that.
+// --- newClient takes a DIFFERENT shape on this build ----------------------
+// The one place the two bindings genuinely diverge, because the Neon entry has
+// a JS wrapper that preprocesses its options and this one deserializes what it
+// is handed. Credentials are top level and required; `encryptConfig` must
+// already be canonical; `authStrategy` is required.
 
-export const withStrategy: Promise<WasmClient> = newClient({
-  encryptConfig: { v: 2, tables: {} },
-  strategy,
+export const client_: Promise<WasmClient> = newClient({
+  encryptConfig: { v: 2, tables: { users: { email: { cast_as: 'text' } } } },
+  clientId: '00000000-0000-0000-0000-000000000000',
+  clientKey: 'deadbeef',
+  authStrategy,
 })
 
-// @ts-expect-error strategy is required on the wasm build, unlike Neon's.
+export const withKeyset: Promise<WasmClient> = newClient({
+  encryptConfig: { v: 2, tables: {} },
+  clientId: '00000000-0000-0000-0000-000000000000',
+  clientKey: 'deadbeef',
+  keyset: { Name: 'default' },
+  eqlVersion: 3,
+  authStrategy,
+})
+
+// @ts-expect-error clientId / clientKey are required here — the Neon entry
+// fills them from env or ~/.cipherstash, wasm has neither.
+export const withoutCredentials = newClient({
+  encryptConfig: { v: 2, tables: {} },
+  authStrategy,
+})
+
+export const nestedCredentials = newClient({
+  encryptConfig: { v: 2, tables: {} },
+  clientId: '00000000-0000-0000-0000-000000000000',
+  clientKey: 'deadbeef',
+  authStrategy,
+  // @ts-expect-error there is no `clientOpts` on this build; nesting the
+  // credentials there means serde never sees them.
+  clientOpts: { workspaceCrn: 'crn:ap-southeast-2.aws:ABC' },
+})
+
+export const publicVocabulary = newClient({
+  clientId: '00000000-0000-0000-0000-000000000000',
+  clientKey: 'deadbeef',
+  authStrategy,
+  encryptConfig: {
+    v: 2,
+    // @ts-expect-error `string` is the public JS spelling; wasm deserializes
+    // straight into the canonical config, so it must be `text` here. The Neon
+    // entry runs normalizeEncryptConfig for you — this one does not.
+    tables: { users: { email: { cast_as: 'string' } } },
+  },
+})
+
+// @ts-expect-error authStrategy is required on the wasm build, unlike Neon's.
 export const withoutStrategy = newClient({
   encryptConfig: { v: 2, tables: {} },
+  clientId: '00000000-0000-0000-0000-000000000000',
+  clientKey: 'deadbeef',
+})
+
+// The former name still type-checks and is still honoured at runtime, so a
+// caller mid-migration is not broken by the rename.
+export const deprecatedName: Promise<WasmClient> = newClient({
+  encryptConfig: { v: 2, tables: {} },
+  clientId: '00000000-0000-0000-0000-000000000000',
+  clientKey: 'deadbeef',
+  authStrategy,
+  strategy: authStrategy,
 })
 
 // --- plaintext is not `any` any more --------------------------------------
