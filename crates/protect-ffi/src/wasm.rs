@@ -349,7 +349,7 @@ pub struct WasmClient {
 ///
 /// `opts.authStrategy` must be an `@cipherstash/auth`-shaped object — anything
 /// with a `getToken()` method returning a `Promise` works. A non-`Promise`
-/// return is rejected with `authStrategy.getToken() did not return a Promise`.
+/// return is rejected with `strategy.getToken() did not return a Promise`.
 ///
 /// The promise may resolve either the bare `{ token: string, ... }` payload
 /// (`@cipherstash/auth` <= 0.40 and custom strategies) or a `@byteslice/result`
@@ -381,22 +381,27 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
     // `authStrategy` first, then the deprecated `strategy`. Read both rather
     // than either/or so a caller mid-migration, or one passing an object that
     // still carries the old key, keeps working.
-    let strategy = js_sys::Reflect::get(&opts, &JsValue::from_str("authStrategy"))
+    //
+    // `key` is the name the caller actually used, and every error below quotes
+    // it: someone still on `strategy` should not be told to look at a property
+    // they did not write.
+    let new_name = js_sys::Reflect::get(&opts, &JsValue::from_str("authStrategy"))
         .map_err(|e| js_error(&format!("opts.authStrategy lookup failed: {e:?}")))?;
-    let strategy = if strategy.is_undefined() || strategy.is_null() {
-        js_sys::Reflect::get(&opts, &JsValue::from_str("strategy"))
-            .map_err(|e| js_error(&format!("opts.strategy lookup failed: {e:?}")))?
+    let (key, strategy) = if new_name.is_undefined() || new_name.is_null() {
+        let old_name = js_sys::Reflect::get(&opts, &JsValue::from_str("strategy"))
+            .map_err(|e| js_error(&format!("opts.strategy lookup failed: {e:?}")))?;
+        ("strategy", old_name)
     } else {
-        strategy
+        ("authStrategy", new_name)
     };
     let js_strategy = if strategy.is_undefined() || strategy.is_null() {
         None
     } else {
         let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
-            .map_err(|e| js_error(&format!("opts.authStrategy.getToken not found: {e:?}")))?;
+            .map_err(|e| js_error(&format!("opts.{key}.getToken not found: {e:?}")))?;
         let get_token: js_sys::Function = get_token
             .dyn_into()
-            .map_err(|_| js_error("opts.authStrategy.getToken is not a function"))?;
+            .map_err(|_| js_error(&format!("opts.{key}.getToken is not a function")))?;
         Some(JsAuthStrategy::new(strategy.clone(), get_token))
     };
 

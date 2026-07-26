@@ -15,6 +15,34 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The wasm `newClient` takes credentials under `clientOpts`.** It used to
+  read `clientId` and `clientKey` from the top level of the options object;
+  they now live where the Neon entry has always had them, because both entries
+  deserialize the same `NewClientOptions`. ([#142])
+
+  ```js
+  // before
+  await newClient({ encryptConfig, strategy, clientId, clientKey })
+  // after
+  await newClient({ encryptConfig, authStrategy, clientOpts: { clientId, clientKey } })
+  ```
+
+  `clientOpts` also carries `workspaceCrn`, `accessKey`, and `keyset`, and the
+  top-level `eqlVersion` now works on this entry too — none of which the wasm
+  `newClient` accepted before.
+
+  Nothing else about the call changes: `strategy` still works under its old
+  name, and `encryptConfig` accepts strictly more than it did (see
+  normalisation, below).
+
+- **The wasm entry's declarations are types now, not `any`.** Every export was
+  `(client: WasmClient, opts: any) => Promise<any>`, which type-checked
+  anything. A TypeScript consumer whose calls were wrong all along will now
+  see those errors at build time. That is the feature, but it lands as a build
+  failure on upgrade, so budget for it.
+
 ### Added
 
 - **The wasm build declares the real option types**, emitted by wasm-bindgen

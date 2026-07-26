@@ -209,7 +209,9 @@ export type CastAs =
  *
  * Three members of the public {@link CastAs} union are JS-only spellings with
  * no canonical equivalent — `string`, `number`, and `bigint` map to `text`,
- * `float`, and `big_int`. `normalizeEncryptConfig` performs that translation.
+ * `float`, and `big_int`. Both bindings translate them inside the Rust, at the
+ * deserialization boundary (`crates/protect-ffi/src/encrypt_config.rs`), so
+ * callers pass the public vocabulary and never have to spell this one.
  */
 export type CanonicalCastAs =
   | 'text'
@@ -231,16 +233,14 @@ export type CanonicalColumn = Omit<Column, 'cast_as'> & {
 /**
  * An encrypt config in the vocabulary the Rust core expects.
  *
- * Which entry normalizes into this shape differs, and it matters:
+ * Nothing asks you to build one. Both entries take the public
+ * {@link EncryptConfig} and normalize into this shape at the Rust
+ * deserialization boundary, so `newClient` declares {@link EncryptConfig} on
+ * either binding.
  *
- * - The Neon entry takes the public {@link EncryptConfig} and runs
- *   `normalizeEncryptConfig` for you inside `newClient`.
- * - The wasm entry deserializes straight into
- *   `CanonicalEncryptionConfig`, so the CALLER must supply this shape. A
- *   public `cast_as: 'string'` reaches the Rust untranslated and fails there.
- *
- * That is why the wasm `newClient` declares this type rather than
- * {@link EncryptConfig}.
+ * It stays exported because it names what the core ends up holding — for
+ * tooling that models that vocabulary, and for a caller who would rather
+ * pre-canonicalize than rely on the translation.
  */
 export type CanonicalEncryptConfig = Omit<EncryptConfig, 'tables'> & {
   tables: Record<string, Record<string, CanonicalColumn>>

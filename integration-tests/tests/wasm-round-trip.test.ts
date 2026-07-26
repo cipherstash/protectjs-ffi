@@ -399,6 +399,18 @@ describe('wasm newClient validation', () => {
         authStrategy: { getToken: 42 },
         encryptConfig: minimalConfig,
       }),
-    ).rejects.toThrow(/getToken is not a function/)
+    ).rejects.toThrow(/opts\.authStrategy\.getToken is not a function/)
+  })
+
+  test('names the deprecated key when that is the one the caller used', async () => {
+    // Telling someone still on `strategy` to go look at `opts.authStrategy`
+    // sends them to a property they never wrote.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        strategy: { getToken: 42 },
+        encryptConfig: minimalConfig,
+      }),
+    ).rejects.toThrow(/opts\.strategy\.getToken is not a function/)
   })
 })
