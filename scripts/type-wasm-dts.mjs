@@ -31,8 +31,11 @@
 // `neon::types::extract::Json` semantics (`toJSON` honored, `undefined`
 // dropped, nested bigint rejected). So `JsPlaintext` genuinely is one type.
 //
-// The three places they diverge are declared as divergences rather than
-// papered over — see WASM_ONLY_TYPES below.
+// `newClient` used to be the exception: it took a different options shape
+// and a pre-normalised config. Both are gone — the bindings now share one
+// `NewClientOptions`, and `cast_as` normalisation happens in Rust at the
+// deserialization boundary. The only declared divergence left is
+// `WasmDecryptResult`; see WASM_ONLY_TYPES below.
 //
 // Why patch rather than hand-write a wrapper
 // ------------------------------------------
@@ -66,7 +69,6 @@ const IMPORT_BLOCK = `import type {
   EncryptQueryBulkOptions,
   EncryptQueryOptions,
   JsPlaintext,
-  CanonicalEncryptConfig,
   NewClientOptions,
 } from "../../lib/types.js";
 import type { EncryptedV3Query } from "../../lib/eql-v3.js";
@@ -80,27 +82,6 @@ export type { EncryptedV3, EncryptedV3Query } from "../../lib/eql-v3.js";
  * difference in the Rust or the JS wrapper, not a typing convenience.
  */
 const WASM_ONLY_TYPES = `
-/**
- * \`newClient\` options for this build.
- *
- * The credential and keyset shape is now the SAME \`NewClientOptions\` the Neon
- * entry takes — both deserialize into one Rust struct, and
- * \`CredentialOpts::build_strategy()\` resolves an \`AccessKeyStrategy\` from
- * \`clientOpts.accessKey\` + \`clientOpts.workspaceCrn\` here exactly as it
- * resolves an \`AutoStrategy\` there. \`authStrategy\` is optional on both.
- *
- * One field still differs, and it is a JS-layer gap rather than a Rust one:
- * \`encryptConfig\` must already be in the CANONICAL \`cast_as\` vocabulary
- * (\`text\` / \`float\` / \`big_int\`). Both bindings deserialize
- * \`CanonicalEncryptionConfig\`, but the Neon entry has a JS wrapper that runs
- * \`normalizeEncryptConfig\` for you first, and this binding has no wrapper to
- * do it. Pass the public spellings (\`string\` / \`number\` / \`bigint\`) and
- * they reach the Rust untranslated and fail there.
- */
-export type WasmNewClientOptions = Omit<NewClientOptions, "encryptConfig"> & {
-  encryptConfig: CanonicalEncryptConfig;
-};
-
 /**
  * Per-item result from {@link decryptBulkFallible}.
  *
@@ -124,7 +105,7 @@ export type WasmDecryptResult =
 const SIGNATURES = [
   [
     'export function newClient(opts: any): Promise<WasmClient>;',
-    'export function newClient(opts: WasmNewClientOptions): Promise<WasmClient>;',
+    'export function newClient(opts: NewClientOptions): Promise<WasmClient>;',
   ],
   [
     'export function encrypt(client: WasmClient, opts: any): Promise<any>;',

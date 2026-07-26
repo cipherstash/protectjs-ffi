@@ -64,6 +64,22 @@ uses the promoted section as the GitHub release notes.
 
 ### Changed
 
+- **`encryptConfig` normalisation moved into Rust.** `cast_as: 'string' |
+  'number' | 'bigint'` → `'text' | 'float' | 'big_int'`, and the `ste_vec`
+  `array_index_mode` default of `'none'`, now happen at the deserialization
+  boundary rather than in the Neon entry's JS wrapper.
+
+  Both bindings therefore accept the same config. Previously only the Neon
+  entry normalised, so a wasm caller had to pre-canonicalise by hand or be
+  rejected with an opaque variant error — and `@cipherstash/stack` had
+  reimplemented the `cast_as` half for its own wasm path. One implementation
+  now, in `crates/protect-ffi/src/encrypt_config.rs`, with the JS
+  `normalizeEncryptConfig` module removed and its cases ported to Rust tests.
+
+  Normalisation stays tolerant: an unrecognised shape passes through untouched
+  so `CanonicalEncryptionConfig` still produces the error, which is more
+  specific than anything the normaliser could invent.
+
 - **`newClient`'s `strategy` option is now `authStrategy`**, matching
   `@cipherstash/stack`'s `config.authStrategy` so one concept has one name
   across the stack. Both entries accept it.

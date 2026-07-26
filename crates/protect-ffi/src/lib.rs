@@ -1,3 +1,4 @@
+mod encrypt_config;
 mod eql_v3;
 mod js_plaintext;
 #[cfg(target_arch = "wasm32")]
@@ -829,7 +830,7 @@ struct EnsureKeysetResult {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NewClientOptions {
-    pub(crate) encrypt_config: CanonicalEncryptionConfig,
+    pub(crate) encrypt_config: crate::encrypt_config::EncryptConfigInput,
     pub(crate) client_opts: Option<ClientOpts>,
     /// EQL wire version to emit: 2 or 3. When omitted, SteVec configurations
     /// use v3 and scalar-only configurations retain the v2 default. Sits alongside
@@ -1393,7 +1394,7 @@ pub async fn new_client(
     // Parse the config and resolve the version before any network I/O. Client
     // 0.42's SteVec key-header envelope is v3-only; scalar-only clients retain
     // the historical v2 default.
-    let encrypt_config = opts.encrypt_config.into_config_map()?;
+    let encrypt_config = opts.encrypt_config.0.into_config_map()?;
     let eql_version = resolve_eql_version(opts.eql_version, &encrypt_config)?;
     let client_opts = opts.client_opts.unwrap_or_default();
 

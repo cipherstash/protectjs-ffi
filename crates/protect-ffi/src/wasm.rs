@@ -312,6 +312,7 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     // From here down this mirrors the Neon `new_client` line for line.
     let encrypt_config = opts
         .encrypt_config
+        .0
         .into_config_map()
         .map_err(|e| js_error(&e.to_string()))?;
     let eql_version =

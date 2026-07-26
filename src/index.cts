@@ -3,10 +3,6 @@
 import { withEncodedPlaintext, withEncodedPlaintexts } from './bigintWire.js'
 import { type CredentialOpts, withEnvCredentials } from './credentials.js'
 import * as native from './load.cjs'
-import {
-  type NativeEncryptConfig,
-  normalizeEncryptConfig,
-} from './normalizeEncryptConfig.js'
 export {
   withEnvCredentials,
   type EnvReader,
@@ -30,6 +26,7 @@ import type {
   DecryptOptions,
   DecryptResult,
   EncryptBulkOptions,
+  EncryptConfig,
   EncryptOptions,
   EncryptQueryBulkOptions,
   EncryptQueryOptions,
@@ -103,7 +100,7 @@ export function newClient(opts: NewClientOptions): Promise<Client> {
   return wrapAsync(() =>
     native.newClient(
       {
-        encryptConfig: normalizeEncryptConfig(opts.encryptConfig),
+        encryptConfig: opts.encryptConfig,
         clientOpts: withEnvCredentials(opts.clientOpts),
         eqlVersion: opts.eqlVersion,
       },
@@ -229,9 +226,18 @@ export function ensureKeyset(
   return wrapAsync(() => native.ensureKeyset(withEnvCredentials(opts)))
 }
 
-/** Options passed to the native `newClient` after vocabulary normalization. */
+/**
+ * Options passed to the native `newClient`.
+ *
+ * Takes the public {@link EncryptConfig} unchanged. Vocabulary normalisation
+ * (`cast_as: 'string'` → `'text'`, the `ste_vec` array-index-mode default)
+ * used to happen here in JS; it now runs inside the Rust at the
+ * deserialization boundary, so BOTH bindings accept the public spellings and
+ * there is one implementation rather than one per entry point. See
+ * `crates/protect-ffi/src/encrypt_config.rs`.
+ */
 type NativeNewClientOptions = {
-  encryptConfig: NativeEncryptConfig
+  encryptConfig: EncryptConfig
   clientOpts?: ClientOpts
   eqlVersion?: 2 | 3
 }

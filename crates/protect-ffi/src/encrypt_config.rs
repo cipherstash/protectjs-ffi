@@ -1,0 +1,239 @@
+//! Normalisation of the public `EncryptConfig` into the vocabulary
+//! cipherstash-config's `CanonicalEncryptionConfig` accepts.
+//!
+//! # Why this is in Rust
+//!
+//! It used to live in `src/normalizeEncryptConfig.ts` and run inside the Neon
+//! entry's JS wrapper. That was fine while the Neon entry was the only caller,
+//! but the wasm binding has no JS wrapper — so it deserialized the canonical
+//! shape directly and a wasm caller had to normalise by hand or be rejected by
+//! the Rust with an opaque variant error. `@cipherstash/stack` ended up
+//! reimplementing the `cast_as` half of this for its own wasm path, which is
+//! the drift this crate has been removing everywhere else.
+//!
+//! Doing it at the deserialization boundary means both bindings accept exactly
+//! the same config, there is one implementation, and the rule cannot be
+//! forgotten by a new entry point.
+//!
+//! # What it does
+//!
+//! Two transformations, both of which exist because the public JS vocabulary
+//! and the canonical one differ:
+//!
+//! 1. **`cast_as` remap.** `string` → `text`, `number` → `float`, `bigint` →
+//!    `big_int`. The other members are already canonical and pass through.
+//! 2. **`ste_vec` array index mode.** An `ste_vec` index with no explicit
+//!    `array_index_mode` gets `"none"`. Without it the library default is
+//!    `"all"`, which changes what a stored document indexes — a silent
+//!    behaviour difference, so it is pinned here rather than inherited.
+//!
+//! Anything not recognised is left alone: this normalises vocabulary, it does
+//! not validate. `CanonicalEncryptionConfig`'s own deserialization remains the
+//! thing that rejects a malformed config, and it still produces the error.
+
+use cipherstash_client::schema::CanonicalEncryptionConfig;
+use serde::{Deserialize, Deserializer};
+use serde_json::{Map, Value};
+
+/// A [`CanonicalEncryptionConfig`] deserialized through the public vocabulary.
+///
+/// Deserializing through `serde_json::Value` first is what lets the remap
+/// happen before the canonical type ever sees the input. It costs one
+/// intermediate parse of a config that is read once at client construction,
+/// which is not a path worth optimising.
+///
+/// This works identically under `serde_json` (Neon, via `Json` extraction) and
+/// `serde_wasm_bindgen` (wasm) because both can produce a `serde_json::Value`.
+pub(crate) struct EncryptConfigInput(pub(crate) CanonicalEncryptionConfig);
+
+impl<'de> Deserialize<'de> for EncryptConfigInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        normalize(&mut value);
+        serde_json::from_value(value)
+            .map(EncryptConfigInput)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Rewrite a config in place. Tolerant by design — a shape this does not
+/// recognise is left for `CanonicalEncryptionConfig` to reject with its own
+/// message, which is more specific than anything this could invent.
+fn normalize(config: &mut Value) {
+    let Some(tables) = config.get_mut("tables").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (_, columns) in tables.iter_mut() {
+        let Some(columns) = columns.as_object_mut() else {
+            continue;
+        };
+        for (_, column) in columns.iter_mut() {
+            let Some(column) = column.as_object_mut() else {
+                continue;
+            };
+            normalize_cast_as(column);
+            normalize_ste_vec(column);
+        }
+    }
+}
+
+fn normalize_cast_as(column: &mut Map<String, Value>) {
+    let Some(Value::String(cast_as)) = column.get("cast_as") else {
+        return;
+    };
+    let canonical = match cast_as.as_str() {
+        "string" => "text",
+        "number" => "float",
+        "bigint" => "big_int",
+        // Already canonical, or unrecognised — either way, not ours to change.
+        _ => return,
+    };
+    column.insert("cast_as".to_string(), Value::String(canonical.to_string()));
+}
+
+fn normalize_ste_vec(column: &mut Map<String, Value>) {
+    let Some(ste_vec) = column
+        .get_mut("indexes")
+        .and_then(Value::as_object_mut)
+        .and_then(|indexes| indexes.get_mut("ste_vec"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    // Only when absent: an explicit mode, including an explicit `"all"`, is
+    // the caller's decision.
+    if !ste_vec.contains_key("array_index_mode") {
+        ste_vec.insert(
+            "array_index_mode".to_string(),
+            Value::String("none".to_string()),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Normalise and hand back the JSON, so a case can assert on the rewrite
+    /// without also requiring a config `CanonicalEncryptionConfig` accepts.
+    fn norm(mut value: Value) -> Value {
+        normalize(&mut value);
+        value
+    }
+
+    fn column(value: &Value) -> &Value {
+        &value["tables"]["t"]["c"]
+    }
+
+    #[test]
+    fn remaps_the_js_only_cast_as_spellings() {
+        for (input, expected) in [
+            ("string", "text"),
+            ("number", "float"),
+            ("bigint", "big_int"),
+        ] {
+            let out = norm(json!({"tables": {"t": {"c": {"cast_as": input}}}}));
+            assert_eq!(column(&out)["cast_as"], expected, "remapping {input}");
+        }
+    }
+
+    #[test]
+    fn leaves_canonical_cast_as_untouched() {
+        for value in [
+            "text",
+            "float",
+            "big_int",
+            "boolean",
+            "date",
+            "decimal",
+            "int",
+            "json",
+            "small_int",
+            "timestamp",
+        ] {
+            let out = norm(json!({"tables": {"t": {"c": {"cast_as": value}}}}));
+            assert_eq!(column(&out)["cast_as"], value, "preserving {value}");
+        }
+    }
+
+    #[test]
+    fn leaves_omitted_cast_as_omitted() {
+        let out = norm(json!({"tables": {"t": {"c": {}}}}));
+        assert!(column(&out).get("cast_as").is_none());
+    }
+
+    #[test]
+    fn injects_array_index_mode_none_when_ste_vec_omits_it() {
+        let out = norm(json!({"tables": {"t": {"c": {"indexes": {"ste_vec": {}}}}}}));
+        assert_eq!(column(&out)["indexes"]["ste_vec"]["array_index_mode"], "none");
+    }
+
+    #[test]
+    fn preserves_an_explicit_array_index_mode() {
+        // Including an explicit "all" — the point of the default is to change
+        // what an OMITTED value means, not to override a stated one.
+        for mode in ["all", "first", "none"] {
+            let out = norm(
+                json!({"tables": {"t": {"c": {"indexes": {"ste_vec": {"array_index_mode": mode}}}}}}),
+            );
+            assert_eq!(column(&out)["indexes"]["ste_vec"]["array_index_mode"], mode);
+        }
+    }
+
+    #[test]
+    fn leaves_ste_vec_mode_untouched() {
+        let out = norm(
+            json!({"tables": {"t": {"c": {"indexes": {"ste_vec": {"mode": "standard"}}}}}}),
+        );
+        let ste_vec = &column(&out)["indexes"]["ste_vec"];
+        assert_eq!(ste_vec["mode"], "standard");
+        assert_eq!(ste_vec["array_index_mode"], "none");
+    }
+
+    #[test]
+    fn preserves_sibling_indexes_when_injecting_ste_vec_defaults() {
+        let out = norm(json!({"tables": {"t": {"c": {"indexes": {
+            "ore": {},
+            "unique": {"token_filters": [{"kind": "downcase"}]},
+            "ste_vec": {},
+        }}}}}));
+        let indexes = &column(&out)["indexes"];
+        assert_eq!(indexes["ore"], json!({}));
+        assert_eq!(
+            indexes["unique"],
+            json!({"token_filters": [{"kind": "downcase"}]})
+        );
+        assert_eq!(indexes["ste_vec"]["array_index_mode"], "none");
+    }
+
+    #[test]
+    fn handles_multiple_tables_and_columns() {
+        let out = norm(json!({"tables": {
+            "users": {"name": {"cast_as": "string"}, "age": {"cast_as": "number"}},
+            "events": {"data": {"cast_as": "json"}},
+        }}));
+        assert_eq!(out["tables"]["users"]["name"]["cast_as"], "text");
+        assert_eq!(out["tables"]["users"]["age"]["cast_as"], "float");
+        assert_eq!(out["tables"]["events"]["data"]["cast_as"], "json");
+    }
+
+    #[test]
+    fn tolerates_shapes_it_does_not_recognise() {
+        // Normalisation is not validation: a config the canonical type will
+        // reject must still reach it, so the error names the real problem.
+        for input in [
+            json!({}),
+            json!({"tables": "not an object"}),
+            json!({"tables": {"t": 42}}),
+            json!({"tables": {"t": {"c": {"cast_as": 7}}}}),
+            json!({"tables": {"t": {"c": {"indexes": {"ste_vec": "nope"}}}}}),
+        ] {
+            let expected = input.clone();
+            assert_eq!(norm(input), expected);
+        }
+    }
+}

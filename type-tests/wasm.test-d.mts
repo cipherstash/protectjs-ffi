@@ -27,14 +27,14 @@ import type {
   EncryptOptions,
   EncryptedPayload,
   JsPlaintext,
+  NewClientOptions,
   QueryOpName,
   WasmClient,
   WasmDecryptResult,
-  WasmNewClientOptions,
 } from '../dist/wasm/protect_ffi.js'
 
 declare const client: WasmClient
-declare const authStrategy: WasmNewClientOptions['authStrategy']
+declare const authStrategy: NewClientOptions['authStrategy']
 
 // --- the shared option types are reachable from this entry at all ----------
 // Before #142 none of these names existed here, and every `opts` was `any`.
@@ -178,15 +178,11 @@ export const deprecatedName: Promise<WasmClient> = newClient({
   strategy: authStrategy,
 })
 
-export const publicVocabulary = newClient({
-  encryptConfig: {
-    v: 2,
-    // @ts-expect-error `string` is the public JS spelling. Both bindings
-    // deserialize a canonical config; the Neon ENTRY runs
-    // normalizeEncryptConfig for you first, and this binding has no JS wrapper
-    // to do it — so the canonical vocabulary is required here.
-    tables: { users: { email: { cast_as: 'string' } } },
-  },
+// The public `cast_as` spellings are accepted here now: normalisation moved
+// into the Rust, so this binding takes the same config the Neon entry does
+// rather than requiring a pre-canonicalised one.
+export const publicVocabulary: Promise<WasmClient> = newClient({
+  encryptConfig: { v: 2, tables: { users: { email: { cast_as: 'string' } } } },
 })
 
 export const flatCredentials = newClient({

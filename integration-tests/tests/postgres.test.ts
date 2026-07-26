@@ -1,15 +1,15 @@
 import 'dotenv/config'
-import { describe, expect, test, beforeAll, beforeEach } from 'vitest'
 import {
-  decrypt,
-  encrypt,
-  newClient,
-  encryptBulk,
-  decryptBulk,
-  type Encrypted,
   type EncryptConfig,
+  type Encrypted,
+  decrypt,
+  decryptBulk,
+  encrypt,
+  encryptBulk,
+  newClient,
 } from '@cipherstash/protect-ffi'
 import { Client, type QueryResult } from 'pg'
+import { beforeAll, beforeEach, describe, expect, test } from 'vitest'
 
 describe('postgres', async () => {
   const protectClient = await newClient({ encryptConfig: encryptConfig() })

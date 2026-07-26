@@ -137,17 +137,19 @@ describe('wasm round-trip', () => {
         tables: {
           users: {
             email: {
-              // The TS shim normalises 'string' → 'text' before handing the
-              // config to native; the wasm test bypasses that shim, so it
-              // must use the post-0.36 canonical vocabulary directly.
+              // Either vocabulary works now — normalisation moved into the
+              // Rust, so this binding accepts the public 'string' spelling
+              // too. Canonical is kept here to pin the pass-through path.
               cast_as: 'text',
               indexes: { unique: {} },
             },
           },
         },
       },
-      clientId: env.clientId,
-      clientKey: env.clientKey,
+      clientOpts: {
+        clientId: env.clientId,
+        clientKey: env.clientKey,
+      },
     })
 
     const plaintext = 'alice@example.com'
@@ -175,7 +177,7 @@ describe('wasm round-trip', () => {
     const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
 
     const client = await wasm.newClient({
-      strategy,
+      authStrategy: strategy,
       encryptConfig: {
         v: 1,
         tables: {
@@ -187,8 +189,10 @@ describe('wasm round-trip', () => {
           },
         },
       },
-      clientId: env.clientId,
-      clientKey: env.clientKey,
+      clientOpts: {
+        clientId: env.clientId,
+        clientKey: env.clientKey,
+      },
     })
 
     // i64::MAX — far beyond Number.MAX_SAFE_INTEGER; must survive exactly.
@@ -235,7 +239,7 @@ describe('wasm round-trip', () => {
     const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
 
     const client = await wasm.newClient({
-      strategy,
+      authStrategy: strategy,
       encryptConfig: {
         v: 1,
         tables: {
@@ -251,8 +255,10 @@ describe('wasm round-trip', () => {
           },
         },
       },
-      clientId: env.clientId,
-      clientKey: env.clientKey,
+      clientOpts: {
+        clientId: env.clientId,
+        clientKey: env.clientKey,
+      },
     })
 
     // Mixed batch: exercises the wasm boundary's per-item plaintext
@@ -296,7 +302,7 @@ describe('wasm round-trip', () => {
     const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
 
     const client = await wasm.newClient({
-      strategy,
+      authStrategy: strategy,
       encryptConfig: {
         v: 1,
         tables: {
@@ -308,8 +314,10 @@ describe('wasm round-trip', () => {
           },
         },
       },
-      clientId: env.clientId,
-      clientKey: env.clientKey,
+      clientOpts: {
+        clientId: env.clientId,
+        clientKey: env.clientKey,
+      },
     })
 
     // JSON has no bigint: the wasm boundary canonicalizes plaintexts
@@ -347,28 +355,48 @@ describe('wasm round-trip', () => {
   })
 })
 
-// The wasm `newClient` requires `opts.strategy` (no env/fs fallback). Both
-// guards run *before* serde and before any network call, so they need no
-// credentials — only the wasm build (loadWasm fails with the build hint
-// when it's missing).
+// `newClient` validation that needs no credentials and no network. Since the
+// options were unified with the Neon entry, an absent `authStrategy` is NOT an
+// error — it falls through to `CredentialOpts::build_strategy()`, which on
+// wasm resolves an `AccessKeyStrategy` (the target's `AutoStrategy` arm, with
+// the profile-store fallback compiled out). So the interesting cases are what
+// happens when nothing resolves, and when a supplied strategy is malformed.
 describe('wasm newClient validation', () => {
   type WasmModule = {
     newClient: (opts: Record<string, unknown>) => Promise<unknown>
   }
   const minimalConfig = { v: 1, tables: {} }
 
-  test('rejects when opts.strategy is missing', async () => {
+  test('rejects when neither a strategy nor credentials resolve', async () => {
+    // No authStrategy and no clientOpts: build_strategy() finds nothing, and
+    // wasm has no env or profile store to fall back to. `std::env::var` is
+    // always `Err` on wasm32-unknown-unknown, so even a populated environment
+    // cannot rescue this — credentials must be passed explicitly.
     const wasm = await loadWasm<WasmModule>()
     await expect(
       wasm.newClient({ encryptConfig: minimalConfig }),
-    ).rejects.toThrow(/opts\.strategy is required/)
+    ).rejects.toThrow(/Not authenticated/)
+  })
+
+  test('rejects when a strategy resolves but the client key is missing', async () => {
+    // The key provider is separate from auth: a valid strategy still needs
+    // clientId + clientKey, because there is no profile store to fall back to.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        authStrategy: { getToken: async () => ({ token: 'unused' }) },
+        encryptConfig: minimalConfig,
+      }),
+    ).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
   })
 
   test('rejects a non-callable getToken', async () => {
     const wasm = await loadWasm<WasmModule>()
     await expect(
       wasm.newClient({
-        strategy: { getToken: 42 },
+        authStrategy: { getToken: 42 },
         encryptConfig: minimalConfig,
       }),
     ).rejects.toThrow(/getToken is not a function/)
