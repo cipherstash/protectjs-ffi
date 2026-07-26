@@ -2462,6 +2462,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "js-sys",
+ "miette",
  "neon",
  "once_cell",
  "quickcheck",

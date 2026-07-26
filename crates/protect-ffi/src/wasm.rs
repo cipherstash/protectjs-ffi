@@ -96,6 +96,7 @@ const TYPESCRIPT_DECLARATIONS: &'static str = r#"
 import type {
   DecryptBulkOptions,
   DecryptOptions,
+  DecryptResult,
   Encrypted,
   EncryptedPayload,
   EncryptedQuery,
@@ -109,12 +110,14 @@ import type {
 import type { EncryptedV3Query } from "../../lib/eql-v3.js";
 
 // Enumerated rather than `export type *`, for two reasons. It keeps the entry
-// honest: three names in `types.ts` do not belong on this build — `DecryptResult`
-// (it carries `code`, which Rust never emits; `WasmDecryptResult` below is what
-// this entry returns) and `EnsureKeysetOpts` / `EnsureKeysetResult` (an
-// operation this build deliberately does not export — see the module header).
+// honest: `EnsureKeysetOpts` / `EnsureKeysetResult` name an operation this
+// build does not export — a gap rather than a boundary, see the module header.
 // And `export type *` is TypeScript 5.0+, which this package has no reason to
 // require of a consumer; the explicit form works from 3.8.
+//
+// `DecryptResult` is exported now. It was held back while `code` was a field
+// only the Neon JS wrapper synthesised, which this build has no equivalent of;
+// both entries emit the code from Rust, so there is one shape to name (#146).
 export type {
   ArrayIndexMode,
   AuthStrategy,
@@ -128,6 +131,7 @@ export type {
   Context,
   DecryptBulkOptions,
   DecryptOptions,
+  DecryptResult,
   Encrypted,
   EncryptedPayload,
   EncryptedQuery,
@@ -164,19 +168,7 @@ export type {
   UniqueIndexOpts,
 } from "../../lib/types.js";
 export type { EncryptedV3, EncryptedV3Query } from "../../lib/eql-v3.js";
-
-/**
- * Per-item result from `decryptBulkFallible`.
- *
- * Narrower than the Neon entry's `DecryptResult`, which also carries
- * `code?: ProtectErrorCode`. That field is not produced by Rust — the Neon
- * wrapper adds it in JS by running `inferErrorCode(item.error)` over the
- * message. This build returns what Rust serializes, so the field is absent
- * rather than optional-and-never-set.
- */
-export type WasmDecryptResult =
-  | { data: JsPlaintext }
-  | { error: string };
+export type { ProtectErrorCode } from "../../lib/errors.js";
 "#;
 
 /// Newtypes over `JsValue` that carry a TypeScript type into the generated
@@ -213,8 +205,11 @@ extern "C" {
     pub type JsPlaintextJs;
     #[wasm_bindgen(typescript_type = "JsPlaintext[]")]
     pub type JsPlaintextArrayJs;
-    #[wasm_bindgen(typescript_type = "WasmDecryptResult[]")]
-    pub type WasmDecryptResultArrayJs;
+    // The Neon entry's `DecryptResult`, not a wasm-specific narrowing of it.
+    // It used to be one: `code` is set by Rust as of #146, where before it was
+    // synthesised in JS by the Neon wrapper and so could not reach this build.
+    #[wasm_bindgen(typescript_type = "DecryptResult[]")]
+    pub type DecryptResultArrayJs;
     #[wasm_bindgen(typescript_type = "Encrypted | EncryptedQuery | EncryptedV3Query")]
     pub type QueryTermJs;
     #[wasm_bindgen(typescript_type = "(Encrypted | EncryptedQuery | EncryptedV3Query)[]")]
@@ -536,15 +531,21 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
         None => opts,
     };
 
-    let opts: NewClientOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let opts: NewClientOptions = from_js_value(opts)?;
 
     // From here down this mirrors the Neon `new_client` line for line.
+    //
+    // Anything that IS an `Error`, or can become one, goes through
+    // `error_to_js` so the code survives; `js_error` is only for failures with
+    // no `Error` variant behind them, like the serde rejection above. These
+    // three used to take the `js_error` path — invisible until #146, because a
+    // code was not being carried anywhere. `into_config_map` is the one that
+    // mattered: its three coded config failures arrived bare on this entry.
     let encrypt_config = opts
         .encrypt_config
         .0
         .into_config_map()
-        .map_err(|e| js_error(&e.to_string()))?;
+        .map_err(|e| error_to_js(e.into()))?;
     let eql_version =
         resolve_eql_version(opts.eql_version, &encrypt_config).map_err(error_to_js)?;
     let client_opts = opts.client_opts.unwrap_or_default();
@@ -564,12 +565,12 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
         )
         .build()
         .await
-        .map_err(|e| js_error(&e.to_string()))?;
+        .map_err(|e| error_to_js(e.into()))?;
 
     let zerokms = Arc::new(zerokms);
     let cipher = ScopedCipher::init(zerokms.clone(), client_opts.keyset)
         .await
-        .map_err(|e| js_error(&e.to_string()))?;
+        .map_err(|e| error_to_js(e.into()))?;
 
     let query_config = query_config_map(encrypt_config.clone());
     let encrypt_config = Arc::new(encrypt_config);
@@ -598,8 +599,7 @@ pub async fn encrypt(
     opts: EncryptOptionsJs,
 ) -> Result<EncryptedPayloadJs, JsValue> {
     let opts = encode_plaintext(&opts.into())?;
-    let opts: EncryptOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let opts: EncryptOptions = from_js_value(opts)?;
     let out = do_encrypt(client, opts).await.map_err(error_to_js)?;
     to_js(&out).map(JsCast::unchecked_into)
 }
@@ -610,8 +610,7 @@ pub async fn encrypt_bulk(
     opts: EncryptBulkOptionsJs,
 ) -> Result<EncryptedPayloadArrayJs, JsValue> {
     let opts = encode_plaintext_list(&opts.into(), "plaintexts")?;
-    let opts: EncryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let opts: EncryptBulkOptions = from_js_value(opts)?;
     let out = do_encrypt_bulk(client, opts).await.map_err(error_to_js)?;
     to_js(&out).map(JsCast::unchecked_into)
 }
@@ -622,8 +621,7 @@ pub async fn encrypt_query(
     opts: EncryptQueryOptionsJs,
 ) -> Result<QueryTermJs, JsValue> {
     let opts = encode_plaintext(&opts.into())?;
-    let opts: EncryptQueryOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let opts: EncryptQueryOptions = from_js_value(opts)?;
     let out = do_encrypt_query(client, opts).await.map_err(error_to_js)?;
     to_js(&out).map(JsCast::unchecked_into)
 }
@@ -634,8 +632,7 @@ pub async fn encrypt_query_bulk(
     opts: EncryptQueryBulkOptionsJs,
 ) -> Result<QueryTermArrayJs, JsValue> {
     let opts = encode_plaintext_list(&opts.into(), "queries")?;
-    let opts: EncryptQueryBulkOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+    let opts: EncryptQueryBulkOptions = from_js_value(opts)?;
     let out = do_encrypt_query_bulk(client, opts)
         .await
         .map_err(error_to_js)?;
@@ -647,8 +644,7 @@ pub async fn decrypt(
     client: &WasmClient,
     opts: DecryptOptionsJs,
 ) -> Result<JsPlaintextJs, JsValue> {
-    let opts: DecryptOptions =
-        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
+    let opts: DecryptOptions = from_js_value(opts.into())?;
     let out = do_decrypt(client, opts).await.map_err(error_to_js)?;
     plaintext_to_js(&out).map(JsCast::unchecked_into)
 }
@@ -658,8 +654,7 @@ pub async fn decrypt_bulk(
     client: &WasmClient,
     opts: DecryptBulkOptionsJs,
 ) -> Result<JsPlaintextArrayJs, JsValue> {
-    let opts: DecryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
+    let opts: DecryptBulkOptions = from_js_value(opts.into())?;
     let out = do_decrypt_bulk(client, opts).await.map_err(error_to_js)?;
     let arr = js_sys::Array::new();
     for plaintext in &out {
@@ -672,9 +667,8 @@ pub async fn decrypt_bulk(
 pub async fn decrypt_bulk_fallible(
     client: &WasmClient,
     opts: DecryptBulkOptionsJs,
-) -> Result<WasmDecryptResultArrayJs, JsValue> {
-    let opts: DecryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
+) -> Result<DecryptResultArrayJs, JsValue> {
+    let opts: DecryptBulkOptions = from_js_value(opts.into())?;
     let out = do_decrypt_bulk_fallible(client, opts)
         .await
         .map_err(error_to_js)?;
@@ -685,8 +679,13 @@ pub async fn decrypt_bulk_fallible(
             DecryptResult::Success { data } => {
                 set_prop(&obj, "data", &plaintext_to_js(data)?)?;
             }
-            DecryptResult::Error { error } => {
+            DecryptResult::Error { error, code } => {
                 set_prop(&obj, "error", &JsValue::from_str(error))?;
+                // Left unset rather than set to null when absent, so the item
+                // matches the declared `code?: ProtectErrorCode`.
+                if let Some(code) = code {
+                    set_prop(&obj, "code", &JsValue::from_str(code))?;
+                }
             }
         }
         arr.push(&obj);
@@ -1026,9 +1025,7 @@ async fn do_decrypt_bulk_fallible(
                 valid_indices.push(idx);
             }
             Err(e) => {
-                results[idx] = Some(DecryptResult::Error {
-                    error: e.to_string(),
-                });
+                results[idx] = Some(DecryptResult::from_error(&e));
             }
         }
     }
@@ -1045,13 +1042,9 @@ async fn do_decrypt_bulk_fallible(
                 .and_then(|p| JsPlaintext::try_from(p).map_err(Error::from))
             {
                 Ok(data) => DecryptResult::Success { data },
-                Err(e) => DecryptResult::Error {
-                    error: e.to_string(),
-                },
+                Err(e) => DecryptResult::from_error(&e),
             },
-            Err(e) => DecryptResult::Error {
-                error: e.to_string(),
-            },
+            Err(e) => DecryptResult::from_error(&Error::from(e)),
         });
     }
 
@@ -1070,12 +1063,45 @@ async fn do_decrypt_bulk_fallible(
 // Error / value helpers
 // ---------------------------------------------------------------------------
 
+/// A JS `Error` with no `ProtectErrorCode`.
+///
+/// Used for failures raised at the wasm boundary itself — a malformed options
+/// object, a value serde could not convert — which have no [`Error`] variant
+/// and so no code to carry. The JS side reads those as `UNKNOWN`, matching what
+/// the Neon entry does with the same failures.
 fn js_error(msg: &str) -> JsValue {
     js_sys::Error::new(msg).into()
 }
 
+/// A JS `Error` carrying this error's `ProtectErrorCode` as `err.code`.
+///
+/// The code comes off the Rust variant (see [`Error`]'s `code` contract) rather
+/// than being recovered from the message on the JS side, which is what
+/// `src/errors.ts` used to do — and could only do for the Neon entry, since
+/// this build's thrown errors never reached that wrapper (#146).
 fn error_to_js(e: Error) -> JsValue {
-    js_error(&e.to_string())
+    let err = js_sys::Error::new(&e.to_string());
+    if let Some(code) = e.error_code() {
+        // Infallible in practice: `err` is a fresh, extensible JS object. A
+        // failure here still yields a correct error, just without the code,
+        // which beats masking the original failure with a `Reflect` one.
+        let _ = js_sys::Reflect::set(&err, &JsValue::from_str("code"), &JsValue::from_str(&code));
+    }
+    err.into()
+}
+
+/// `serde_wasm_bindgen::from_value`, with an unknown `queryOp` routed through
+/// [`Error`] so it arrives carrying `UNKNOWN_QUERY_OP`.
+///
+/// Every options struct on this entry deserializes through here. Anything else
+/// stays a bare JS error, exactly as before: `serde_wasm_bindgen::Error` has no
+/// `Error` variant to land in, and inventing a code for "the options object was
+/// the wrong shape" is not this change's business.
+fn from_js_value<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue> {
+    serde_wasm_bindgen::from_value(value).map_err(|e| {
+        let message = e.to_string();
+        Error::unknown_query_op(&message).map_or_else(|| js_error(&message), error_to_js)
+    })
 }
 
 /// `Object.assign({}, source)` that reports a throwing getter rather than

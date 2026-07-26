@@ -31,13 +31,14 @@ import {
 } from '../dist/wasm/protect_ffi.js'
 import type {
   Context,
+  DecryptResult,
   EncryptOptions,
   EncryptedPayload,
   JsPlaintext,
   NewClientOptions,
+  ProtectErrorCode,
   QueryOpName,
   WasmClient,
-  WasmDecryptResult,
 } from '../dist/wasm/protect_ffi.js'
 
 declare const client: WasmClient
@@ -121,26 +122,26 @@ export const badIndexType = encryptQuery(client, {
 })
 
 // --- per-item decrypt results ---------------------------------------------
-// This build returns what Rust serializes: `{ data }` or `{ error }`. The Neon
-// entry's DecryptResult also carries `code`, which its JS wrapper infers from
-// the message — Rust never emits it, so it is absent here rather than
-// optional-and-never-set.
+// The SAME `DecryptResult` the Neon entry returns, not a narrowed copy. It was
+// narrowed until #146, because `code` was synthesised in the Neon JS wrapper by
+// string-matching the message and so could never reach this build. Rust sets it
+// now, on both bindings.
 
 export async function readBack(): Promise<(JsPlaintext | string)[]> {
-  const rows: WasmDecryptResult[] = await decryptBulkFallible(client, {
+  const rows: DecryptResult[] = await decryptBulkFallible(client, {
     ciphertexts: [{ ciphertext: {} as EncryptedPayload }],
   })
   return rows.map((row) => ('data' in row ? row.data : row.error))
 }
 
-export async function noCodeField(): Promise<void> {
+export async function codeField(): Promise<ProtectErrorCode | undefined> {
   const [row] = await decryptBulkFallible(client, { ciphertexts: [] })
   if (row && 'error' in row) {
-    // @ts-expect-error `code` is a Neon-wrapper addition, not part of the wasm
-    // result. Declaring it optional here would promise something Rust never
-    // sends.
-    row.code
+    // Optional, not always-present: an error with no code of its own (an
+    // upstream `#[error(transparent)]` wrapper) omits the field.
+    return row.code
   }
+  return undefined
 }
 
 // --- newClient now takes the SAME options as the Neon entry ---------------

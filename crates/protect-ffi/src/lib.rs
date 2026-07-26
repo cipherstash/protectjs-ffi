@@ -252,7 +252,40 @@ impl std::fmt::Display for JsonPathHint {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
+/// Every error this crate returns to JavaScript.
+///
+/// # The `code` contract
+///
+/// A variant's `#[diagnostic(code(..))]` IS the `ProtectErrorCode` a caller
+/// reads off the thrown JS error — the string is carried across both bindings
+/// verbatim, not re-derived on the other side. A variant with no code reaches
+/// JS as `UNKNOWN`, which is the honest answer for the `#[error(transparent)]`
+/// wrappers whose text belongs to cipherstash-client.
+///
+/// It used to work the other way around: `Display` was the only thing that
+/// crossed, and `src/errors.ts` recovered the code by matching that prose
+/// against a table of fourteen prefixes and substrings. Three of those
+/// patterns — `'requires plaintext_type: json'`, `'requires plaintext_type:
+/// text'` and `'unsupported config version'` — were matching wording owned by
+/// **cipherstash-config**, so an unrelated reword upstream would silently
+/// downgrade a caller's error to `UNKNOWN` with nothing in this repo failing
+/// (#146).
+///
+/// Three of fourteen is the whole problem, not a small part of it, because
+/// nothing distinguished them: `' index configured'` reads like an upstream
+/// phrase and is this crate's own [`Self::MissingIndex`]. Which patterns were
+/// safe could only be established by going and looking.
+///
+/// Two rules keep that from coming back:
+///
+/// - The codes live here and nowhere else. `src/errors.ts` declares the same
+///   set as a TypeScript union, and `src/errorCodes.test.ts` reads this file
+///   to prove the two agree.
+/// - Nothing may be routed by message text. Where a code depends on which
+///   *upstream* variant was raised, match the variant — see the
+///   `From<ConfigError>` impl below, which is where those same three codes are
+///   decided now, and where a rename upstream is a compile error.
+#[derive(thiserror::Error, Debug, miette::Diagnostic)]
 pub enum Error {
     #[error("Credential error: {0}")]
     Credentials(String),
@@ -269,14 +302,28 @@ pub enum Error {
     #[error(transparent)]
     Eql(#[from] EqlError),
     #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs-ffi/issues.")]
+    #[diagnostic(code("INVARIANT_VIOLATION"))]
     InvariantViolation(String),
+    /// An unknown `queryOp` wire value, raised from [`query_op::QueryOpName`]'s
+    /// `Deserialize`. Carries serde's fully-formed message — which already
+    /// names the value and lists the accepted set — so `#[error("{0}")]`
+    /// rather than a format of its own.
+    ///
+    /// Not reached by `?` on a serde error directly: the deserializer hands
+    /// back an opaque `Error::custom`, so the routing happens in the
+    /// `From` impls below, keyed on [`query_op::UNKNOWN_QUERY_OP_PREFIX`].
+    #[error("{0}")]
+    #[diagnostic(code("UNKNOWN_QUERY_OP"))]
+    UnknownQueryOp(String),
     #[error(transparent)]
-    Parse(#[from] serde_json::Error),
+    Parse(serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
+    #[diagnostic(code("UNKNOWN_COLUMN"))]
     UnknownColumn(Identifier),
     #[error(transparent)]
     RecordDecryptError(#[from] RecordDecryptError),
     #[error("Column '{column}' does not have a '{index_type}' index configured. {hint}")]
+    #[diagnostic(code("MISSING_INDEX"))]
     MissingIndex {
         column: String,
         index_type: String,
@@ -285,6 +332,7 @@ pub enum Error {
     #[error(
         "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
     )]
+    #[diagnostic(code("INVALID_QUERY_INPUT"))]
     InvalidQueryInput {
         query_op: SteVecQueryOpKind,
         received: ReceivedKind,
@@ -292,46 +340,133 @@ pub enum Error {
         hint: QueryInputHint,
     },
     #[error("Invalid match query on column '{column}': {source}. Use a longer search term.")]
+    #[diagnostic(code("SHORT_MATCH_NEEDLE"))]
     ShortMatchNeedle {
         column: String,
         source: EncryptionError,
     },
     #[error("Invalid JSON path '{path}': {reason}. {hint}")]
+    #[diagnostic(code("INVALID_JSON_PATH"))]
     InvalidJsonPath {
         path: Truncated<'static>,
         reason: JsonPathReason,
         hint: JsonPathHint,
     },
+    /// A [`ConfigError`] with no code of its own. The three that DO carry one
+    /// are the variants below; [`From<ConfigError>`] decides which.
     #[error(transparent)]
-    Config(#[from] ConfigError),
+    Config(ConfigError),
+    #[error(transparent)]
+    #[diagnostic(code("STE_VEC_REQUIRES_JSON_CAST_AS"))]
+    SteVecRequiresJsonCastAs(ConfigError),
+    #[error(transparent)]
+    #[diagnostic(code("MATCH_REQUIRES_TEXT"))]
+    MatchRequiresText(ConfigError),
+    #[error(transparent)]
+    #[diagnostic(code("UNSUPPORTED_CONFIG_VERSION"))]
+    UnsupportedConfigVersion(ConfigError),
     #[error("Invalid eqlVersion {0}: expected 2 or 3")]
+    #[diagnostic(code("INVALID_EQL_VERSION"))]
     InvalidEqlVersion(u8),
     #[error(
         "eqlVersion 2 cannot emit ste_vec ciphertexts with cipherstash-client 0.42; use eqlVersion 3"
     )]
     SteVecRequiresV3,
     #[error("Column '{column}' cannot be represented in EQL v3: {reason}. {hint}")]
+    #[diagnostic(code("EQL_V3_UNSUPPORTED_COLUMN"))]
     NoV3Domain {
         column: String,
         reason: String,
         hint: String,
     },
     #[error("EQL v3 conversion failed: {0}")]
+    #[diagnostic(code("EQL_V3_CONVERSION_FAILED"))]
     FromV2(#[from] eql_bindings::from_v2::FromV2Error),
     /// A natively-emitted v3 payload failed the target domain's strict parse.
-    /// Shares the `EQL v3 conversion failed` message prefix with [`Self::FromV2`]
-    /// so the JS side's `EQL_V3_CONVERSION_FAILED` error-code mapping covers
-    /// both the conversion and native emit paths.
+    /// Carries the same code as [`Self::FromV2`] — a caller branching on
+    /// `EQL_V3_CONVERSION_FAILED` cares that the v3 payload was refused, not
+    /// which of the two paths refused it.
     #[error("EQL v3 conversion failed: native payload did not parse as {domain}: {source}")]
+    #[diagnostic(code("EQL_V3_CONVERSION_FAILED"))]
     V3NativeParse {
         domain: String,
         #[source]
         source: serde_json::Error,
     },
     #[error("Invalid EQL ciphertext: {0}")]
+    #[diagnostic(code("INVALID_CIPHERTEXT"))]
     InvalidCiphertext(#[from] zerokms::DecryptError),
     #[error("Invalid EQL ciphertext: v3 SteVec selector must be 16 bytes of hexadecimal")]
+    #[diagnostic(code("INVALID_CIPHERTEXT"))]
     InvalidSteVecSelector,
+}
+
+impl Error {
+    /// `Some` when a deserialization failure is an unknown `queryOp`.
+    ///
+    /// The prefix match is the part of this change that did not get to be
+    /// structural. `QueryOpName`'s `Deserialize` rejects an unknown wire value
+    /// from inside serde — which is what makes the failure name the `queryOp`
+    /// field rather than surfacing later from query preparation (see the
+    /// `query_op` module docs) — and serde's `de::Error::custom` takes a
+    /// `Display`, not a payload. Nothing typed survives to the far side.
+    ///
+    /// It is still worth doing here rather than in `src/errors.ts`, where it
+    /// used to live. This sits beside [`query_op::UNKNOWN_QUERY_OP_PREFIX`],
+    /// the constant that defines the message, in the same crate and the same
+    /// review diff, and `query_op`'s tests pin that constant — so a change
+    /// that would break the mapping fails `cargo test`, rather than silently
+    /// degrading a caller's `code` to `UNKNOWN` at runtime.
+    ///
+    /// Both boundaries route through this: the Neon entry via
+    /// `From<serde_json::Error>`, the wasm entry via `wasm::from_js_value`.
+    pub(crate) fn unknown_query_op(message: &str) -> Option<Self> {
+        message
+            .starts_with(query_op::UNKNOWN_QUERY_OP_PREFIX)
+            .then(|| Error::UnknownQueryOp(message.to_string()))
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
+        Error::unknown_query_op(&err.to_string()).unwrap_or(Error::Parse(err))
+    }
+}
+
+/// Routes a [`ConfigError`] to the [`Error`] variant carrying the right code.
+///
+/// Three config failures are worth naming to a caller: a `ste_vec` index on a
+/// non-JSON column, a `match` index on a non-text column, and a config `v` this
+/// build does not support. All three arrive as one upstream type, so the code
+/// has to be decided from the variant — which is the point. These are exactly
+/// the three codes `src/errors.ts` used to decide from the message, and the
+/// only three whose patterns matched wording this repo did not own.
+///
+/// A rename or removal upstream now fails this match at compile time. A NEW
+/// upstream variant still falls to [`Error::Config`] and reaches JS as
+/// `UNKNOWN` — the same as today, but visible here rather than buried in a
+/// substring table.
+impl From<ConfigError> for Error {
+    fn from(err: ConfigError) -> Self {
+        match err {
+            e @ ConfigError::SteVecRequiresJson { .. } => Self::SteVecRequiresJsonCastAs(e),
+            e @ ConfigError::MatchRequiresText { .. } => Self::MatchRequiresText(e),
+            e @ ConfigError::UnsupportedVersion { .. } => Self::UnsupportedConfigVersion(e),
+            other => Self::Config(other),
+        }
+    }
+}
+
+impl Error {
+    /// The `ProtectErrorCode` this error crosses the boundary with, if it has
+    /// one. `None` becomes `UNKNOWN` on the JS side.
+    ///
+    /// Spelled `error_code` rather than `code` so it cannot be confused with
+    /// (or accidentally recurse into) [`miette::Diagnostic::code`], which is
+    /// where the value actually comes from.
+    pub(crate) fn error_code(&self) -> Option<String> {
+        miette::Diagnostic::code(self).map(|code| code.to_string())
+    }
 }
 
 /// JS-backed [`AuthStrategy`] for the Neon build.
@@ -774,11 +909,38 @@ type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 #[derive(Debug, Deserialize)]
 pub(crate) struct DenyUnknown {}
 
+/// Per-item outcome from `decryptBulkFallible`.
+///
+/// The failure arm carries its own code because it is never thrown — it is a
+/// value in the returned array, so there is no JS `Error` object for a caller
+/// to read `code` off. Before #146 the Neon wrapper reconstructed one in JS by
+/// running `inferErrorCode` over `error`, and the wasm entry could not do even
+/// that, so its items had no code at all.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum DecryptResult {
-    Success { data: JsPlaintext },
-    Error { error: String },
+    Success {
+        data: JsPlaintext,
+    },
+    Error {
+        error: String,
+        /// Absent rather than null when the error has no code, so the shape
+        /// matches the declared `code?: ProtectErrorCode`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+impl DecryptResult {
+    /// Builds the failure arm from an [`Error`], keeping message and code in
+    /// step — the two are read off the same value here rather than one being
+    /// re-derived from the other later.
+    fn from_error(err: &Error) -> Self {
+        Self::Error {
+            error: err.to_string(),
+            code: err.error_code(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1368,7 +1530,19 @@ pub async fn new_client(
     channel: Channel,
     Json(opts): Json<NewClientOptions>,
     strategy: Option<Root<JsObject>>,
-) -> Result<Boxed<Client>, neon::types::extract::Error> {
+) -> Result<Boxed<Client>, impl for<'cx> TryIntoJs<'cx>> {
+    do_new_client(channel, opts, strategy)
+        .await
+        .map(Boxed)
+        .map_err(into_js_error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_new_client(
+    channel: Channel,
+    opts: NewClientOptions,
+    strategy: Option<Root<JsObject>>,
+) -> Result<Client, Error> {
     // Parse the config and resolve the version before any network I/O. Client
     // 0.42's SteVec key-header envelope is v3-only; scalar-only clients retain
     // the historical v2 default.
@@ -1390,15 +1564,13 @@ pub async fn new_client(
 
     let query_config = query_config_map(encrypt_config.clone());
     let encrypt_config = Arc::new(encrypt_config);
-    let client = Client {
+    Ok(Client {
         cipher: Arc::new(cipher),
         zerokms,
         encrypt_config,
         query_config,
         eql_version,
-    };
-
-    Ok(Boxed(client))
+    })
 }
 
 /// Test-only helper: ensures a keyset with the given name exists, creating it if necessary,
@@ -1414,7 +1586,15 @@ pub async fn new_client(
 #[neon::export]
 pub async fn ensure_keyset(
     Json(opts): Json<EnsureKeysetOpts>,
-) -> Result<Json<EnsureKeysetResult>, neon::types::extract::Error> {
+) -> Result<Json<EnsureKeysetResult>, impl for<'cx> TryIntoJs<'cx>> {
+    do_ensure_keyset(opts)
+        .await
+        .map(Json)
+        .map_err(into_js_error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_ensure_keyset(opts: EnsureKeysetOpts) -> Result<EnsureKeysetResult, Error> {
     let strategy = opts.creds.build_strategy()?;
 
     // Management-only client (no client key needed for list/create)
@@ -1445,10 +1625,10 @@ pub async fn ensure_keyset(
         }
     }
 
-    Ok(Json(EnsureKeysetResult {
+    Ok(EnsureKeysetResult {
         id: keyset_id.to_string(),
         name,
-    }))
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1456,7 +1636,15 @@ pub async fn ensure_keyset(
 async fn encrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptOptions>,
-) -> Result<Json<EncryptedOutput>, neon::types::extract::Error> {
+) -> Result<Json<EncryptedOutput>, impl for<'cx> TryIntoJs<'cx>> {
+    do_encrypt(client, opts)
+        .await
+        .map(Json)
+        .map_err(into_js_error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_encrypt(client: Client, opts: EncryptOptions) -> Result<EncryptedOutput, Error> {
     let ident = Identifier::new(opts.table.clone(), opts.column.clone());
 
     let column_config = client
@@ -1503,7 +1691,7 @@ async fn encrypt(
         )?
     };
 
-    Ok(Json(output))
+    Ok(output)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1511,7 +1699,18 @@ async fn encrypt(
 async fn encrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptBulkOptions>,
-) -> Result<Json<Vec<EncryptedOutput>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<EncryptedOutput>>, impl for<'cx> TryIntoJs<'cx>> {
+    do_encrypt_bulk(client, opts)
+        .await
+        .map(Json)
+        .map_err(into_js_error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_encrypt_bulk(
+    client: Client,
+    opts: EncryptBulkOptions,
+) -> Result<Vec<EncryptedOutput>, Error> {
     // Group payloads by lock_context for batch processing
     // BTreeMap provides deterministic ordering of groups
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, PlaintextPayload)>> = BTreeMap::new();
@@ -1616,7 +1815,7 @@ async fn encrypt_bulk(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Json(final_results))
+    Ok(final_results)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1624,7 +1823,15 @@ async fn encrypt_bulk(
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryOptions>,
-) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
+) -> Result<Json<QueryOutput>, impl for<'cx> TryIntoJs<'cx>> {
+    do_encrypt_query(client, opts)
+        .await
+        .map(Json)
+        .map_err(into_js_error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_encrypt_query(client: Client, opts: EncryptQueryOptions) -> Result<QueryOutput, Error> {
     let (prepared, column_config) = prepare_query_plaintext(
         &client.query_config,
         &opts.table,
@@ -1654,7 +1861,7 @@ async fn encrypt_query(
         query_output(encrypted.remove(0), client.eql_version, column_config)?
     };
 
-    Ok(Json(output))
+    Ok(output)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1662,7 +1869,18 @@ async fn encrypt_query(
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<EncryptQueryBulkOptions>,
-) -> Result<Json<Vec<QueryOutput>>, neon::types::extract::Error> {
+) -> Result<Json<Vec<QueryOutput>>, impl for<'cx> TryIntoJs<'cx>> {
+    do_encrypt_query_bulk(client, opts)
+        .await
+        .map(Json)
+        .map_err(into_js_error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_encrypt_query_bulk(
+    client: Client,
+    opts: EncryptQueryBulkOptions,
+) -> Result<Vec<QueryOutput>, Error> {
     // Group payloads by lock_context (same pattern as encrypt_bulk)
     let mut groups: BTreeMap<Vec<String>, Vec<(usize, QueryPayload)>> = BTreeMap::new();
 
@@ -1743,7 +1961,36 @@ async fn encrypt_query_bulk(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Json(final_results))
+    Ok(final_results)
+}
+
+/// Build the JS `Error` an export throws, carrying `err.code`.
+///
+/// This is why the exports below return an opaque `impl TryIntoJs` instead of
+/// neon's own `extract::Error`. That type's conversion is
+/// `cx.error(self.cause.to_string())` — message only, no hook for a property —
+/// and `TryIntoJs` is sealed behind a private module, so no type declared here
+/// can implement it either. [`extract::with`] is the one escape hatch neon
+/// offers: it defers the conversion until the JS thread and hands it a [`Cx`],
+/// which is what setting a property on the error needs.
+///
+/// The cost is that an export cannot use `?` against its own error type. Each
+/// one runs its body in a `do_*` helper returning `Result<_, Error>` — the
+/// shape `wasm.rs` already uses — and maps once on the way out.
+#[cfg(not(target_arch = "wasm32"))]
+fn into_js_error(err: Error) -> impl for<'cx> TryIntoJs<'cx, Value = JsError> {
+    let message = err.to_string();
+    let code = err.error_code();
+    extract::with(move |cx: &mut Cx| -> JsResult<JsError> {
+        let error = cx.error(message)?;
+        // Left unset rather than set to null when absent, so `'code' in err`
+        // answers the question a caller is actually asking.
+        if let Some(code) = code {
+            let code = cx.string(code);
+            error.set(cx, "code", code)?;
+        }
+        Ok(error)
+    })
 }
 
 /// Convert a decrypted [`JsPlaintext`] into a JS value on the JS thread.
@@ -1765,7 +2012,17 @@ fn js_plaintext_into_js<'cx>(cx: &mut Cx<'cx>, plaintext: JsPlaintext) -> JsResu
 async fn decrypt(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptOptions>,
-) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, impl for<'cx> TryIntoJs<'cx>> {
+    match do_decrypt(client, opts).await {
+        Ok(js_plaintext) => Ok(extract::with(move |cx| -> NeonResult<_> {
+            js_plaintext_into_js(cx, js_plaintext)
+        })),
+        Err(err) => Err(into_js_error(err)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_decrypt(client: Client, opts: DecryptOptions) -> Result<JsPlaintext, Error> {
     let lock_context = opts.lock_context.map(Into::into).unwrap_or_default();
     let encrypted_record = encrypted_record_from_value(opts.ciphertext, lock_context)?;
 
@@ -1781,10 +2038,7 @@ async fn decrypt(
         .map_err(Error::from)
         .and_then(|bytes| Plaintext::from_slice(bytes.as_slice()).map_err(Error::from))?;
 
-    let js_plaintext = JsPlaintext::try_from(plaintext).map_err(Error::from)?;
-    Ok(extract::with(move |cx| -> NeonResult<_> {
-        js_plaintext_into_js(cx, js_plaintext)
-    }))
+    JsPlaintext::try_from(plaintext).map_err(Error::from)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1792,7 +2046,25 @@ async fn decrypt(
 async fn decrypt_bulk(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, impl for<'cx> TryIntoJs<'cx>> {
+    match do_decrypt_bulk(client, opts).await {
+        Ok(plaintexts) => Ok(extract::with(move |cx| -> NeonResult<_> {
+            let arr = cx.empty_array();
+            for (i, plaintext) in plaintexts.into_iter().enumerate() {
+                let value = js_plaintext_into_js(cx, plaintext)?;
+                arr.set(cx, i as u32, value)?;
+            }
+            Ok(arr)
+        })),
+        Err(err) => Err(into_js_error(err)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_decrypt_bulk(
+    client: Client,
+    opts: DecryptBulkOptions,
+) -> Result<Vec<JsPlaintext>, Error> {
     let encrypted_records: Vec<WithContext<'static, eql_v3::DecryptableRecord>> = opts
         .ciphertexts
         .into_iter()
@@ -1812,19 +2084,11 @@ async fn decrypt_bulk(
         )
         .await?;
 
-    let plaintexts = decrypted
+    decrypted
         .into_iter()
         .map(|bytes| Plaintext::from_slice(&bytes).and_then(JsPlaintext::try_from))
-        .collect::<Result<Vec<JsPlaintext>, TypeParseError>>()?;
-
-    Ok(extract::with(move |cx| -> NeonResult<_> {
-        let arr = cx.empty_array();
-        for (i, plaintext) in plaintexts.into_iter().enumerate() {
-            let value = js_plaintext_into_js(cx, plaintext)?;
-            arr.set(cx, i as u32, value)?;
-        }
-        Ok(arr)
-    }))
+        .collect::<Result<Vec<JsPlaintext>, TypeParseError>>()
+        .map_err(Error::from)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1832,7 +2096,42 @@ async fn decrypt_bulk(
 async fn decrypt_bulk_fallible(
     Boxed(client): Boxed<Client>,
     Json(opts): Json<DecryptBulkOptions>,
-) -> Result<impl for<'cx> TryIntoJs<'cx>, neon::types::extract::Error> {
+) -> Result<impl for<'cx> TryIntoJs<'cx>, impl for<'cx> TryIntoJs<'cx>> {
+    match do_decrypt_bulk_fallible(client, opts).await {
+        Ok(results) => Ok(extract::with(move |cx| -> NeonResult<_> {
+            let arr = cx.empty_array();
+            for (i, result) in results.into_iter().enumerate() {
+                let obj = cx.empty_object();
+                match result {
+                    DecryptResult::Success { data } => {
+                        let value = js_plaintext_into_js(cx, data)?;
+                        obj.set(cx, "data", value)?;
+                    }
+                    DecryptResult::Error { error, code } => {
+                        let message = cx.string(error);
+                        obj.set(cx, "error", message)?;
+                        // Left unset rather than set to null when absent, so
+                        // the item matches the declared
+                        // `code?: ProtectErrorCode`.
+                        if let Some(code) = code {
+                            let code = cx.string(code);
+                            obj.set(cx, "code", code)?;
+                        }
+                    }
+                }
+                arr.set(cx, i as u32, obj)?;
+            }
+            Ok(arr)
+        })),
+        Err(err) => Err(into_js_error(err)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn do_decrypt_bulk_fallible(
+    client: Client,
+    opts: DecryptBulkOptions,
+) -> Result<Vec<DecryptResult>, Error> {
     // Decode each ciphertext independently so a single invalid payload turns
     // into a per-item `DecryptResult::Error` rather than aborting the whole
     // batch — matches the `*Fallible` contract.
@@ -1857,9 +2156,7 @@ async fn decrypt_bulk_fallible(
                 valid_indices.push(idx);
             }
             Err(e) => {
-                results[idx] = Some(DecryptResult::Error {
-                    error: e.to_string(),
-                });
+                results[idx] = Some(DecryptResult::from_error(&e));
             }
         }
     }
@@ -1876,17 +2173,13 @@ async fn decrypt_bulk_fallible(
                 .and_then(|p| JsPlaintext::try_from(p).map_err(Error::from))
             {
                 Ok(data) => DecryptResult::Success { data },
-                Err(e) => DecryptResult::Error {
-                    error: e.to_string(),
-                },
+                Err(e) => DecryptResult::from_error(&e),
             },
-            Err(e) => DecryptResult::Error {
-                error: e.to_string(),
-            },
+            Err(e) => DecryptResult::from_error(&Error::from(e)),
         });
     }
 
-    let results: Vec<DecryptResult> = results
+    results
         .into_iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -1894,26 +2187,7 @@ async fn decrypt_bulk_fallible(
                 Error::InvariantViolation(format!("missing decrypt_fallible result at index {i}"))
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(extract::with(move |cx| -> NeonResult<_> {
-        let arr = cx.empty_array();
-        for (i, result) in results.into_iter().enumerate() {
-            let obj = cx.empty_object();
-            match result {
-                DecryptResult::Success { data } => {
-                    let value = js_plaintext_into_js(cx, data)?;
-                    obj.set(cx, "data", value)?;
-                }
-                DecryptResult::Error { error } => {
-                    let message = cx.string(error);
-                    obj.set(cx, "error", message)?;
-                }
-            }
-            arr.set(cx, i as u32, obj)?;
-        }
-        Ok(arr)
-    }))
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1994,6 +2268,159 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `ProtectErrorCode` an error crosses the boundary with.
+    ///
+    /// `src/errorCodes.test.ts` proves the code SET matches the TypeScript
+    /// union; these prove the routing — which error produces which code —
+    /// because that is where the judgement is. The `From<ConfigError>` cases
+    /// especially: three codes come out of one upstream type, and getting the
+    /// arms wrong is invisible to the compiler.
+    mod error_codes {
+        use super::*;
+
+        fn config(err: ConfigError) -> Option<String> {
+            Error::from(err).error_code()
+        }
+
+        /// Deserializes a real options object, so the assertion runs against
+        /// the message serde actually produces rather than a hand-written one.
+        fn deserialize_query_op(raw: serde_json::Value) -> Error {
+            serde_json::from_value::<EncryptQueryOptions>(serde_json::json!({
+                "plaintext": "x",
+                "column": "email",
+                "table": "users",
+                "queryOp": raw,
+            }))
+            .map(|_| ())
+            .expect_err("an unknown queryOp is an error")
+            .into()
+        }
+
+        #[test]
+        fn an_unknown_query_op_is_routed_off_the_serde_message() {
+            // The one code that cannot come from a variant the error was
+            // constructed as: `QueryOpName` rejects inside `Deserialize`, so
+            // `Error::unknown_query_op` recovers it from the message prefix.
+            // `query_op`'s tests pin the prefix from the other side.
+            assert_eq!(
+                deserialize_query_op(serde_json::json!("frobnicate"))
+                    .error_code()
+                    .as_deref(),
+                Some("UNKNOWN_QUERY_OP")
+            );
+        }
+
+        #[test]
+        fn other_deserialization_failures_stay_uncoded() {
+            // The routing is a prefix match, so it has to be shown NOT to
+            // capture every serde failure — `Error::Parse` carries no code.
+            assert_eq!(
+                deserialize_query_op(serde_json::json!(42)).error_code(),
+                None
+            );
+        }
+
+        #[test]
+        fn ste_vec_on_a_non_json_column() {
+            assert_eq!(
+                config(ConfigError::SteVecRequiresJson {
+                    table: "users".into(),
+                    column: "meta".into(),
+                    found_plaintext_type: "text".into(),
+                })
+                .as_deref(),
+                Some("STE_VEC_REQUIRES_JSON_CAST_AS")
+            );
+        }
+
+        #[test]
+        fn match_on_a_non_text_column() {
+            assert_eq!(
+                config(ConfigError::MatchRequiresText {
+                    table: "users".into(),
+                    column: "age".into(),
+                    found_plaintext_type: "int".into(),
+                })
+                .as_deref(),
+                Some("MATCH_REQUIRES_TEXT")
+            );
+        }
+
+        #[test]
+        fn a_config_version_this_build_does_not_support() {
+            assert_eq!(
+                config(ConfigError::UnsupportedVersion {
+                    version: 2,
+                    expected: 1,
+                })
+                .as_deref(),
+                Some("UNSUPPORTED_CONFIG_VERSION")
+            );
+        }
+
+        #[test]
+        fn any_other_config_error_has_no_code() {
+            // Reaches JS as UNKNOWN. A new upstream variant lands here, which
+            // is the same outcome the substring table gave it — the difference
+            // is that this arm is visible and the old one was not.
+            assert_eq!(config(ConfigError::MismatchedScope), None);
+        }
+
+        #[test]
+        fn transparent_upstream_wrappers_have_no_code() {
+            // Their Display belongs to cipherstash-client. Claiming a code for
+            // them would be claiming to know which upstream failure occurred,
+            // which is exactly what the message matching used to guess at.
+            let err = Error::Parse(serde_json::from_str::<u8>("nope").unwrap_err());
+            assert_eq!(err.error_code(), None);
+        }
+
+        #[test]
+        fn both_v3_conversion_paths_share_one_code() {
+            // A caller branching on EQL_V3_CONVERSION_FAILED cares that the v3
+            // payload was refused, not which of the two paths refused it.
+            let native = Error::V3NativeParse {
+                domain: "eql_v3_text_search_ore".into(),
+                source: serde_json::from_str::<u8>("nope").unwrap_err(),
+            };
+            assert_eq!(
+                native.error_code().as_deref(),
+                Some("EQL_V3_CONVERSION_FAILED")
+            );
+        }
+
+        #[test]
+        fn both_ciphertext_failures_share_one_code() {
+            assert_eq!(
+                Error::InvalidSteVecSelector.error_code().as_deref(),
+                Some("INVALID_CIPHERTEXT")
+            );
+        }
+
+        #[test]
+        fn a_code_never_replaces_the_message() {
+            // The code is additional to Display, not a substitute for it: the
+            // JS error keeps the text it has always had.
+            let err = Error::InvalidEqlVersion(4);
+            assert_eq!(err.to_string(), "Invalid eqlVersion 4: expected 2 or 3");
+            assert_eq!(err.error_code().as_deref(), Some("INVALID_EQL_VERSION"));
+        }
+
+        #[test]
+        fn a_transparent_config_error_keeps_upstream_wording() {
+            // Splitting `Error::Config` into four variants must not change what
+            // a caller reads — only what it can branch on.
+            let err = Error::from(ConfigError::UnsupportedVersion {
+                version: 2,
+                expected: 1,
+            });
+            assert_eq!(
+                err.to_string(),
+                "unsupported config version: 2 (expected 1)"
+            );
+        }
+    }
 
     mod truncate_for_error {
         use super::*;
