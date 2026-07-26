@@ -11,8 +11,13 @@ export {
 } from './credentials.js'
 export * from './eql-v3.js'
 import type { EncryptedV3, EncryptedV3Query } from './eql-v3.js'
-import { ProtectError, inferErrorCode, normalizeError } from './errors.js'
-export { ProtectError, type ProtectErrorCode } from './errors.js'
+import { normalizeError } from './errors.js'
+export {
+  PROTECT_ERROR_CODES,
+  ProtectError,
+  isProtectErrorCode,
+  type ProtectErrorCode,
+} from './errors.js'
 
 /**
  * The wire-shape types now live in `./types.js` so the wasm build can name them
@@ -146,19 +151,19 @@ export function decryptBulk(
   return wrapAsync(() => native.decryptBulk(client, opts))
 }
 
-export async function decryptBulkFallible(
+/**
+ * Per-item results are returned exactly as Rust serialises them.
+ *
+ * This used to re-walk the array adding `code` to every failed item by running
+ * `inferErrorCode` over its message, because the code existed nowhere else.
+ * Rust sets it now (#146), which is also what makes it available on the wasm
+ * entry — that build has no JS wrapper to do the second pass.
+ */
+export function decryptBulkFallible(
   client: Client,
   opts: DecryptBulkOptions,
 ): Promise<DecryptResult[]> {
-  const results = await wrapAsync(() =>
-    native.decryptBulkFallible(client, opts),
-  )
-  return results.map((item: DecryptResult) => {
-    if ('error' in item && typeof item.error === 'string') {
-      return { ...item, code: inferErrorCode(item.error) }
-    }
-    return item
-  })
+  return wrapAsync(() => native.decryptBulkFallible(client, opts))
 }
 
 /**

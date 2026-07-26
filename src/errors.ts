@@ -1,19 +1,51 @@
-export type ProtectErrorCode =
-  | 'INVARIANT_VIOLATION'
-  | 'UNKNOWN_QUERY_OP'
-  | 'UNKNOWN_COLUMN'
-  | 'MISSING_INDEX'
-  | 'INVALID_QUERY_INPUT'
-  | 'SHORT_MATCH_NEEDLE'
-  | 'INVALID_JSON_PATH'
-  | 'STE_VEC_REQUIRES_JSON_CAST_AS'
-  | 'MATCH_REQUIRES_TEXT'
-  | 'UNSUPPORTED_CONFIG_VERSION'
-  | 'INVALID_EQL_VERSION'
-  | 'EQL_V3_UNSUPPORTED_COLUMN'
-  | 'EQL_V3_CONVERSION_FAILED'
-  | 'INVALID_CIPHERTEXT'
-  | 'UNKNOWN'
+/**
+ * Every code an error crossing the FFI boundary can carry.
+ *
+ * Declared once, as a value, with the type derived from it — a hand-written
+ * union alongside a hand-written runtime list is two things to keep in step,
+ * and this list already has to agree with a third: the
+ * `#[diagnostic(code(..))]` attributes on `Error` in
+ * `crates/protect-ffi/src/lib.rs`, which is where the codes are decided.
+ * `errorCodes.test.ts` reads that file and proves the two agree.
+ *
+ * `UNKNOWN` is the exception: it is a JS-side fallback, not something Rust
+ * emits. An error with no code of its own — the `#[error(transparent)]`
+ * wrappers around cipherstash-client failures — simply arrives without the
+ * field.
+ */
+export const PROTECT_ERROR_CODES = [
+  'INVARIANT_VIOLATION',
+  'UNKNOWN_QUERY_OP',
+  'UNKNOWN_COLUMN',
+  'MISSING_INDEX',
+  'INVALID_QUERY_INPUT',
+  'SHORT_MATCH_NEEDLE',
+  'INVALID_JSON_PATH',
+  'STE_VEC_REQUIRES_JSON_CAST_AS',
+  'MATCH_REQUIRES_TEXT',
+  'UNSUPPORTED_CONFIG_VERSION',
+  'INVALID_EQL_VERSION',
+  'EQL_V3_UNSUPPORTED_COLUMN',
+  'EQL_V3_CONVERSION_FAILED',
+  'INVALID_CIPHERTEXT',
+  'UNKNOWN',
+] as const
+
+export type ProtectErrorCode = (typeof PROTECT_ERROR_CODES)[number]
+
+const KNOWN_CODES: ReadonlySet<string> = new Set(PROTECT_ERROR_CODES)
+
+/**
+ * True when `value` is one of this library's error codes.
+ *
+ * Worth having because reading `err.code` structurally is otherwise
+ * indiscriminate: Node puts a `code` on its own errors too, so an
+ * `ECONNRESET` would pass for a {@link ProtectErrorCode} to anything that
+ * checked only for the field's presence.
+ */
+export function isProtectErrorCode(value: unknown): value is ProtectErrorCode {
+  return typeof value === 'string' && KNOWN_CODES.has(value)
+}
 
 export class ProtectError extends Error {
   code: ProtectErrorCode
@@ -34,66 +66,38 @@ export class ProtectError extends Error {
   }
 }
 
-export function inferErrorCode(message: string): ProtectErrorCode {
-  if (message.startsWith('protect-ffi invariant violation:')) {
-    return 'INVARIANT_VIOLATION'
-  }
-  if (message.startsWith('Unknown query operation:')) {
-    return 'UNKNOWN_QUERY_OP'
-  }
-  if (message.startsWith('Invalid query input for')) {
-    return 'INVALID_QUERY_INPUT'
-  }
-  if (message.startsWith('Invalid match query on column')) {
-    return 'SHORT_MATCH_NEEDLE'
-  }
-  if (message.startsWith('Invalid JSON path')) {
-    return 'INVALID_JSON_PATH'
-  }
-  if (message.includes(' not found in Encrypt config')) {
-    return 'UNKNOWN_COLUMN'
-  }
-  if (message.includes(' index configured')) {
-    return 'MISSING_INDEX'
-  }
-  if (message.includes('requires plaintext_type: json')) {
-    return 'STE_VEC_REQUIRES_JSON_CAST_AS'
-  }
-  if (message.includes('requires plaintext_type: text')) {
-    return 'MATCH_REQUIRES_TEXT'
-  }
-  if (message.includes('unsupported config version')) {
-    return 'UNSUPPORTED_CONFIG_VERSION'
-  }
-  if (message.startsWith('Invalid eqlVersion')) {
-    return 'INVALID_EQL_VERSION'
-  }
-  if (message.includes('cannot be represented in EQL v3')) {
-    return 'EQL_V3_UNSUPPORTED_COLUMN'
-  }
-  if (message.startsWith('EQL v3 conversion failed')) {
-    return 'EQL_V3_CONVERSION_FAILED'
-  }
-  if (message.startsWith('Invalid EQL ciphertext:')) {
-    return 'INVALID_CIPHERTEXT'
-  }
-  return 'UNKNOWN'
-}
-
+/**
+ * Re-throw an error from the native binding as a {@link ProtectError} when it
+ * carries a code.
+ *
+ * The code is now read off the error rather than inferred from it. Until #146
+ * this ran the message through a table of fourteen prefixes and substrings to
+ * guess one, three of which matched wording owned by cipherstash-config — so
+ * an upstream reword would silently downgrade a caller's error to `UNKNOWN`,
+ * with nothing in this repo failing. Rust attaches `err.code` at both
+ * boundaries.
+ *
+ * An error with no recognised code is returned untouched rather than wrapped in
+ * a `ProtectError` with a made-up one — the same choice the old code made when
+ * its table did not match.
+ */
 export function normalizeError(err: unknown): unknown {
   if (err instanceof ProtectError) {
     return err
   }
 
-  if (err && typeof err === 'object' && 'message' in err) {
-    const message = String(
-      (err as { message?: unknown }).message ?? 'Unknown error',
-    )
-    const code = inferErrorCode(message)
-    if (code !== 'UNKNOWN') {
-      return new ProtectError({ code, message, cause: err })
-    }
+  if (err === null || typeof err !== 'object') {
+    return err
   }
 
-  return err
+  const { code, message } = err as { code?: unknown; message?: unknown }
+  if (!isProtectErrorCode(code)) {
+    return err
+  }
+
+  return new ProtectError({
+    code,
+    message: String(message ?? 'Unknown error'),
+    cause: err,
+  })
 }

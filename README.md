@@ -176,18 +176,45 @@ const decrypted = await addon.decrypt(client, { ciphertext })
 
 ## Errors
 
-Async API calls throw `ProtectError` with a stable `code` for programmatic handling.
+Errors carry a stable `code`, set in Rust from the error variant. The Node
+entry raises them as `ProtectError`; the wasm entry has no JS wrapper, so it
+throws a plain `Error` with the same property.
+
+Not every failure has a code — the ones wrapping a cipherstash-client error
+arrive without the field. `'UNKNOWN'` is the name for that case, not a value
+Rust emits.
 
 ```typescript
+import { ProtectError } from '@cipherstash/protect-ffi'
+
 try {
   await addon.encryptQuery(client, opts)
 } catch (err) {
-  if (err?.code === 'INVALID_JSON_PATH') {
+  if (err instanceof ProtectError && err.code === 'INVALID_JSON_PATH') {
     // handle JSON path mistakes
   }
   throw err
 }
 ```
+
+Where `instanceof` is not reliable — the wasm entry, or across a bundler
+boundary — validate the field rather than just reading it. Node puts a `code`
+on its own errors too, so a bare `err?.code` check would let an `ECONNRESET`
+through as one of these:
+
+```typescript
+import { isProtectErrorCode } from '@cipherstash/protect-ffi'
+
+const { code } = err as { code?: unknown }
+if (isProtectErrorCode(code) && code === 'INVALID_JSON_PATH') {
+  // handle JSON path mistakes
+}
+```
+
+The codes themselves are `PROTECT_ERROR_CODES` in `src/errors.ts`, which
+`src/errorCodes.test.ts` checks against the `#[diagnostic(code(..))]`
+attributes on `Error` in `crates/protect-ffi/src/lib.rs` — the one place a code
+is decided.
 
 ## Available Scripts
 

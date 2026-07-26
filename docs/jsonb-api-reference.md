@@ -624,31 +624,27 @@ type DecryptResult =
 
 ### Errors
 
-Errors thrown by the async APIs surface as `ProtectError` instances with a stable `code`.
+Errors thrown by the async APIs carry a stable `code`, set in Rust from the
+error variant. On the Node entry they arrive as `ProtectError` instances; the
+wasm entry has no JS wrapper, so it throws a plain `Error` with the same `code`
+property.
 
 ```typescript
-type ProtectErrorCode =
-  | 'INVARIANT_VIOLATION'
-  | 'UNKNOWN_QUERY_OP'
-  | 'UNKNOWN_COLUMN'
-  | 'MISSING_INDEX'
-  | 'INVALID_QUERY_INPUT'
-  | 'INVALID_JSON_PATH'
-  | 'STE_VEC_REQUIRES_JSON_CAST_AS'
-  | 'MATCH_REQUIRES_TEXT'
-  | 'UNSUPPORTED_CONFIG_VERSION'
-  | 'INVALID_EQL_VERSION'
-  | 'EQL_V3_UNSUPPORTED_COLUMN'
-  | 'EQL_V3_CONVERSION_FAILED'
-  | 'INVALID_CIPHERTEXT'
-  | 'UNKNOWN'
-
 class ProtectError extends Error {
   code: ProtectErrorCode
 }
 ```
 
-Example:
+The `ProtectErrorCode` values are not restated here — they were, and the copy
+had already drifted (it was missing `SHORT_MATCH_NEEDLE`). They live in
+`src/errors.ts` as `PROTECT_ERROR_CODES`, and `src/errorCodes.test.ts` checks
+that list against the `#[diagnostic(code(..))]` attributes in
+`crates/protect-ffi/src/lib.rs`, which is where a code is decided.
+
+Not every failure has one. Errors that wrap a cipherstash-client failure carry
+no code of their own and arrive without the field: `ProtectError` is not
+constructed for them, and `DecryptResult` items omit `code` rather than setting
+it to `'UNKNOWN'`. `'UNKNOWN'` stays in the union as the name for that case.
 
 ```typescript
 try {
@@ -658,6 +654,20 @@ try {
     // handle JSON path mistakes
   }
   throw err
+}
+```
+
+On the wasm entry — or anywhere the `instanceof` check is not reliable, such as
+across a bundler boundary — read the field and validate it. A bare `err.code`
+read is not enough on its own: Node puts a `code` on its own errors too, so an
+`ECONNRESET` would pass for one of these.
+
+```typescript
+import { isProtectErrorCode } from '@cipherstash/protect-ffi'
+
+const { code } = err as { code?: unknown }
+if (isProtectErrorCode(code) && code === 'INVALID_JSON_PATH') {
+  // handle JSON path mistakes
 }
 ```
 

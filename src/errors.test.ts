@@ -1,92 +1,42 @@
 import { describe, expect, it } from 'vitest'
-import { ProtectError, inferErrorCode, normalizeError } from './errors.js'
+import {
+  PROTECT_ERROR_CODES,
+  ProtectError,
+  isProtectErrorCode,
+  normalizeError,
+} from './errors.js'
 
-describe('inferErrorCode', () => {
-  it('maps invariant violations', () => {
-    expect(
-      inferErrorCode('protect-ffi invariant violation: something impossible'),
-    ).toBe('INVARIANT_VIOLATION')
+describe('isProtectErrorCode', () => {
+  it('accepts every declared code', () => {
+    for (const code of PROTECT_ERROR_CODES) {
+      expect(isProtectErrorCode(code)).toBe(true)
+    }
   })
 
-  it('maps unknown query operations', () => {
-    expect(inferErrorCode('Unknown query operation: frobnicate')).toBe(
-      'UNKNOWN_QUERY_OP',
-    )
+  it('rejects a Node error code', () => {
+    // Why this predicate exists: `err.code` is not ours alone. Reading the
+    // field structurally without checking the value would let a socket failure
+    // surface to a caller as a ProtectError.
+    expect(isProtectErrorCode('ECONNRESET')).toBe(false)
+    expect(isProtectErrorCode('ERR_INVALID_ARG_TYPE')).toBe(false)
   })
 
-  it('still maps unknown query operations now that they are rejected by serde', () => {
-    // `queryOp` is a typed enum in the Rust (`crates/protect-ffi/src/query_op.rs`),
-    // so the rejection happens while deserializing the options and the message
-    // arrives through neon's `Json` extractor — which Displays the serde error
-    // verbatim, trailing position suffix and all. The Rust side keeps the
-    // prefix deliberately, and pins it in `an_unknown_value_keeps_the_prefix_
-    // errors_ts_matches`. This is the same contract from this end.
-    expect(
-      inferErrorCode(
-        "Unknown query operation: 'frobnicate'. Expected one of: " +
-          "'default', 'ste_vec_selector', 'ste_vec_value_selector', " +
-          "'ste_vec_term'. at line 1 column 96",
-      ),
-    ).toBe('UNKNOWN_QUERY_OP')
-  })
-
-  it('maps invalid eqlVersion errors', () => {
-    // Mirrors the Rust `Invalid eqlVersion {0}: expected 2 or 3` message.
-    expect(inferErrorCode('Invalid eqlVersion 4: expected 2 or 3')).toBe(
-      'INVALID_EQL_VERSION',
-    )
-  })
-
-  it('maps short match needle errors', () => {
-    // Mirrors the Rust `Invalid match query on column '{column}': {source}. Use a
-    // longer search term.` message (a single line) — the guard that stops a
-    // zero-token needle from silently matching every row.
-    expect(
-      inferErrorCode(
-        "Invalid match query on column 'email': match query input tokenizes to nothing (2 chars after wildcard trimming; the index's minimum token length is 3): it would match every row. Use a longer search term.",
-      ),
-    ).toBe('SHORT_MATCH_NEEDLE')
-  })
-
-  it('maps EQL v3 unsupported-column errors', () => {
-    // Mirrors the Rust `Column '{column}' cannot be represented in EQL v3: {reason}. {hint}` message.
-    expect(
-      inferErrorCode(
-        "Column 'users.email' cannot be represented in EQL v3: no v3 domain for this cast_as. Use eqlVersion 2.",
-      ),
-    ).toBe('EQL_V3_UNSUPPORTED_COLUMN')
-  })
-
-  it('maps EQL v3 conversion failures', () => {
-    expect(inferErrorCode('EQL v3 conversion failed: bad payload')).toBe(
-      'EQL_V3_CONVERSION_FAILED',
-    )
-  })
-
-  it('maps native v3 payload parse failures to the same code', () => {
-    // Mirrors the Rust `EQL v3 conversion failed: native payload did not
-    // parse as {domain}: {source}` message (Error::V3NativeParse).
-    expect(
-      inferErrorCode(
-        'EQL v3 conversion failed: native payload did not parse as eql_v3_text_search_ore: missing field `ob`',
-      ),
-    ).toBe('EQL_V3_CONVERSION_FAILED')
-  })
-
-  it('maps invalid EQL ciphertext errors', () => {
-    expect(
-      inferErrorCode('Invalid EQL ciphertext: could not parse mp_base85'),
-    ).toBe('INVALID_CIPHERTEXT')
-  })
-
-  it('falls back to UNKNOWN for unrecognized messages', () => {
-    expect(inferErrorCode('something else entirely')).toBe('UNKNOWN')
+  it('rejects non-strings', () => {
+    expect(isProtectErrorCode(undefined)).toBe(false)
+    expect(isProtectErrorCode(null)).toBe(false)
+    expect(isProtectErrorCode(42)).toBe(false)
+    expect(isProtectErrorCode({ toString: () => 'UNKNOWN_COLUMN' })).toBe(false)
   })
 })
 
 describe('normalizeError', () => {
-  it('wraps invalid EQL ciphertext errors as ProtectError', () => {
-    const raw = new Error('Invalid EQL ciphertext: could not parse mp_base85')
+  it('wraps an error carrying a code', () => {
+    // What the bindings throw: a JS Error with `code` set by Rust from the
+    // variant's `#[diagnostic(code(..))]`.
+    const raw = Object.assign(
+      new Error('Invalid EQL ciphertext: could not parse mp_base85'),
+      { code: 'INVALID_CIPHERTEXT' },
+    )
 
     const result = normalizeError(raw)
 
@@ -99,6 +49,23 @@ describe('normalizeError', () => {
     expect(err.cause).toBe(raw)
   })
 
+  it('leaves an error with no code alone', () => {
+    // The `#[error(transparent)]` variants carry no code, so nothing is
+    // attached and there is nothing to promote. Before #146 this case was
+    // decided by whether a substring table happened to match upstream wording.
+    const raw = new Error('some cipherstash-client failure')
+
+    expect(normalizeError(raw)).toBe(raw)
+  })
+
+  it('does not promote a foreign code', () => {
+    const raw = Object.assign(new Error('connection reset'), {
+      code: 'ECONNRESET',
+    })
+
+    expect(normalizeError(raw)).toBe(raw)
+  })
+
   it('returns ProtectError instances unchanged', () => {
     const original = new ProtectError({
       code: 'UNKNOWN_COLUMN',
@@ -108,8 +75,46 @@ describe('normalizeError', () => {
     expect(normalizeError(original)).toBe(original)
   })
 
-  it('returns unrecognized errors unchanged', () => {
-    const raw = new Error('something else entirely')
+  it('passes non-objects through', () => {
+    expect(normalizeError('a thrown string')).toBe('a thrown string')
+    expect(normalizeError(null)).toBe(null)
+    expect(normalizeError(undefined)).toBe(undefined)
+  })
+
+  it('survives an error whose message is missing', () => {
+    const raw = { code: 'MISSING_INDEX' }
+
+    const err = normalizeError(raw) as ProtectError
+    expect(err).toBeInstanceOf(ProtectError)
+    expect(err.message).toBe('Unknown error')
+  })
+})
+
+describe('no message-shape routing', () => {
+  // One message per pattern the deleted `inferErrorCode` table matched on.
+  // Each used to be enough on its own to produce a code; none is now. This is
+  // the regression that would mean the string matching had crept back — most
+  // plausibly as a "fallback for errors that arrive without a code", which is
+  // the same guess in a smaller box.
+  const OLD_TABLE_MESSAGES = [
+    'protect-ffi invariant violation: something impossible',
+    "Unknown query operation: 'frobnicate'",
+    "Invalid query input for 'match': received number, expected string.",
+    "Invalid match query on column 'email': tokenizes to nothing.",
+    "Invalid JSON path 'name': not a path.",
+    'column users.email not found in Encrypt config',
+    "Column 'email' does not have a 'match' index configured.",
+    'ste_vec index on users.meta requires plaintext_type: json (found text)',
+    'match index on users.age requires plaintext_type: text (found int)',
+    'unsupported config version: 2 (expected 1)',
+    'Invalid eqlVersion 4: expected 2 or 3',
+    "Column 'users.email' cannot be represented in EQL v3: no v3 domain.",
+    'EQL v3 conversion failed: bad payload',
+    'Invalid EQL ciphertext: could not parse mp_base85',
+  ]
+
+  it.each(OLD_TABLE_MESSAGES)('does not infer a code from %j', (message) => {
+    const raw = new Error(message)
 
     expect(normalizeError(raw)).toBe(raw)
   })
