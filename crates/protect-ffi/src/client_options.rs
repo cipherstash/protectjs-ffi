@@ -212,9 +212,10 @@ pub(crate) struct ClientOpts {
     pub(crate) keyset: Option<IdentifiedBy>,
 }
 
-/// `ensureKeyset` is a Neon-only export — provisioning belongs on a server, not
-/// in browser / edge code — so these are compiled out of the wasm build rather
-/// than sitting there as dead code.
+/// `ensureKeyset` is a Neon-only export, so on wasm these are dead code. Gated
+/// to keep the lint honest, NOT because the split is right: the missing wasm
+/// export is an oversight rather than a boundary (#149). Taking these two gates
+/// off is what marks that issue done. See the `wasm` module docs.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -12,24 +12,30 @@ use client_options::{EnsureKeysetOpts, EnsureKeysetResult};
 use query_op::{QueryOpName, SteVecQueryOpKind};
 
 use cipherstash_client::{
-    encryption::{
-        EncryptionError, IndexerInit, MatchIndexer, Plaintext, QueryOp, ScopedCipher,
-        TypeParseError,
-    },
+    encryption::{EncryptionError, IndexerInit, MatchIndexer, Plaintext, QueryOp, TypeParseError},
     eql::{
-        encrypt_eql, encrypt_eql_v3, EqlCiphertext, EqlCiphertextV3, EqlEncryptOpts, EqlError,
-        EqlOperation, EqlOutput, EqlOutputV3, Identifier as EqlIdentifier, PreparedPlaintext,
+        EqlCiphertext, EqlCiphertextV3, EqlError, EqlOperation, EqlOutput, EqlOutputV3,
+        Identifier as EqlIdentifier, PreparedPlaintext,
     },
     schema::{
         column::{Index, IndexType},
         errors::ConfigError,
         ColumnConfig, Identifier,
     },
-    zerokms::{
-        self, KeyProvider, RecordDecryptError, WithContext, ZeroKMSBuilder, ZeroKMSBuilderError,
-        ZeroKMSWithClientKey,
-    },
-    AuthError, AutoStrategy, UnverifiedContext,
+    zerokms::{self, RecordDecryptError, WithContext, ZeroKMSBuilderError},
+    AuthError, UnverifiedContext,
+};
+// Everything below this line belongs to the Neon exports: the encryption
+// pipeline, the ZeroKMS client, and the key providers behind it. `wasm.rs`
+// imports its own copies straight from `cipherstash_client`, so gating these
+// costs the wasm build nothing and is what lets clippy run clean against
+// `wasm32-unknown-unknown` (#145).
+#[cfg(not(target_arch = "wasm32"))]
+use cipherstash_client::{
+    encryption::ScopedCipher,
+    eql::{encrypt_eql, encrypt_eql_v3, EqlEncryptOpts},
+    zerokms::{KeyProvider, ZeroKMSBuilder, ZeroKMSWithClientKey},
+    AutoStrategy,
 };
 // Shared by the Neon exports below and the wasm module (which imports these
 // via `crate::`), so both targets resolve them through this one re-export.
@@ -46,15 +52,15 @@ use neon::{
         JsBigInt, JsFuture,
     },
 };
+// Holds the Tokio runtime the Neon exports block on; nothing on wasm uses it.
+#[cfg(not(target_arch = "wasm32"))]
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 use stack_auth::{AuthStrategy, SecretToken, ServerError};
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::Runtime;
 
