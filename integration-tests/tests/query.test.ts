@@ -4,7 +4,6 @@ import { describe, expect, test } from 'vitest'
 import {
   type EncryptConfig,
   type Identifier,
-  ProtectError,
   type QueryPayload,
   encryptQuery,
   encryptQueryBulk,
@@ -421,10 +420,8 @@ describe('encryptQuery error handling', () => {
       })
       throw new Error('expected encryptQuery to throw')
     } catch (err) {
-      expect(err).toBeInstanceOf(ProtectError)
-      if (err instanceof ProtectError) {
-        expect(err.code).toBe('UNKNOWN_COLUMN')
-      }
+      expect(err).toBeInstanceOf(Error)
+      expect((err as { code?: unknown }).code).toBe('UNKNOWN_COLUMN')
     }
   })
 

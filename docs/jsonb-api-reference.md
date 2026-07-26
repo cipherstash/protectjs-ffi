@@ -624,16 +624,16 @@ type DecryptResult =
 
 ### Errors
 
-Errors thrown by the async APIs carry a stable `code`, set in Rust from the
-error variant. On the Node entry they arrive as `ProtectError` instances; the
-wasm entry has no JS wrapper, so it throws a plain `Error` with the same `code`
-property.
+Both entries throw an ordinary JS `Error` carrying a stable `code`, set in Rust
+from the error variant:
 
 ```typescript
-class ProtectError extends Error {
-  code: ProtectErrorCode
-}
+Error & { code?: ProtectErrorCode }
 ```
+
+There is no wrapper class. Rust builds the thrown error, so the two bindings
+behave identically and the stack points at the call that failed rather than at
+a wrapper.
 
 The `ProtectErrorCode` values are not restated here — they were, and the copy
 had already drifted (it was missing `SHORT_MATCH_NEEDLE`). They live in
@@ -642,32 +642,38 @@ that list against the `#[diagnostic(code(..))]` attributes in
 `crates/protect-ffi/src/lib.rs`, which is where a code is decided.
 
 Not every failure has one. Errors that wrap a cipherstash-client failure carry
-no code of their own and arrive without the field: `ProtectError` is not
-constructed for them, and `DecryptResult` items omit `code` rather than setting
-it to `'UNKNOWN'`. `'UNKNOWN'` stays in the union as the name for that case.
+no code of their own and arrive without the field, and `DecryptResult` items
+omit `code` rather than setting it to `'UNKNOWN'`. `'UNKNOWN'` stays in the
+union as the name for that case.
+
+TypeScript types a `catch` variable as `unknown`, so a caller narrows once.
+Branching needs nothing from this package:
 
 ```typescript
 try {
   await encryptQuery(client, opts)
 } catch (err) {
-  if (err instanceof ProtectError && err.code === 'INVALID_JSON_PATH') {
+  if (err instanceof Error && 'code' in err && err.code === 'INVALID_JSON_PATH') {
     // handle JSON path mistakes
   }
   throw err
 }
 ```
 
-On the wasm entry — or anywhere the `instanceof` check is not reliable, such as
-across a bundler boundary — read the field and validate it. A bare `err.code`
-read is not enough on its own: Node puts a `code` on its own errors too, so an
-`ECONNRESET` would pass for one of these.
+To carry the code around as a typed value — storing it on a result object, say
+— use `isProtectErrorCode`. It checks the value, not just the field's presence:
+Node puts a `code` on its own errors, so a bare read would let an `ECONNRESET`
+pass for one of these.
 
 ```typescript
-import { isProtectErrorCode } from '@cipherstash/protect-ffi'
+import {
+  isProtectErrorCode,
+  type ProtectErrorCode,
+} from '@cipherstash/protect-ffi'
 
-const { code } = err as { code?: unknown }
-if (isProtectErrorCode(code) && code === 'INVALID_JSON_PATH') {
-  // handle JSON path mistakes
+function errorCode(err: unknown): ProtectErrorCode | undefined {
+  const { code } = err as { code?: unknown }
+  return isProtectErrorCode(code) ? code : undefined
 }
 ```
 

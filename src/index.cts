@@ -11,10 +11,8 @@ export {
 } from './credentials.js'
 export * from './eql-v3.js'
 import type { EncryptedV3, EncryptedV3Query } from './eql-v3.js'
-import { normalizeError } from './errors.js'
 export {
   PROTECT_ERROR_CODES,
-  ProtectError,
   isProtectErrorCode,
   type ProtectErrorCode,
 } from './errors.js'
@@ -86,38 +84,36 @@ declare module './load.cjs' {
   function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
-async function wrapAsync<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn()
-  } catch (err) {
-    throw normalizeError(err)
-  }
+// Errors are not touched on the way out. Rust builds the JS `Error` and sets
+// `code` on it (#146), so there is nothing left for this layer to add — it used
+// to re-wrap every failure in a `ProtectError` carrying a code inferred from the
+// message, which is the thing that went.
+//
+// Every promise-returning export below is `async` for one reason worth stating,
+// because it looks like a redundant keyword on a function whose body is a
+// single `return`: neon extracts arguments SYNCHRONOUSLY. A bad `client` handle,
+// or an options object serde rejects — including every unknown-key rejection
+// from #144 — throws from the call itself rather than rejecting the promise it
+// would otherwise have returned. So does `withEncodedPlaintext` on an
+// out-of-range bigint. `async` is what keeps those as rejections now that the
+// try/catch wrapper is gone; drop it and `.catch()` stops seeing them.
+
+export async function newClient(opts: NewClientOptions): Promise<Client> {
+  return native.newClient(...newClientArgs(opts))
 }
 
-function wrapSync<T>(fn: () => T): T {
-  try {
-    return fn()
-  } catch (err) {
-    throw normalizeError(err)
-  }
-}
-
-export function newClient(opts: NewClientOptions): Promise<Client> {
-  return wrapAsync(() => native.newClient(...newClientArgs(opts)))
-}
-
-export function encrypt(
+export async function encrypt(
   client: Client,
   opts: EncryptOptions,
 ): Promise<EncryptedPayload> {
-  return wrapAsync(() => native.encrypt(client, withEncodedPlaintext(opts)))
+  return native.encrypt(client, withEncodedPlaintext(opts))
 }
 
-export function decrypt(
+export async function decrypt(
   client: Client,
   opts: DecryptOptions,
 ): Promise<JsPlaintext> {
-  return wrapAsync(() => native.decrypt(client, opts))
+  return native.decrypt(client, opts)
 }
 
 /**
@@ -128,27 +124,25 @@ export function decrypt(
  * payloads and return false.
  */
 export function isEncrypted(encrypted: unknown): boolean {
-  return wrapSync(() => native.isEncrypted(encrypted))
+  return native.isEncrypted(encrypted)
 }
 
-export function encryptBulk(
+export async function encryptBulk(
   client: Client,
   opts: EncryptBulkOptions,
 ): Promise<EncryptedPayload[]> {
-  return wrapAsync(() => {
-    const plaintexts = withEncodedPlaintexts(opts.plaintexts)
-    return native.encryptBulk(
-      client,
-      plaintexts === opts.plaintexts ? opts : { ...opts, plaintexts },
-    )
-  })
+  const plaintexts = withEncodedPlaintexts(opts.plaintexts)
+  return native.encryptBulk(
+    client,
+    plaintexts === opts.plaintexts ? opts : { ...opts, plaintexts },
+  )
 }
 
-export function decryptBulk(
+export async function decryptBulk(
   client: Client,
   opts: DecryptBulkOptions,
 ): Promise<JsPlaintext[]> {
-  return wrapAsync(() => native.decryptBulk(client, opts))
+  return native.decryptBulk(client, opts)
 }
 
 /**
@@ -159,11 +153,11 @@ export function decryptBulk(
  * Rust sets it now (#146), which is also what makes it available on the wasm
  * entry — that build has no JS wrapper to do the second pass.
  */
-export function decryptBulkFallible(
+export async function decryptBulkFallible(
   client: Client,
   opts: DecryptBulkOptions,
 ): Promise<DecryptResult[]> {
-  return wrapAsync(() => native.decryptBulkFallible(client, opts))
+  return native.decryptBulkFallible(client, opts)
 }
 
 /**
@@ -187,27 +181,23 @@ export function decryptBulkFallible(
  * - `ste_vec_value_selector` queries accept `{path, value}` and produce a
  *   one-entry selector-only containment needle for exact equality.
  */
-export function encryptQuery(
+export async function encryptQuery(
   client: Client,
   opts: EncryptQueryOptions,
 ): Promise<Encrypted | EncryptedQuery | EncryptedV3Query> {
-  return wrapAsync(() =>
-    native.encryptQuery(client, withEncodedPlaintext(opts)),
-  )
+  return native.encryptQuery(client, withEncodedPlaintext(opts))
 }
 
 /** Bulk variant of {@link encryptQuery} — same EQL v3 shapes apply. */
-export function encryptQueryBulk(
+export async function encryptQueryBulk(
   client: Client,
   opts: EncryptQueryBulkOptions,
 ): Promise<(Encrypted | EncryptedQuery | EncryptedV3Query)[]> {
-  return wrapAsync(() => {
-    const queries = withEncodedPlaintexts(opts.queries)
-    return native.encryptQueryBulk(
-      client,
-      queries === opts.queries ? opts : { ...opts, queries },
-    )
-  })
+  const queries = withEncodedPlaintexts(opts.queries)
+  return native.encryptQueryBulk(
+    client,
+    queries === opts.queries ? opts : { ...opts, queries },
+  )
 }
 
 /**
@@ -215,8 +205,8 @@ export function encryptQueryBulk(
  * and grants the current client access. Not safe for concurrent use — intended for
  * sequential test setup only.
  */
-export function ensureKeyset(
+export async function ensureKeyset(
   opts: EnsureKeysetOpts,
 ): Promise<EnsureKeysetResult> {
-  return wrapAsync(() => native.ensureKeyset(withEnvCredentials(opts)))
+  return native.ensureKeyset(withEnvCredentials(opts))
 }

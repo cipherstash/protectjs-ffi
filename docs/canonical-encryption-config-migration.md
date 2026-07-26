@@ -83,8 +83,9 @@ changed.
 
 **Error codes are preserved and extended** — `STE_VEC_REQUIRES_JSON_CAST_AS`
 retains the same code. Two new codes are added: `MATCH_REQUIRES_TEXT` and
-`UNSUPPORTED_CONFIG_VERSION`. Consumers that branch on `ProtectError.code` are
-unaffected.
+`UNSUPPORTED_CONFIG_VERSION`. Consumers that branch on the error's `code` are
+unaffected. (#146 later moved that `code` onto the thrown `Error` itself and
+removed the `ProtectError` wrapper class; the values did not change.)
 
 **Consumers that string-match on `err.message` for config-validation errors
 must update their match strings** to align with the new `ConfigError` message

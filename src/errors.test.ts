@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  PROTECT_ERROR_CODES,
-  ProtectError,
-  isProtectErrorCode,
-  normalizeError,
-} from './errors.js'
+import { PROTECT_ERROR_CODES, isProtectErrorCode } from './errors.js'
 
 describe('isProtectErrorCode', () => {
   it('accepts every declared code', () => {
@@ -14,9 +9,9 @@ describe('isProtectErrorCode', () => {
   })
 
   it('rejects a Node error code', () => {
-    // Why this predicate exists: `err.code` is not ours alone. Reading the
-    // field structurally without checking the value would let a socket failure
-    // surface to a caller as a ProtectError.
+    // Why this checks the value and not just the field's presence: `err.code`
+    // is not ours alone. A caller reading the field structurally without
+    // validating it would see a socket failure as one of these.
     expect(isProtectErrorCode('ECONNRESET')).toBe(false)
     expect(isProtectErrorCode('ERR_INVALID_ARG_TYPE')).toBe(false)
   })
@@ -29,73 +24,44 @@ describe('isProtectErrorCode', () => {
   })
 })
 
-describe('normalizeError', () => {
-  it('wraps an error carrying a code', () => {
-    // What the bindings throw: a JS Error with `code` set by Rust from the
-    // variant's `#[diagnostic(code(..))]`.
-    const raw = Object.assign(
-      new Error('Invalid EQL ciphertext: could not parse mp_base85'),
-      { code: 'INVALID_CIPHERTEXT' },
-    )
+describe('narrowing a thrown error', () => {
+  /** What both bindings throw: an ordinary Error with `code` set by Rust. */
+  const thrown = (message: string, code?: string) =>
+    code === undefined
+      ? new Error(message)
+      : Object.assign(new Error(message), { code })
 
-    const result = normalizeError(raw)
+  it('reads the code a caller would branch on', () => {
+    const err: unknown = thrown('Invalid JSON path', 'INVALID_JSON_PATH')
 
-    expect(result).toBeInstanceOf(ProtectError)
-    const err = result as ProtectError
-    expect(err.code).toBe('INVALID_CIPHERTEXT')
-    expect(err.message).toBe(
-      'Invalid EQL ciphertext: could not parse mp_base85',
-    )
-    expect(err.cause).toBe(raw)
+    const { code } = err as { code?: unknown }
+    expect(isProtectErrorCode(code) && code === 'INVALID_JSON_PATH').toBe(true)
   })
 
-  it('leaves an error with no code alone', () => {
-    // The `#[error(transparent)]` variants carry no code, so nothing is
-    // attached and there is nothing to promote. Before #146 this case was
-    // decided by whether a substring table happened to match upstream wording.
-    const raw = new Error('some cipherstash-client failure')
+  it('finds no code on a failure that has none', () => {
+    // The `#[error(transparent)]` variants wrap a cipherstash-client failure
+    // whose text this repo does not own, so no code is attached. Before #146
+    // this case was decided by whether a substring table happened to match the
+    // upstream wording.
+    const err: unknown = thrown('some cipherstash-client failure')
 
-    expect(normalizeError(raw)).toBe(raw)
+    expect(isProtectErrorCode((err as { code?: unknown }).code)).toBe(false)
   })
 
-  it('does not promote a foreign code', () => {
-    const raw = Object.assign(new Error('connection reset'), {
-      code: 'ECONNRESET',
-    })
+  it('does not accept a foreign code', () => {
+    const err: unknown = thrown('connection reset', 'ECONNRESET')
 
-    expect(normalizeError(raw)).toBe(raw)
-  })
-
-  it('returns ProtectError instances unchanged', () => {
-    const original = new ProtectError({
-      code: 'UNKNOWN_COLUMN',
-      message: 'column "email" not found in Encrypt config',
-    })
-
-    expect(normalizeError(original)).toBe(original)
-  })
-
-  it('passes non-objects through', () => {
-    expect(normalizeError('a thrown string')).toBe('a thrown string')
-    expect(normalizeError(null)).toBe(null)
-    expect(normalizeError(undefined)).toBe(undefined)
-  })
-
-  it('survives an error whose message is missing', () => {
-    const raw = { code: 'MISSING_INDEX' }
-
-    const err = normalizeError(raw) as ProtectError
-    expect(err).toBeInstanceOf(ProtectError)
-    expect(err.message).toBe('Unknown error')
+    expect(isProtectErrorCode((err as { code?: unknown }).code)).toBe(false)
   })
 })
 
 describe('no message-shape routing', () => {
   // One message per pattern the deleted `inferErrorCode` table matched on.
-  // Each used to be enough on its own to produce a code; none is now. This is
-  // the regression that would mean the string matching had crept back — most
-  // plausibly as a "fallback for errors that arrive without a code", which is
-  // the same guess in a smaller box.
+  // Each used to be enough on its own to produce a code; none is now, because
+  // nothing reads the message any more. This is the regression that would mean
+  // the string matching had crept back — most plausibly as a "fallback for
+  // errors that arrive without a code", which is the same guess in a smaller
+  // box.
   const OLD_TABLE_MESSAGES = [
     'protect-ffi invariant violation: something impossible',
     "Unknown query operation: 'frobnicate'",
@@ -113,9 +79,9 @@ describe('no message-shape routing', () => {
     'Invalid EQL ciphertext: could not parse mp_base85',
   ]
 
-  it.each(OLD_TABLE_MESSAGES)('does not infer a code from %j', (message) => {
-    const raw = new Error(message)
+  it.each(OLD_TABLE_MESSAGES)('yields no code for %j', (message) => {
+    const err: unknown = new Error(message)
 
-    expect(normalizeError(raw)).toBe(raw)
+    expect(isProtectErrorCode((err as { code?: unknown }).code)).toBe(false)
   })
 })

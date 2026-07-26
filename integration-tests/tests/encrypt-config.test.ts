@@ -1,11 +1,7 @@
 import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
-import {
-  type EncryptConfig,
-  ProtectError,
-  newClient,
-} from '@cipherstash/protect-ffi'
+import { type EncryptConfig, newClient } from '@cipherstash/protect-ffi'
 
 describe('newClient encrypt config', () => {
   test('accepts legacy cast_as vocabulary and ste_vec without mode', async () => {
@@ -59,10 +55,8 @@ describe('newClient encrypt config', () => {
       await newClient({ encryptConfig })
       throw new Error('expected newClient to throw')
     } catch (err) {
-      expect(err).toBeInstanceOf(ProtectError)
-      if (err instanceof ProtectError) {
-        expect(err.code).toBe('MATCH_REQUIRES_TEXT')
-      }
+      expect(err).toBeInstanceOf(Error)
+      expect((err as { code?: unknown }).code).toBe('MATCH_REQUIRES_TEXT')
     }
   })
 
@@ -80,10 +74,10 @@ describe('newClient encrypt config', () => {
       await newClient({ encryptConfig })
       throw new Error('expected newClient to throw')
     } catch (err) {
-      expect(err).toBeInstanceOf(ProtectError)
-      if (err instanceof ProtectError) {
-        expect(err.code).toBe('UNSUPPORTED_CONFIG_VERSION')
-      }
+      expect(err).toBeInstanceOf(Error)
+      expect((err as { code?: unknown }).code).toBe(
+        'UNSUPPORTED_CONFIG_VERSION',
+      )
     }
   })
 
@@ -104,10 +98,10 @@ describe('newClient encrypt config', () => {
       await newClient({ encryptConfig })
       throw new Error('expected newClient to throw')
     } catch (err) {
-      expect(err).toBeInstanceOf(ProtectError)
-      if (err instanceof ProtectError) {
-        expect(err.code).toBe('STE_VEC_REQUIRES_JSON_CAST_AS')
-      }
+      expect(err).toBeInstanceOf(Error)
+      expect((err as { code?: unknown }).code).toBe(
+        'STE_VEC_REQUIRES_JSON_CAST_AS',
+      )
     }
   })
 })

@@ -8,10 +8,10 @@
  * `crates/protect-ffi/src/lib.rs`, which is where the codes are decided.
  * `errorCodes.test.ts` reads that file and proves the two agree.
  *
- * `UNKNOWN` is the exception: it is a JS-side fallback, not something Rust
- * emits. An error with no code of its own — the `#[error(transparent)]`
- * wrappers around cipherstash-client failures — simply arrives without the
- * field.
+ * `UNKNOWN` is the exception: it is a name for "this error had no code", not
+ * something Rust emits. An error with no code of its own — the
+ * `#[error(transparent)]` wrappers around cipherstash-client failures — simply
+ * arrives without the field.
  */
 export const PROTECT_ERROR_CODES = [
   'INVARIANT_VIOLATION',
@@ -38,66 +38,34 @@ const KNOWN_CODES: ReadonlySet<string> = new Set(PROTECT_ERROR_CODES)
 /**
  * True when `value` is one of this library's error codes.
  *
- * Worth having because reading `err.code` structurally is otherwise
- * indiscriminate: Node puts a `code` on its own errors too, so an
- * `ECONNRESET` would pass for a {@link ProtectErrorCode} to anything that
- * checked only for the field's presence.
+ * This is the whole of the error API. Both bindings throw an ordinary JS
+ * `Error` with `code` set by Rust, so there is nothing to unwrap and no class
+ * to match on — but TypeScript types a `catch` variable as `unknown`, so a
+ * caller has to narrow once:
+ *
+ * ```ts
+ * try {
+ *   await encryptQuery(client, opts)
+ * } catch (err) {
+ *   const { code } = err as { code?: unknown }
+ *   if (isProtectErrorCode(code) && code === 'INVALID_JSON_PATH') {
+ *     // ...
+ *   }
+ *   throw err
+ * }
+ * ```
+ *
+ * Checking the value rather than just the field's presence is the point: Node
+ * sets `code` on its own errors, so an `ECONNRESET` would otherwise pass for
+ * one of these.
+ *
+ * There used to be a `ProtectError` class, and a `normalizeError` that caught
+ * every failure on the way out and re-threw it as one. It existed to make
+ * `instanceof` work, which cost a rewritten stack trace, made the Neon and wasm
+ * entries throw different things, and was unreliable anyway — `instanceof` is
+ * false across duplicate copies of a package. Once Rust started setting `code`
+ * there was nothing left for that layer to add (#146).
  */
 export function isProtectErrorCode(value: unknown): value is ProtectErrorCode {
   return typeof value === 'string' && KNOWN_CODES.has(value)
-}
-
-export class ProtectError extends Error {
-  code: ProtectErrorCode
-  details?: unknown
-  cause?: unknown
-
-  constructor(opts: {
-    code: ProtectErrorCode
-    message: string
-    details?: unknown
-    cause?: unknown
-  }) {
-    super(opts.message)
-    this.name = 'ProtectError'
-    this.code = opts.code
-    this.details = opts.details
-    this.cause = opts.cause
-  }
-}
-
-/**
- * Re-throw an error from the native binding as a {@link ProtectError} when it
- * carries a code.
- *
- * The code is now read off the error rather than inferred from it. Until #146
- * this ran the message through a table of fourteen prefixes and substrings to
- * guess one, three of which matched wording owned by cipherstash-config — so
- * an upstream reword would silently downgrade a caller's error to `UNKNOWN`,
- * with nothing in this repo failing. Rust attaches `err.code` at both
- * boundaries.
- *
- * An error with no recognised code is returned untouched rather than wrapped in
- * a `ProtectError` with a made-up one — the same choice the old code made when
- * its table did not match.
- */
-export function normalizeError(err: unknown): unknown {
-  if (err instanceof ProtectError) {
-    return err
-  }
-
-  if (err === null || typeof err !== 'object') {
-    return err
-  }
-
-  const { code, message } = err as { code?: unknown; message?: unknown }
-  if (!isProtectErrorCode(code)) {
-    return err
-  }
-
-  return new ProtectError({
-    code,
-    message: String(message ?? 'Unknown error'),
-    cause: err,
-  })
 }
