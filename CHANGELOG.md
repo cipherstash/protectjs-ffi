@@ -36,24 +36,20 @@ uses the promoted section as the GitHub release notes.
     item; at the top level serde drops it, and the values are encrypted
     **unbound** while the caller believes they are identity-bound.
   - A misspelled or unknown option key.
-  - `newClient` without `strategy`, which wasm requires — it has no env or
-    filesystem fallback.
   - A closed-set value typo such as `indexType: 'matsh'`.
   - A plaintext that is not a `JsPlaintext`.
 
   The shared types moved to `src/types.ts` and are re-exported by the Neon
   entry, so **its public surface is unchanged**.
 
-- **Two wasm-only types, for the places the bindings genuinely differ.**
-  `WasmNewClientOptions` describes the wasm `newClient`, which does NOT take
-  the Neon entry's `NewClientOptions`: credentials are top level and required
-  (`clientId` / `clientKey` — there is no `clientOpts`, no env fallback, no
-  `~/.cipherstash`), `encryptConfig` must already be in the canonical
-  `cast_as` vocabulary (the Neon wrapper runs `normalizeEncryptConfig` for
-  you; wasm deserializes straight into `CanonicalEncryptionConfig`), and
-  `authStrategy` is required. `WasmDecryptResult` omits `code`, which Rust
-  never emits — the Neon wrapper infers it in JS from the error message, so on
-  this entry the field is absent rather than optional-and-never-set.
+- **One wasm-only type, for the one place the bindings genuinely differ.**
+  `WasmDecryptResult` omits `code`, which Rust never emits — the Neon wrapper
+  infers it in JS from the error message, so on this entry the field is absent
+  rather than optional-and-never-set.
+
+  `newClient` was the other exception while this work was in progress: it took
+  a different options shape and a pre-canonicalised config. Both are resolved
+  below — the bindings now share one `NewClientOptions`.
 
 - `CanonicalCastAs`, `CanonicalColumn`, and `CanonicalEncryptConfig` are now
   public, in `types.ts`. They were `NativeCastAs` / `NativeColumn` /
