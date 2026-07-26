@@ -762,10 +762,6 @@ struct PlaintextPayload {
     table: String,
     /// Lock context for this payload. Payloads with different lock_context values
     /// will be encrypted in separate batches to preserve per-payload context binding.
-    ///
-    /// A `lockContext` on the bulk options instead of here is now an error
-    /// rather than a silent drop — see [`DenyUnknown`]. That mistake used to
-    /// encrypt every value unbound while the caller believed otherwise.
     lock_context: Option<LockContext>,
     #[serde(flatten)]
     _deny_unknown: DenyUnknown,

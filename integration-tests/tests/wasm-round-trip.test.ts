@@ -519,4 +519,39 @@ describe('wasm newClient validation', () => {
     )
     expect('authStrategy' in opts).toBe(true)
   })
+
+  // The two cases where the caller's property descriptors could plausibly
+  // defeat the strip. Reaching the credential error means deserialization
+  // succeeded, which means the key was gone by the time serde ran.
+  test('strips it from a frozen options object', async () => {
+    // The delete lands on the copy, and `Object.assign` writes plain
+    // configurable properties onto a fresh object — the caller's descriptors
+    // don't carry over to constrain it.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient(
+        Object.freeze({
+          authStrategy: { getToken: async () => ({ token: 'unused' }) },
+          encryptConfig: minimalConfig,
+        }),
+      ),
+    ).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+  })
+
+  test('still finds a non-enumerable auth strategy', async () => {
+    // `Object.assign` copies own ENUMERABLE properties, so this one never
+    // reaches the copy and there is nothing to strip. It is read off the
+    // original beforehand, so it is still used rather than lost.
+    const wasm = await loadWasm<WasmModule>()
+    const opts: Record<string, unknown> = { encryptConfig: minimalConfig }
+    Object.defineProperty(opts, 'authStrategy', {
+      value: { getToken: async () => ({ token: 'unused' }) },
+      enumerable: false,
+    })
+    await expect(wasm.newClient(opts)).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+  })
 })

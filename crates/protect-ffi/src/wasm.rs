@@ -485,10 +485,22 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
     // `NewClientOptions` — and that struct denies unknown fields. Strip them
     // before serde sees the object.
     //
-    // On a shallow copy, never the caller's object: a config reused across
-    // calls would silently lose its strategy on the second one. Non-object
-    // input passes through untouched so serde reports its own error rather
-    // than `Object.assign` reshaping it into something with missing fields.
+    // Onto a shallow copy, never the caller's object: a config reused across
+    // calls would silently lose its strategy on the second one.
+    //
+    // The deletes cannot report failure on a property `Object::assign` copied.
+    // It writes through [[Set]] onto a fresh object, which produces plain
+    // configurable data properties — so a source property that was frozen or
+    // non-configurable arrives here deletable, and a non-enumerable one was
+    // never copied at all (the `Reflect::get` above still saw it on the
+    // original, so such a strategy is used, not lost). Keep that in mind if
+    // this ever stops going through `Object::assign`.
+    //
+    // The `dyn_ref` guard costs nothing but rarely decides anything: a caller
+    // passing a primitive has already been rejected by the `Reflect::get`
+    // above with "called on non-object". Arrays and functions do reach it, and
+    // `Object::assign` flattens them into an object serde then rejects for the
+    // fields it is missing.
     let opts = match opts.dyn_ref::<js_sys::Object>() {
         Some(obj) => {
             let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
