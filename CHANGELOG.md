@@ -17,8 +17,10 @@ uses the promoted section as the GitHub release notes.
 
 ### Added
 
-- **The wasm build declares the real option types.** `wasm-pack` types every
-  export as `(client: WasmClient, opts: any): Promise<any>`, so until now the
+- **The wasm build declares the real option types**, emitted by wasm-bindgen
+  from `typescript_type` / `typescript_custom_section` attributes on the Rust.
+  Previously it typed every export as `(client: WasmClient, opts: any):
+  Promise<any>`, so the
   `./wasm` and `./wasm-inline` entries checked nothing and exported no option
   or payload types at all — while the Neon entry declared fourteen. Both
   entries now name the same types.

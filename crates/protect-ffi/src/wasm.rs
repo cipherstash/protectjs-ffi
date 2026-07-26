@@ -56,6 +56,99 @@ use crate::{
 use cipherstash_client::AutoStrategy;
 
 // ---------------------------------------------------------------------------
+// TypeScript declarations
+// ---------------------------------------------------------------------------
+
+/// TypeScript emitted verbatim into `dist/wasm/protect_ffi.d.ts`.
+///
+/// wasm-bindgen appends `typescript_custom_section` content to the generated
+/// `.d.ts`, and `typescript_type` below names these types in the signatures.
+/// Together that means the declarations are produced by the build rather than
+/// patched on afterwards, so they cannot drift from the Rust and there is no
+/// post-processing step to keep in sync with wasm-bindgen's output format.
+///
+/// `../../lib/` is a relative path inside the package, so it resolves for every
+/// consumer without naming the Neon entry — which matters, because this is the
+/// bundle whose whole purpose is to avoid loading a native binary (#142).
+#[wasm_bindgen(typescript_custom_section)]
+const TYPESCRIPT_DECLARATIONS: &'static str = r#"
+import type {
+  DecryptBulkOptions,
+  DecryptOptions,
+  Encrypted,
+  EncryptedPayload,
+  EncryptedQuery,
+  EncryptBulkOptions,
+  EncryptOptions,
+  EncryptQueryBulkOptions,
+  EncryptQueryOptions,
+  JsPlaintext,
+  NewClientOptions,
+} from "../../lib/types.js";
+import type { EncryptedV3Query } from "../../lib/eql-v3.js";
+
+export type * from "../../lib/types.js";
+export type { EncryptedV3, EncryptedV3Query } from "../../lib/eql-v3.js";
+
+/**
+ * Per-item result from `decryptBulkFallible`.
+ *
+ * Narrower than the Neon entry's `DecryptResult`, which also carries
+ * `code?: ProtectErrorCode`. That field is not produced by Rust — the Neon
+ * wrapper adds it in JS by running `inferErrorCode(item.error)` over the
+ * message. This build returns what Rust serializes, so the field is absent
+ * rather than optional-and-never-set.
+ */
+export type WasmDecryptResult =
+  | { data: JsPlaintext }
+  | { error: string };
+"#;
+
+/// Newtypes over `JsValue` that carry a TypeScript type into the generated
+/// signatures.
+///
+/// Without these every export is `(client: WasmClient, opts: any) =>
+/// Promise<any>`, because wasm-bindgen only sees `JsValue`. The names on the
+/// right are resolved against the declarations above.
+///
+/// They are safe to assert because `wasm.rs` deserializes each `opts` into the
+/// SAME Rust struct the Neon entry does and calls the same `do_*` helper — the
+/// accepted shape is identical by construction, not by convention.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(typescript_type = "NewClientOptions")]
+    pub type NewClientOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptOptions")]
+    pub type EncryptOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptBulkOptions")]
+    pub type EncryptBulkOptionsJs;
+    #[wasm_bindgen(typescript_type = "DecryptOptions")]
+    pub type DecryptOptionsJs;
+    #[wasm_bindgen(typescript_type = "DecryptBulkOptions")]
+    pub type DecryptBulkOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptQueryOptions")]
+    pub type EncryptQueryOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptQueryBulkOptions")]
+    pub type EncryptQueryBulkOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptedPayload")]
+    pub type EncryptedPayloadJs;
+    #[wasm_bindgen(typescript_type = "EncryptedPayload[]")]
+    pub type EncryptedPayloadArrayJs;
+    #[wasm_bindgen(typescript_type = "JsPlaintext")]
+    pub type JsPlaintextJs;
+    #[wasm_bindgen(typescript_type = "JsPlaintext[]")]
+    pub type JsPlaintextArrayJs;
+    #[wasm_bindgen(typescript_type = "WasmDecryptResult[]")]
+    pub type WasmDecryptResultArrayJs;
+    #[wasm_bindgen(typescript_type = "Encrypted | EncryptedQuery | EncryptedV3Query")]
+    pub type QueryTermJs;
+    #[wasm_bindgen(typescript_type = "(Encrypted | EncryptedQuery | EncryptedV3Query)[]")]
+    pub type QueryTermArrayJs;
+    #[wasm_bindgen(typescript_type = "unknown")]
+    pub type UnknownJs;
+}
+
+// ---------------------------------------------------------------------------
 // Module init
 // ---------------------------------------------------------------------------
 
@@ -278,7 +371,8 @@ pub struct WasmClient {
 /// fallback). Nothing about the options shape differs, so callers write one
 /// config for both entries.
 #[wasm_bindgen(js_name = newClient)]
-pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
+pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue> {
+    let opts: JsValue = opts.into();
     // Extract the strategy before serde — the JS function on it can't survive
     // serde_wasm_bindgen, and the rest of the opts has no JS-callable fields.
     // (The Neon entry gets it as a separate argument for the same reason: its
@@ -355,67 +449,88 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
 // sites between native and Edge runtimes.
 
 #[wasm_bindgen]
-pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext(&opts)?;
+pub async fn encrypt(
+    client: &WasmClient,
+    opts: EncryptOptionsJs,
+) -> Result<EncryptedPayloadJs, JsValue> {
+    let opts = encode_plaintext(&opts.into())?;
     let opts: EncryptOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = encryptBulk)]
-pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext_list(&opts, "plaintexts")?;
+pub async fn encrypt_bulk(
+    client: &WasmClient,
+    opts: EncryptBulkOptionsJs,
+) -> Result<EncryptedPayloadArrayJs, JsValue> {
+    let opts = encode_plaintext_list(&opts.into(), "plaintexts")?;
     let opts: EncryptBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_bulk(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = encryptQuery)]
-pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext(&opts)?;
+pub async fn encrypt_query(
+    client: &WasmClient,
+    opts: EncryptQueryOptionsJs,
+) -> Result<QueryTermJs, JsValue> {
+    let opts = encode_plaintext(&opts.into())?;
     let opts: EncryptQueryOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = encryptQueryBulk)]
-pub async fn encrypt_query_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext_list(&opts, "queries")?;
+pub async fn encrypt_query_bulk(
+    client: &WasmClient,
+    opts: EncryptQueryBulkOptionsJs,
+) -> Result<QueryTermArrayJs, JsValue> {
+    let opts = encode_plaintext_list(&opts.into(), "queries")?;
     let opts: EncryptQueryBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query_bulk(client, opts)
         .await
         .map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen]
-pub async fn decrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+pub async fn decrypt(
+    client: &WasmClient,
+    opts: DecryptOptionsJs,
+) -> Result<JsPlaintextJs, JsValue> {
     let opts: DecryptOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt(client, opts).await.map_err(error_to_js)?;
-    plaintext_to_js(&out)
+    plaintext_to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = decryptBulk)]
-pub async fn decrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+pub async fn decrypt_bulk(
+    client: &WasmClient,
+    opts: DecryptBulkOptionsJs,
+) -> Result<JsPlaintextArrayJs, JsValue> {
     let opts: DecryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt_bulk(client, opts).await.map_err(error_to_js)?;
     let arr = js_sys::Array::new();
     for plaintext in &out {
         arr.push(&plaintext_to_js(plaintext)?);
     }
-    Ok(arr.into())
+    Ok(arr.unchecked_into())
 }
 
 #[wasm_bindgen(js_name = decryptBulkFallible)]
-pub async fn decrypt_bulk_fallible(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+pub async fn decrypt_bulk_fallible(
+    client: &WasmClient,
+    opts: DecryptBulkOptionsJs,
+) -> Result<WasmDecryptResultArrayJs, JsValue> {
     let opts: DecryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt_bulk_fallible(client, opts)
         .await
         .map_err(error_to_js)?;
@@ -432,12 +547,12 @@ pub async fn decrypt_bulk_fallible(client: &WasmClient, opts: JsValue) -> Result
         }
         arr.push(&obj);
     }
-    Ok(arr.into())
+    Ok(arr.unchecked_into())
 }
 
 #[wasm_bindgen(js_name = isEncrypted)]
-pub fn is_encrypted(raw: JsValue) -> bool {
-    let Ok(v) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw) else {
+pub fn is_encrypted(raw: UnknownJs) -> bool {
+    let Ok(v) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw.into()) else {
         return false;
     };
     is_encrypted_value(&v)

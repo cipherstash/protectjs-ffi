@@ -1,17 +1,21 @@
 /**
  * Type tests for the wasm build's declarations (#142).
  *
- * These run against the PATCHED `dist/wasm/protect_ffi.d.ts` — the output of
- * `scripts/type-wasm-dts.mjs` — so they need a wasm build first. That is why
- * they live outside `src/` and outside both root tsconfigs: `npm test` must
- * still pass in a fresh clone with no `dist/`. CI runs them in the `wasm` job,
- * immediately after `npm run build:wasm`, via `npm run test:typecheck:wasm`.
+ * These run against the GENERATED `dist/wasm/protect_ffi.d.ts`, so they need a
+ * wasm build first. That is why they live outside `src/` and outside both root
+ * tsconfigs: `npm test` must still pass in a fresh clone with no `dist/`. CI
+ * runs them in the `wasm` job, immediately after `npm run build:wasm`, via
+ * `npm run test:typecheck:wasm`.
+ *
+ * The declarations come from `typescript_custom_section` and `typescript_type`
+ * in `crates/protect-ffi/src/wasm.rs` — wasm-bindgen emits them, so they cannot
+ * drift from the signatures they describe. What these tests still earn is the
+ * other half: that the types describe the RUST's actual contract, which no
+ * compiler checks.
  *
  * The negative cases carry `@ts-expect-error`, which makes this file
  * self-verifying in both directions: if a declaration stops catching the
- * mistake below it, the suppression becomes unused and tsc fails. A test that
- * silently stops testing is the failure mode worth engineering against here,
- * because the thing under test is regenerated on every build.
+ * mistake below it, the suppression becomes unused and tsc fails.
  */
 
 import {
