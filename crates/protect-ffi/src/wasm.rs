@@ -481,6 +481,26 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
         Some(JsAuthStrategy::new(strategy.clone(), get_token))
     };
 
+    // Both auth keys are handled above, so neither is a field of
+    // `NewClientOptions` — and that struct denies unknown fields. Strip them
+    // before serde sees the object.
+    //
+    // On a shallow copy, never the caller's object: a config reused across
+    // calls would silently lose its strategy on the second one. Non-object
+    // input passes through untouched so serde reports its own error rather
+    // than `Object.assign` reshaping it into something with missing fields.
+    let opts = match opts.dyn_ref::<js_sys::Object>() {
+        Some(obj) => {
+            let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
+            for key in ["authStrategy", "strategy"] {
+                js_sys::Reflect::delete_property(&clone, &JsValue::from_str(key))
+                    .map_err(|e| js_error(&format!("opts.{key} could not be removed: {e:?}")))?;
+            }
+            clone.into()
+        }
+        None => opts,
+    };
+
     let opts: NewClientOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 

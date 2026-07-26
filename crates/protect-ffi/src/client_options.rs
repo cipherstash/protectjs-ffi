@@ -41,6 +41,7 @@ use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::encrypt_config::EncryptConfigInput;
+use crate::DenyUnknown;
 use crate::Error;
 
 /// Parse `clientId`, naming the field on failure.
@@ -99,6 +100,14 @@ where
 /// back to `~/.cipherstash/secretkey.json`, and wasm — which has no filesystem
 /// and no readable environment — reports what is missing from
 /// [`CredentialOpts::build_key_provider`].
+///
+/// No `deny_unknown_fields` of its own: this is a `#[serde(flatten)]` target,
+/// and a flattened struct is fed the outer struct's leftovers through
+/// `FlatMapDeserializer`, which ignores what it doesn't recognise no matter
+/// what the inner struct asks for. The rejection has to happen on the outer
+/// struct — [`ClientOpts`] and [`EnsureKeysetOpts`] both carry it, and both are
+/// already on the map path this needs (see [`DenyUnknown`]) by virtue of
+/// flattening this.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialOpts {
@@ -191,7 +200,7 @@ impl CredentialOpts {
 
 /// `newClient`'s `clientOpts`: credentials, plus which keyset to scope to.
 #[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ClientOpts {
     #[serde(flatten)]
     pub(crate) creds: CredentialOpts,
@@ -208,7 +217,7 @@ pub(crate) struct ClientOpts {
 /// than sitting there as dead code.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct EnsureKeysetOpts {
     pub(crate) name: String,
     #[serde(flatten)]
@@ -223,7 +232,7 @@ pub(crate) struct EnsureKeysetResult {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct NewClientOptions {
     pub(crate) encrypt_config: EncryptConfigInput,
     pub(crate) client_opts: Option<ClientOpts>,
@@ -233,6 +242,8 @@ pub(crate) struct NewClientOptions {
     /// credentials + keyset) because it configures the encryption output
     /// format.
     pub(crate) eql_version: Option<u8>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[cfg(test)]
@@ -257,6 +268,14 @@ mod tests {
 
     fn new_client_options(value: serde_json::Value) -> Result<NewClientOptions, serde_json::Error> {
         serde_json::from_value(value)
+    }
+
+    /// `NewClientOptions` reaches `ClientOpts`, so it is not `Debug` either.
+    fn new_client_options_err(value: serde_json::Value) -> String {
+        match new_client_options(value) {
+            Ok(_) => panic!("expected a deserialization error"),
+            Err(e) => e.to_string(),
+        }
     }
 
     fn minimal_config() -> serde_json::Value {
@@ -326,21 +345,27 @@ mod tests {
     // --- unknown keys ------------------------------------------------------
 
     #[test]
-    fn unknown_keys_are_dropped_rather_than_rejected() {
-        // Pinning the CURRENT behaviour, not endorsing it — #147 changes this
-        // to a hard error. Until then the CHANGELOG has to tell callers to move
-        // `keyset` by hand, because nothing else will.
-        let opts = new_client_options(json!({
+    fn an_unknown_key_is_rejected_by_name() {
+        // #144. These used to deserialize and be dropped: a top-level `keyset`
+        // or `clientId` did not become a `clientOpts`, it became nothing, and
+        // the caller found out later — or not at all.
+        let err = new_client_options_err(json!({
+            "encryptConfig": minimal_config(),
+            "totallyMadeUp": 42,
+        }));
+        assert!(err.contains("unknown field `totallyMadeUp`"), "got: {err}");
+    }
+
+    #[test]
+    fn a_misplaced_keyset_is_rejected_rather_than_dropped() {
+        // The wasm entry took `keyset` at the top level before #142. Moving it
+        // under `clientOpts` is now a failure a caller can see, not a silent
+        // downgrade to the default keyset.
+        let err = new_client_options_err(json!({
             "encryptConfig": minimal_config(),
             "keyset": {"Name": "prod"},
-            "clientId": ID,
-            "totallyMadeUp": 42,
-        }))
-        .expect("unknown keys deserialize today");
-        assert!(
-            opts.client_opts.is_none(),
-            "a top-level keyset/clientId does not become a clientOpts"
-        );
+        }));
+        assert!(err.contains("unknown field `keyset`"), "got: {err}");
     }
 
     // --- clientId ----------------------------------------------------------

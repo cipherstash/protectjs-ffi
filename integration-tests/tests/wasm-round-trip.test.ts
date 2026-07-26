@@ -458,4 +458,65 @@ describe('wasm newClient validation', () => {
       }),
     ).rejects.toThrow(/opts\.strategy\.getToken is not a function/)
   })
+
+  // Unknown keys (#144). This boundary is where it matters: serde-wasm-bindgen
+  // reads a struct by looking up the fields it expects, so an undeclared key is
+  // invisible to it and `deny_unknown_fields` alone rejects nothing. The
+  // `DenyUnknown` marker in `crates/protect-ffi/src/lib.rs` is what puts these
+  // objects on the path that enumerates them. The Neon half is
+  // `strict-options.test.ts`.
+  test('rejects credentials passed at the top level', async () => {
+    // Exactly how #144 was found: four integration tests in #143 failed with
+    // "clientOpts.clientId and clientOpts.clientKey are required" while
+    // passing both, because the credentials had moved under `clientOpts` and
+    // the old top-level spelling was being dropped in silence.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        encryptConfig: minimalConfig,
+        clientId: '8f7ae6de-6b6a-4f9e-9dd4-2b2e39bc3b52',
+        clientKey: 'ab',
+      }),
+    ).rejects.toThrow(/unknown field `clientId`/)
+  })
+
+  test('rejects an unknown key inside clientOpts', async () => {
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        encryptConfig: minimalConfig,
+        clientOpts: { region: 'ap-southeast-2' },
+      }),
+    ).rejects.toThrow(/unknown field `region`/)
+  })
+
+  test('still accepts the deprecated `strategy` name', async () => {
+    // Both auth keys are lifted off the object with `Reflect` and stripped
+    // before serde, since a struct that denies unknown fields would otherwise
+    // reject them. Reaching the credential error proves the whole round trip:
+    // the key was accepted, used as the strategy, and removed.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        strategy: { getToken: async () => ({ token: 'unused' }) },
+        encryptConfig: minimalConfig,
+      }),
+    ).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+  })
+
+  test('strips the auth strategy from a copy, not the caller object', async () => {
+    // A config reused across calls would otherwise lose its strategy on the
+    // second one.
+    const wasm = await loadWasm<WasmModule>()
+    const opts = {
+      authStrategy: { getToken: async () => ({ token: 'unused' }) },
+      encryptConfig: minimalConfig,
+    }
+    await expect(wasm.newClient(opts)).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+    expect('authStrategy' in opts).toBe(true)
+  })
 })

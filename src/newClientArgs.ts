@@ -34,16 +34,19 @@ export type NativeNewClientOptions = {
 export function newClientArgs(
   opts: NewClientOptions,
 ): [NativeNewClientOptions, AuthStrategy | undefined] {
+  // Pull out only what this layer has to handle — the auth strategy and
+  // `clientOpts` (credentials are filled in from env here). Everything else is
+  // forwarded verbatim rather than re-listed field by field, so a key the Rust
+  // doesn't recognise reaches serde and is rejected by name instead of being
+  // quietly dropped on the way through. The wasm entry rejects the same input
+  // the same way.
+  const { authStrategy, strategy, clientOpts, ...rest } = opts
   return [
-    {
-      encryptConfig: opts.encryptConfig,
-      clientOpts: withEnvCredentials(opts.clientOpts),
-      eqlVersion: opts.eqlVersion,
-    },
+    { ...rest, clientOpts: withEnvCredentials(clientOpts) },
     // `strategy` is the old name for `authStrategy`, kept working while it is
     // deprecated. The new name wins when both are set — a rename is only safe
     // if it does, or a caller mid-migration passing both silently keeps the old
     // object.
-    opts.authStrategy ?? opts.strategy,
+    authStrategy ?? strategy,
   ]
 }
