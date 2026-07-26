@@ -16,7 +16,7 @@ use cipherstash_client::{
     schema::{
         column::{Index, IndexType},
         errors::ConfigError,
-        CanonicalEncryptionConfig, ColumnConfig, Identifier,
+        ColumnConfig, Identifier,
     },
     zerokms::{
         self, FallbackKeyProvider, KeyProvider, RecordDecryptError, SecretKey, WithContext,
