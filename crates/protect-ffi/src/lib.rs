@@ -50,6 +50,8 @@ use std::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::Runtime;
+use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(test)]
 extern crate quickcheck;
@@ -700,20 +702,37 @@ impl AuthStrategy for &NodeAuthStrategy {
 #[cfg(not(target_arch = "wasm32"))]
 type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 
+/// A hex-encoded secret that wipes its buffer on drop.
+///
+/// `#[serde(transparent)]` means a bare JS string deserializes straight into
+/// it, so this costs nothing at the boundary. Without it the raw hex sits in a
+/// plain `String` until the allocator happens to reuse the page — including on
+/// every early error path between deserialization and the point the bytes are
+/// consumed into a [`SecretKey`].
+///
+/// Originally wasm-only. It applies to both targets for the same reason, so it
+/// lives here now and the Neon path gets the same guarantee.
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(transparent)]
+pub(crate) struct HexSecret(pub(crate) String);
+
 /// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct CredentialOpts {
+pub(crate) struct CredentialOpts {
     workspace_crn: Option<Crn>,
     access_key: Option<String>,
-    client_id: Option<String>,
-    client_key: Option<String>,
+    /// UUID identifying the client key. Typed as [`Uuid`] rather than `String`
+    /// so a malformed value fails at deserialization, naming the field, rather
+    /// than surfacing later from inside the key provider.
+    client_id: Option<Uuid>,
+    client_key: Option<HexSecret>,
 }
 
 impl CredentialOpts {
     /// Build an [`AutoStrategy`] from optional workspace CRN and access key,
     /// falling back to env vars and profile store for unset fields.
-    fn build_strategy(&self) -> Result<AutoStrategy, Error> {
+    pub(crate) fn build_strategy(&self) -> Result<AutoStrategy, Error> {
         let mut builder = AutoStrategy::builder();
         if let Some(key) = self.access_key.as_ref() {
             builder = builder.with_access_key(key);
@@ -726,15 +745,26 @@ impl CredentialOpts {
 
     /// Build an `Option<SecretKey>` from the `client_id` + `client_key` pair.
     ///
-    /// Returns `None` if either field is missing (triggers `FallbackKeyProvider` to try the
-    /// profile store). Returns `Err` if the values are present but invalid.
+    /// Returns `None` if either field is missing — on the Neon target that
+    /// triggers `FallbackKeyProvider` to try the profile store; on wasm it is
+    /// an error, since there is no store to fall back to. Returns `Err` if the
+    /// values are present but invalid.
+    ///
+    /// Decodes the hex in place rather than via `SecretKey::from_hex`.
+    /// `from_hex` takes owned `String`s, which would mean cloning the key out
+    /// of [`HexSecret`] into an allocation nothing wipes — defeating the point
+    /// of the wrapper. Going through `ViturKeyMaterial` keeps the only
+    /// long-lived copy of the hex inside the zeroizing buffer.
     fn secret_key(&self) -> Result<Option<SecretKey>, Error> {
-        match (self.client_id.as_ref(), self.client_key.as_ref()) {
-            (Some(id), Some(key)) => SecretKey::from_hex(id.clone(), key.clone())
-                .map(Some)
-                .map_err(|e| Error::Credentials(e.to_string())),
-            _ => Ok(None),
-        }
+        let (Some(client_id), Some(client_key)) = (self.client_id, self.client_key.as_ref()) else {
+            return Ok(None);
+        };
+        let bytes = hex::decode(client_key.0.as_bytes())
+            .map_err(|e| Error::Credentials(format!("invalid clientKey: invalid hex: {e}")))?;
+        Ok(Some(SecretKey::new(
+            client_id,
+            zerokms::ViturKeyMaterial::from(bytes),
+        )))
     }
 
     /// Build a key provider that resolves the client key from explicit fields,
@@ -742,9 +772,6 @@ impl CredentialOpts {
     ///
     /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
     /// and passed through as explicit fields to support Bun.
-    ///
-    /// Wasm32 has no filesystem — the wasm binding will pass the client key
-    /// inline instead and skip the fallback path entirely.
     #[cfg(not(target_arch = "wasm32"))]
     fn build_key_provider(
         &self,
@@ -754,14 +781,35 @@ impl CredentialOpts {
             stack_profile::ProfileStore::default(),
         ))
     }
+
+    /// Build a key provider for wasm: the explicit client key, and nothing
+    /// else.
+    ///
+    /// Same name and same call shape as the Neon version above, so
+    /// `new_client` reads identically on both targets and the divergence stays
+    /// confined to this one function. What differs is only what wasm cannot
+    /// have: there is no filesystem, so no `~/.cipherstash/secretkey.json` to
+    /// fall back to, which makes the credentials required rather than
+    /// optional. Erroring here names the missing fields; letting `None` through
+    /// would fail later inside ZeroKMS with something far less useful.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn build_key_provider(&self) -> Result<SecretKey, Error> {
+        self.secret_key()?.ok_or_else(|| {
+            Error::Credentials(
+                "clientOpts.clientId and clientOpts.clientKey are required — this build has no \
+                 profile store to fall back to"
+                    .to_string(),
+            )
+        })
+    }
 }
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ClientOpts {
+pub(crate) struct ClientOpts {
     #[serde(flatten)]
-    creds: CredentialOpts,
-    keyset: Option<IdentifiedBy>,
+    pub(crate) creds: CredentialOpts,
+    pub(crate) keyset: Option<IdentifiedBy>,
 }
 
 #[derive(Deserialize)]
@@ -780,14 +828,14 @@ struct EnsureKeysetResult {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NewClientOptions {
-    encrypt_config: CanonicalEncryptionConfig,
-    client_opts: Option<ClientOpts>,
+pub(crate) struct NewClientOptions {
+    pub(crate) encrypt_config: CanonicalEncryptionConfig,
+    pub(crate) client_opts: Option<ClientOpts>,
     /// EQL wire version to emit: 2 or 3. When omitted, SteVec configurations
     /// use v3 and scalar-only configurations retain the v2 default. Sits alongside
     /// `encrypt_config` (not in `client_opts`, which carries credentials +
     /// keyset) because it configures the encryption output format.
-    eql_version: Option<u8>,
+    pub(crate) eql_version: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]

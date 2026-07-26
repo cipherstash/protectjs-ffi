@@ -38,17 +38,12 @@ use cipherstash_client::eql::{
     encrypt_eql, encrypt_eql_v3, EqlEncryptOpts, EqlOperation, Identifier as EqlIdentifier,
     PreparedPlaintext,
 };
-use cipherstash_client::schema::{CanonicalEncryptionConfig, ColumnConfig, Identifier};
-use cipherstash_client::zerokms::{
-    self, SecretKey, ViturKeyMaterial, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey,
-};
-use cipherstash_client::IdentifiedBy;
-use serde::{Deserialize, Serialize};
+use cipherstash_client::schema::{ColumnConfig, Identifier};
+use cipherstash_client::zerokms::{self, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey};
+use serde::Serialize;
 use stack_auth::{AuthError, AuthStrategy, SecretToken, ServerError, ServiceToken};
-use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
@@ -56,8 +51,9 @@ use crate::{
     into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_output,
     query_output_v3, resolve_eql_version, storage_output, storage_output_v3, DecryptBulkOptions,
     DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions, EncryptQueryBulkOptions,
-    EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
+    EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, NewClientOptions, QueryOutput,
 };
+use cipherstash_client::AutoStrategy;
 
 // ---------------------------------------------------------------------------
 // Module init
@@ -214,45 +210,46 @@ fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
 /// Wasm-side client handle. Wraps the same `ScopedCipher` +
 /// `ZeroKMSWithClientKey` pair the Neon side does, parameterised by
 /// [`JsAuthStrategy`] instead of `AutoStrategy`.
+/// The two ways this build can authenticate.
+///
+/// Mirrors the Neon side's `NodeAuthStrategy` so `new_client` has the same
+/// shape on both targets: a caller-supplied JS strategy, or — when none is
+/// given — whatever `CredentialOpts::build_strategy()` resolves.
+///
+/// On wasm that resolution is `AutoStrategy`'s `target_arch = "wasm32"` arm,
+/// which is access-key-only: `stack-auth` compiles out the profile-store
+/// fallback because there is no filesystem to read. So "auto" here means
+/// exactly "build an `AccessKeyStrategy` from the supplied workspace CRN and
+/// access key", which is the wasm equivalent of the Neon default.
+///
+/// Note that `AutoStrategy`'s own environment lookup never fires here:
+/// `std::env::var` on `wasm32-unknown-unknown` always returns `Err`, since std
+/// falls back to its `unsupported` env backend. That costs nothing, because
+/// the builder consults explicit values first and the JS layer already reads
+/// env and passes credentials through as explicit fields — the same
+/// arrangement the Neon path uses for Bun.
+enum WasmAuthStrategy {
+    Auto(Box<AutoStrategy>),
+    JsBacked(JsAuthStrategy),
+}
+
+impl AuthStrategy for &WasmAuthStrategy {
+    async fn get_token(self) -> Result<ServiceToken, AuthError> {
+        match self {
+            WasmAuthStrategy::Auto(s) => (&**s).get_token().await,
+            WasmAuthStrategy::JsBacked(s) => s.get_token().await,
+        }
+    }
+}
+
 #[wasm_bindgen]
 pub struct WasmClient {
-    cipher: Arc<ScopedCipher<JsAuthStrategy>>,
-    zerokms: Arc<ZeroKMSWithClientKey<JsAuthStrategy>>,
+    cipher: Arc<ScopedCipher<WasmAuthStrategy>>,
+    zerokms: Arc<ZeroKMSWithClientKey<WasmAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
     /// EQL wire version this client emits. Decryption accepts both formats
     /// regardless of this setting.
     eql_version: EqlVersion,
-}
-
-/// Hex-encoded secret material that zeroizes its buffer on drop.
-///
-/// Used as the deserialization target for the client key so the raw hex
-/// material lives only inside a zeroize-on-drop wrapper from the moment
-/// serde produces it — even if `new_client` panics or returns early before
-/// the key is consumed into `SecretKey`. `#[serde(transparent)]` makes a
-/// bare JS string deserialize into it without any schema change.
-#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
-#[serde(transparent)]
-struct HexSecret(String);
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NewClientOpts {
-    encrypt_config: CanonicalEncryptionConfig,
-    /// UUID identifying the client key (workspace's data-encryption keyset).
-    /// Typed as `Uuid` so a malformed value fails at deserialization rather
-    /// than later inside `from_hex`.
-    client_id: Uuid,
-    /// Hex-encoded v1 client key. Required — wasm has no
-    /// `~/.cipherstash/secretkey.json` fallback. Wrapped in [`HexSecret`]
-    /// so the raw hex buffer is zeroized on drop, including on any early
-    /// error path before the bytes are moved into `SecretKey`.
-    client_key: HexSecret,
-    /// Optional keyset identifier (id or name). `None` uses the default
-    /// keyset granted to the client.
-    keyset: Option<IdentifiedBy>,
-    /// EQL wire version to emit: 2 (default) or 3.
-    eql_version: Option<u8>,
 }
 
 /// Construct a [`WasmClient`].
@@ -270,11 +267,22 @@ struct NewClientOpts {
 /// `authStrategy` wins when both are present. The new name matches
 /// `@cipherstash/stack`'s `config.authStrategy`.
 ///
-/// One of the two is required: wasm has no env / filesystem fallback path.
+/// Omitting it is fine: `clientOpts.accessKey` + `clientOpts.workspaceCrn`
+/// then resolve an `AccessKeyStrategy` through the same
+/// `CredentialOpts::build_strategy()` the Neon entry uses.
+///
+/// Takes the SAME [`NewClientOptions`] as the Neon `newClient`, and the body
+/// below is deliberately the same sequence. Everything that genuinely differs
+/// between the targets is confined to `CredentialOpts::build_key_provider`
+/// (no profile store here) and `AutoStrategy`'s own wasm arm (no filesystem
+/// fallback). Nothing about the options shape differs, so callers write one
+/// config for both entries.
 #[wasm_bindgen(js_name = newClient)]
 pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     // Extract the strategy before serde — the JS function on it can't survive
     // serde_wasm_bindgen, and the rest of the opts has no JS-callable fields.
+    // (The Neon entry gets it as a separate argument for the same reason: its
+    // `Json` extractor is JSON.stringify-based, which would drop a function.)
     //
     // `authStrategy` first, then the deprecated `strategy`. Read both rather
     // than either/or so a caller mid-migration, or one passing an object that
@@ -287,47 +295,43 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
     } else {
         strategy
     };
-    if strategy.is_undefined() || strategy.is_null() {
-        return Err(js_error("opts.authStrategy is required"));
-    }
-    let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
-        .map_err(|e| js_error(&format!("opts.authStrategy.getToken not found: {e:?}")))?;
-    let get_token: js_sys::Function = get_token
-        .dyn_into()
-        .map_err(|_| js_error("opts.authStrategy.getToken is not a function"))?;
-    let auth = JsAuthStrategy::new(strategy.clone(), get_token);
+    let js_strategy = if strategy.is_undefined() || strategy.is_null() {
+        None
+    } else {
+        let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
+            .map_err(|e| js_error(&format!("opts.authStrategy.getToken not found: {e:?}")))?;
+        let get_token: js_sys::Function = get_token
+            .dyn_into()
+            .map_err(|_| js_error("opts.authStrategy.getToken is not a function"))?;
+        Some(JsAuthStrategy::new(strategy.clone(), get_token))
+    };
 
-    let mut opts: NewClientOpts =
+    let opts: NewClientOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
-    // Resolve before any network I/O. Client 0.42's SteVec envelope is
-    // v3-only; scalar-only configurations keep the historical v2 default.
+    // From here down this mirrors the Neon `new_client` line for line.
     let encrypt_config = opts
         .encrypt_config
         .into_config_map()
         .map_err(|e| js_error(&e.to_string()))?;
     let eql_version =
         resolve_eql_version(opts.eql_version, &encrypt_config).map_err(error_to_js)?;
+    let client_opts = opts.client_opts.unwrap_or_default();
 
-    // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
-    // `from_hex` takes a `String` for the UUID, which would force an
-    // `opts.client_id.to_string()` allocation that the round-trip parses back
-    // to `Uuid` — and that allocation is never zeroized. By decoding here we
-    // (a) keep the already-parsed `Uuid` and (b) keep the hex bytes inside
-    // `HexSecret`, which zeroizes on drop even on the error path.
-    let bytes_result = hex::decode(opts.client_key.0.as_bytes());
-    opts.client_key.0.zeroize();
-    let bytes =
-        bytes_result.map_err(|e| js_error(&format!("invalid clientKey: invalid hex: {e}")))?;
-    let secret_key = SecretKey::new(opts.client_id, ViturKeyMaterial::from(bytes));
-
+    let auth = match js_strategy {
+        Some(s) => WasmAuthStrategy::JsBacked(s),
+        None => WasmAuthStrategy::Auto(Box::new(
+            client_opts.creds.build_strategy().map_err(error_to_js)?,
+        )),
+    };
     let zerokms = ZeroKMSBuilder::new(auth)
-        .with_key_provider(secret_key)
+        .with_key_provider(client_opts.creds.build_key_provider().map_err(error_to_js)?)
         .build()
         .await
         .map_err(|e| js_error(&e.to_string()))?;
+
     let zerokms = Arc::new(zerokms);
-    let cipher = ScopedCipher::init(zerokms.clone(), opts.keyset)
+    let cipher = ScopedCipher::init(zerokms.clone(), client_opts.keyset)
         .await
         .map_err(|e| js_error(&e.to_string()))?;
 

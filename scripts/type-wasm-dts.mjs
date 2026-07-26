@@ -56,8 +56,6 @@ const dtsPath = resolve(here, '..', 'dist', 'wasm', 'protect_ffi.d.ts')
  * entry — which is the whole point.
  */
 const IMPORT_BLOCK = `import type {
-  AuthStrategy,
-  CanonicalEncryptConfig,
   DecryptBulkOptions,
   DecryptOptions,
   Encrypted,
@@ -68,7 +66,8 @@ const IMPORT_BLOCK = `import type {
   EncryptQueryBulkOptions,
   EncryptQueryOptions,
   JsPlaintext,
-  KeysetIdentifier,
+  CanonicalEncryptConfig,
+  NewClientOptions,
 } from "../../lib/types.js";
 import type { EncryptedV3Query } from "../../lib/eql-v3.js";
 
@@ -84,46 +83,22 @@ const WASM_ONLY_TYPES = `
 /**
  * \`newClient\` options for this build.
  *
- * This is NOT the Neon entry's \`NewClientOptions\`. The two \`newClient\`
- * functions are the one place the bindings genuinely take different shapes,
- * because the Neon entry has a JS wrapper (\`src/index.cts\`) that preprocesses
- * its options and the wasm entry deserializes what it is given:
+ * The credential and keyset shape is now the SAME \`NewClientOptions\` the Neon
+ * entry takes — both deserialize into one Rust struct, and
+ * \`CredentialOpts::build_strategy()\` resolves an \`AccessKeyStrategy\` from
+ * \`clientOpts.accessKey\` + \`clientOpts.workspaceCrn\` here exactly as it
+ * resolves an \`AutoStrategy\` there. \`authStrategy\` is optional on both.
  *
- * - **Credentials are top level**, not nested under \`clientOpts\`, and
- *   \`clientId\` / \`clientKey\` are REQUIRED. The Neon wrapper fills these from
- *   \`CS_CLIENT_ID\` / \`CS_CLIENT_KEY\` via \`withEnvCredentials\`, and falls back
- *   to \`~/.cipherstash/secretkey.json\`. wasm has neither, so the caller
- *   supplies them. A \`clientOpts\` object here is silently ignored by serde.
- * - **\`encryptConfig\` must already be canonical.** The Neon wrapper runs
- *   \`normalizeEncryptConfig\` for you; wasm deserializes straight into
- *   \`CanonicalEncryptionConfig\`, so \`cast_as: 'string' | 'number' | 'bigint'\`
- *   reaches the Rust untranslated and fails there. Use
- *   {@link CanonicalEncryptConfig} — \`text\` / \`float\` / \`big_int\`.
- * - **\`authStrategy\` is required.** wasm has no env or filesystem fallback,
- *   so \`new_client\` rejects with "opts.authStrategy is required" before serde
- *   runs. Declaring it required turns that into a compile error.
+ * One field still differs, and it is a JS-layer gap rather than a Rust one:
+ * \`encryptConfig\` must already be in the CANONICAL \`cast_as\` vocabulary
+ * (\`text\` / \`float\` / \`big_int\`). Both bindings deserialize
+ * \`CanonicalEncryptionConfig\`, but the Neon entry has a JS wrapper that runs
+ * \`normalizeEncryptConfig\` for you first, and this binding has no wrapper to
+ * do it. Pass the public spellings (\`string\` / \`number\` / \`bigint\`) and
+ * they reach the Rust untranslated and fail there.
  */
-export type WasmNewClientOptions = {
-  /** Canonical \`cast_as\` vocabulary — NOT the public \`EncryptConfig\`. */
+export type WasmNewClientOptions = Omit<NewClientOptions, "encryptConfig"> & {
   encryptConfig: CanonicalEncryptConfig;
-  /** UUID of the client key. Required: no env or profile fallback here. */
-  clientId: string;
-  /** Hex-encoded v1 client key. Required, for the same reason. */
-  clientKey: string;
-  /** Defaults to the client's default keyset when omitted. */
-  keyset?: KeysetIdentifier;
-  /** EQL wire version to emit. Defaults to 2. */
-  eqlVersion?: 2 | 3;
-  /**
-   * Auth strategy — anything with \`getToken(): Promise<…>\`. Required on this
-   * build.
-   */
-  authStrategy: AuthStrategy;
-  /**
-   * @deprecated Renamed to \`authStrategy\`. Still honoured at runtime while
-   * deprecated, but pass \`authStrategy\` — it wins when both are set.
-   */
-  strategy?: AuthStrategy;
 };
 
 /**
