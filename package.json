@@ -14,6 +14,7 @@
   "scripts": {
     "test": "npm run test:typecheck && npm run test:unit && npm run test:lint && npm run test:format && npm run test:rust",
     "test:typecheck": "tsc && tsc -p tsconfig.test.json",
+    "test:typecheck:wasm": "tsc -p type-tests/tsconfig.json",
     "test:unit": "vitest run",
     "test:rust": "cargo test",
     "test:lint": "npm run test:lint:ts",
@@ -36,7 +37,7 @@
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
     "dryrun": "gh workflow run release.yml -f dryrun=true -f version=patch",
     "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack",
-    "postbuild:wasm": "node scripts/inline-wasm.mjs"
+    "postbuild:wasm": "node scripts/type-wasm-dts.mjs && node scripts/inline-wasm.mjs"
   },
   "author": "CipherStash <humans@cipherstash.com>",
   "license": "MIT",

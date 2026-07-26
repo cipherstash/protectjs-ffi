@@ -15,6 +15,43 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **The wasm build declares the real option types.** `wasm-pack` types every
+  export as `(client: WasmClient, opts: any): Promise<any>`, so until now the
+  `./wasm` and `./wasm-inline` entries checked nothing and exported no option
+  or payload types at all — while the Neon entry declared fourteen. Both
+  entries now name the same types.
+
+  This was not cosmetic. A consumer writing one interface over both bindings
+  had to import the option types from the Neon entry, since that was the only
+  place they existed — which put a `@cipherstash/protect-ffi` specifier into
+  the published types of a bundle whose entire purpose is to avoid loading a
+  native binary. ([#142])
+
+  Mistakes the wasm entry now catches at compile time, all of which previously
+  reached the Rust:
+
+  - `lockContext` at the top level of a bulk call. It belongs on each payload
+    item; at the top level serde drops it, and the values are encrypted
+    **unbound** while the caller believes they are identity-bound.
+  - A misspelled or unknown option key.
+  - `newClient` without `strategy`, which wasm requires — it has no env or
+    filesystem fallback.
+  - A closed-set value typo such as `indexType: 'matsh'`.
+  - A plaintext that is not a `JsPlaintext`.
+
+  The shared types moved to `src/types.ts` and are re-exported by the Neon
+  entry, so **its public surface is unchanged**.
+
+- **Two wasm-only types, for the places the bindings genuinely differ.**
+  `WasmNewClientOptions` makes `strategy` required. `WasmDecryptResult` omits
+  `code`, which Rust never emits — the Neon wrapper infers it in JS from the
+  error message, so on this entry the field is absent rather than
+  optional-and-never-set.
+
+[#142]: https://github.com/cipherstash/protectjs-ffi/issues/142
+
 ## [0.30.0] - 2026-07-20
 
 ### Breaking
