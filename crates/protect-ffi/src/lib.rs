@@ -418,8 +418,8 @@ impl Error {
     /// that would break the mapping fails `cargo test`, rather than silently
     /// degrading a caller's `code` to `UNKNOWN` at runtime.
     ///
-    /// Both boundaries route through this: the Neon entry via
-    /// `From<serde_json::Error>`, the wasm entry via `wasm::from_js_value`.
+    /// Both boundaries route through this: the Neon query entries via
+    /// `decode_coded_json`, the wasm entry via `wasm::from_js_value`.
     pub(crate) fn unknown_query_op(message: &str) -> Option<Self> {
         message
             .starts_with(query_op::UNKNOWN_QUERY_OP_PREFIX)
@@ -1830,12 +1830,33 @@ async fn do_encrypt_bulk(
     Ok(final_results)
 }
 
+/// Deserialize a Neon JSON argument through this crate's [`Error`] router.
+///
+/// `Json<T>` would deserialize before the export body and let neon turn a
+/// failure into its own message-only error. Extracting
+/// [`serde_json::value::RawValue`] lets neon stringify and retain the JSON
+/// without deserializing it into an options type. The typed parse happens here,
+/// where `UNKNOWN_QUERY_OP` can be attached, while preserving the direct
+/// `Json<T>` path's serde error details and field handling.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_coded_json<T>(Json(raw): Json<Box<serde_json::value::RawValue>>) -> Result<T, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_str(raw.get()).map_err(Error::from)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[neon::export]
 async fn encrypt_query(
     Boxed(client): Boxed<Client>,
-    Json(opts): Json<EncryptQueryOptions>,
+    raw_opts: Json<Box<serde_json::value::RawValue>>,
 ) -> Result<Json<QueryOutput>, impl for<'cx> TryIntoJs<'cx>> {
+    let opts = match decode_coded_json(raw_opts) {
+        Ok(opts) => opts,
+        Err(err) => return Err(into_js_error(err)),
+    };
+
     do_encrypt_query(client, opts)
         .await
         .map(Json)
@@ -1880,8 +1901,13 @@ async fn do_encrypt_query(client: Client, opts: EncryptQueryOptions) -> Result<Q
 #[neon::export]
 async fn encrypt_query_bulk(
     Boxed(client): Boxed<Client>,
-    Json(opts): Json<EncryptQueryBulkOptions>,
+    raw_opts: Json<Box<serde_json::value::RawValue>>,
 ) -> Result<Json<Vec<QueryOutput>>, impl for<'cx> TryIntoJs<'cx>> {
+    let opts = match decode_coded_json(raw_opts) {
+        Ok(opts) => opts,
+        Err(err) => return Err(into_js_error(err)),
+    };
+
     do_encrypt_query_bulk(client, opts)
         .await
         .map(Json)
@@ -2294,18 +2320,20 @@ mod tests {
             Error::from(err).error_code()
         }
 
-        /// Deserializes a real options object, so the assertion runs against
-        /// the message serde actually produces rather than a hand-written one.
+        /// Deserializes a real options object through the Neon query decoder,
+        /// so this assertion covers the boundary seam that assigns the code.
         fn deserialize_query_op(raw: serde_json::Value) -> Error {
-            serde_json::from_value::<EncryptQueryOptions>(serde_json::json!({
+            let raw = serde_json::value::to_raw_value(&serde_json::json!({
                 "plaintext": "x",
                 "column": "email",
                 "table": "users",
                 "queryOp": raw,
             }))
-            .map(|_| ())
-            .expect_err("an unknown queryOp is an error")
-            .into()
+            .expect("the test options serialize");
+
+            decode_coded_json::<EncryptQueryOptions>(Json(raw))
+                .map(|_| ())
+                .expect_err("an unknown queryOp is an error")
         }
 
         #[test]
