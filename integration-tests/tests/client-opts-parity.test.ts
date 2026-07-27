@@ -27,17 +27,19 @@
 // Neon.
 //
 // Every assertion below compares a call against the same call without the
-// stray key, on the same binding. Nothing asserts a particular message, so
-// these keep holding whichever way the divergence is closed, and they do not
-// care that the two bindings fail differently on clean input (wasm has no
-// profile store to fall back to).
+// stray key, on the same binding. Nothing asserts a particular message. These
+// are deliberately red while wasm treats the undeclared value differently;
+// they encode the existing Neon/main contract that an undeclared key is
+// ignored. A resolution that instead rejects unknown keys on both bindings
+// would need assertions for that different contract.
 //
 // # Prerequisites
 //
 // `npm run build:wasm` and a debug Neon build, both of which
 // `mise run test:integration` already does. No credentials and no network:
-// `newClient` deserializes its options before it touches auth, so every call
-// here fails locally. What is asserted is *which* failure comes back.
+// every clean call carries an invalid `eqlVersion`, which is rejected after
+// deserialization but before auth. A stray value that reaches serde replaces
+// that deterministic failure with its own type error.
 
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -66,11 +68,18 @@ const encryptConfig = {
 const clientId = '00000000-0000-0000-0000-000000000000'
 const clientKey = 'ab'.repeat(32)
 
-const clean = () => ({ encryptConfig, clientOpts: { clientId, clientKey } })
+const clean = () => ({
+  encryptConfig,
+  clientOpts: { clientId, clientKey },
+  // Deliberately invalid: resolve_eql_version rejects this after options have
+  // deserialized and before either binding can consult ambient credentials.
+  eqlVersion: 4,
+})
 
 const withExtra = (extra: unknown) => ({
   encryptConfig,
   clientOpts: { clientId, clientKey, extra },
+  eqlVersion: 4,
 })
 
 /**
@@ -128,7 +137,10 @@ describe('clientOpts parity across bindings', () => {
     'neon newClient ignores %s in clientOpts',
     async (_label, make) => {
       expect(
-        await failureOf(neonNewClient as unknown as NewClient, withExtra(make())),
+        await failureOf(
+          neonNewClient as unknown as NewClient,
+          withExtra(make()),
+        ),
       ).toBe(await failureOf(neonNewClient as unknown as NewClient, clean()))
     },
   )
@@ -143,6 +155,7 @@ describe('clientOpts parity across bindings', () => {
       encryptConfig,
       onRetry: () => {},
       clientOpts: { clientId, clientKey },
+      eqlVersion: 4,
     }
 
     expect(await failureOf(wasmNewClient, topLevel)).toBe(
