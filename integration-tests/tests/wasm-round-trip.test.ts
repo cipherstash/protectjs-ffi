@@ -386,6 +386,60 @@ describe('wasm round-trip', () => {
       score: null,
     })
   })
+
+  test('rejects unknown keys on the encrypt and decrypt options (#144)', async () => {
+    // This is the boundary the `DenyUnknown` marker exists for, and it needs a
+    // real client, so it sits here rather than in the credential-free suite
+    // below. serde-wasm-bindgen reads a struct by looking up the fields it
+    // expects — without the marker every assertion here would pass silently
+    // with the key dropped.
+    //
+    // `lokContext` on a bulk payload is the one that matters: dropped, the
+    // value encrypts UNBOUND while the caller believes it is identity-bound,
+    // and nothing in the output tells the two apart.
+    const env = requireEnv()
+    const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
+
+    const client = await wasm.newClient({
+      authStrategy: strategy,
+      encryptConfig: {
+        v: 1,
+        tables: { users: { email: { cast_as: 'text', indexes: {} } } },
+      },
+      clientOpts: { clientId: env.clientId, clientKey: env.clientKey },
+    })
+
+    await expect(
+      wasm.encrypt(client, {
+        plaintext: 'alice@example.com',
+        table: 'users',
+        column: 'email',
+        unverifedContext: { sub: 'user-1' },
+      }),
+    ).rejects.toThrow(/unknown field `unverifedContext`/)
+
+    await expect(
+      wasm.encryptBulk(client, {
+        plaintexts: [
+          {
+            plaintext: 'alice@example.com',
+            table: 'users',
+            column: 'email',
+            lokContext: { identityClaim: ['sub'] },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/unknown field `lokContext`/)
+
+    const ciphertext = await wasm.encrypt(client, {
+      plaintext: 'alice@example.com',
+      table: 'users',
+      column: 'email',
+    })
+    await expect(
+      wasm.decrypt(client, { ciphertext, lockContexts: { identityClaim: [] } }),
+    ).rejects.toThrow(/unknown field `lockContexts`/)
+  })
 })
 
 // `newClient` validation that needs no credentials and no network. Since the
@@ -488,6 +542,18 @@ describe('wasm newClient validation', () => {
         clientOpts: { region: 'ap-southeast-2' },
       }),
     ).rejects.toThrow(/unknown field `region`/)
+  })
+
+  // Neither case above needs `DenyUnknown`: `ClientOpts` reaches the map path
+  // through its own flattened credentials. `eqlVersion` is a `NewClientOptions`
+  // field, and that struct carries the marker for exactly this — without it
+  // serde would look up the fields it expects, never see the typo, and build a
+  // client with the default wire version.
+  test('rejects an unknown key that only the marker can catch', async () => {
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({ encryptConfig: minimalConfig, eqlVerison: 3 }),
+    ).rejects.toThrow(/unknown field `eqlVerison`/)
   })
 
   test('reports a throwing getter instead of unwinding out of wasm', async () => {

@@ -3314,6 +3314,117 @@ mod tests {
         }
 
         #[test]
+        fn a_bulk_payload_rejects_a_misspelled_lock_context() {
+            // The per-item form of the case above, and the likelier of the
+            // two: the container rejects `lockContext` because it belongs on
+            // the item, and the item silently dropped a misspelling of it.
+            // Both spellings encrypt UNBOUND.
+            let msg = rejection::<EncryptBulkOptions>(json!({
+                "plaintexts": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "lokContext": {"identityClaim": ["sub"]},
+                }],
+            }));
+            assert!(msg.contains("unknown field `lokContext`"), "{msg}");
+        }
+
+        #[test]
+        fn the_containers_and_the_payloads_do_not_share_a_vocabulary() {
+            // The mirror-image trap for anyone copying the scalar call shape:
+            // `unverifiedContext` is a container key and `lockContext` a
+            // payload one, and each is now rejected in the other's place
+            // rather than dropped.
+            let msg = rejection::<EncryptBulkOptions>(json!({
+                "plaintexts": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "unverifiedContext": {"sub": "user-1"},
+                }],
+            }));
+            assert!(msg.contains("unknown field `unverifiedContext`"), "{msg}");
+
+            let msg = rejection::<DecryptBulkOptions>(json!({
+                "ciphertexts": [{"ciphertext": {}, "unverifiedContext": {"sub": "u"}}],
+            }));
+            assert!(msg.contains("unknown field `unverifiedContext`"), "{msg}");
+        }
+
+        #[test]
+        fn a_decrypt_payload_rejects_a_misspelled_lock_context() {
+            let msg = rejection::<DecryptBulkOptions>(json!({
+                "ciphertexts": [{
+                    "ciphertext": {},
+                    "lokContext": {"identityClaim": ["sub"]},
+                }],
+            }));
+            assert!(msg.contains("unknown field `lokContext`"), "{msg}");
+        }
+
+        #[test]
+        fn decrypt_rejects_an_unknown_key() {
+            let msg = rejection::<DecryptOptions>(json!({
+                "ciphertext": {},
+                "lockContexts": {"identityClaim": ["sub"]},
+            }));
+            assert!(msg.contains("unknown field `lockContexts`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_rejects_a_misspelled_index_type() {
+            // `indexType` is required, so misspelling it reports the MISSING
+            // field rather than the unknown one — see the note on
+            // [`DenyUnknown`]. The key is still named, just not by this
+            // message.
+            let msg = rejection::<EncryptQueryOptions>(json!({
+                "plaintext": "hello",
+                "column": "email",
+                "table": "users",
+                "indexTyp": "unique",
+            }));
+            assert!(msg.contains("missing field `indexType`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_rejects_a_misspelled_query_op() {
+            let msg = rejection::<EncryptQueryOptions>(json!({
+                "plaintext": "hello",
+                "column": "email",
+                "table": "users",
+                "indexType": "unique",
+                "queryOpp": "match",
+            }));
+            assert!(msg.contains("unknown field `queryOpp`"), "{msg}");
+            // And nothing more. Serde's flatten path buffers the map and
+            // reports at its closing brace, so the `expected one of ...` list
+            // every other rejection used to carry is gone — see the note on
+            // [`DenyUnknown`]. Asserted so the cost stays visible.
+            assert!(!msg.contains("expected"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_bulk_rejects_an_unknown_key_on_either_level() {
+            let msg = rejection::<EncryptQueryBulkOptions>(json!({
+                "queries": [],
+                "lockContext": {"identityClaim": ["sub"]},
+            }));
+            assert!(msg.contains("unknown field `lockContext`"), "{msg}");
+
+            let msg = rejection::<EncryptQueryBulkOptions>(json!({
+                "queries": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "indexType": "unique",
+                    "unverifiedContext": {"sub": "user-1"},
+                }],
+            }));
+            assert!(msg.contains("unknown field `unverifiedContext`"), "{msg}");
+        }
+
+        #[test]
         fn encrypt_query_keeps_its_query_op_default() {
             // `DenyUnknown` moves deserialization onto serde's flatten path.
             // Field defaults have to survive that, and an absent `queryOp` is
