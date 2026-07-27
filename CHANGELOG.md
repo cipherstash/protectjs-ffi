@@ -91,7 +91,7 @@ uses the promoted section as the GitHub release notes.
 
   - The wasm boundary needed more than the serde attribute.
     `serde-wasm-bindgen` reads a struct by looking up the fields it expects
-    with `Reflect::get`, never enumerating the object — an undeclared key was
+    (`obj[key]`), never enumerating the object — an undeclared key was
     invisible to serde, so `deny_unknown_fields` alone would have rejected
     nothing there. A marker type puts every options struct on serde's flatten
     path, which does enumerate. That boundary needed it most: it is the one
@@ -99,12 +99,33 @@ uses the promoted section as the GitHub release notes.
   - The Neon entry's `newClient` rebuilt the native options object field by
     field, dropping unrecognised top-level keys before the Rust could see
     them. It now forwards them.
+  - **On wasm, a declared field is now read only if it is an own enumerable
+    property.** The lookup it replaces walked the prototype chain and saw
+    non-enumerable properties too. An options bag — an object literal, or a
+    spread of one — is unaffected; a class instance passed as options loses
+    its inherited fields, and a field defined through
+    `Object.defineProperty({enumerable: false})` is dropped. Neon has always
+    been `JSON.stringify`, which is own-enumerable too.
+  - **A misspelled *required* field now reports it as missing, not unknown.**
+    `encrypt(client, {plaintext, column, tabel: 'users'})` says ``missing
+    field `table` `` and never names `tabel`; it used to say both. Serde's
+    flatten path buffers the map and reports at its closing brace, which also
+    drops the `expected one of ...` list from every rejection. Neon-only —
+    the wasm path had no error to lose.
 
-  One difference between the boundaries remains, and it is deliberate: on wasm
-  a key whose value is `undefined` (`{...opts, typo: undefined}`) is rejected,
-  while on Neon `JSON.stringify` drops it before serde runs, so it is
-  accepted. They differ only in strictness about a mistake — correct input
-  behaves identically on both.
+  Three differences between the boundaries remain, all of them about how
+  strictly a *mistake* is reported. Correct input behaves identically on both.
+
+  - A key whose value is `undefined` (`{...opts, typo: undefined}`) is
+    rejected on wasm and accepted on Neon, where `JSON.stringify` drops it
+    before serde runs.
+  - A key whose value is a **function or a symbol** is reported on wasm — as a
+    *type* error, naming the wrong problem — and dropped in silence on Neon,
+    where `JSON.stringify` omits it.
+  - A key holding a **circular value or a `bigint`** throws in
+    `JSON.stringify` on Neon before serde can see it. `newClient` names the
+    key itself rather than let a bare `TypeError: Converting circular
+    structure to JSON` out; the other entries do not.
 
 ### Added
 

@@ -699,30 +699,72 @@ type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 /// `Deserializer::deserialize_map` instead of `deserialize_struct`, and on wasm
 /// that is the whole difference. `serde_wasm_bindgen`'s `deserialize_struct`
 /// never enumerates the JS object: it looks up each *expected* field by name
-/// with `Reflect::get`. A key the struct doesn't declare is invisible, so
+/// with `ObjectExt::get_with_ref_key` — a wasm-bindgen `indexing_getter`, i.e.
+/// plain `obj[key]`. A key the struct doesn't declare is invisible, so
 /// `deny_unknown_fields` has nothing to reject and the attribute is a silent
-/// no-op. `deserialize_map` goes through `Object::entries`, so every own
-/// enumerable key reaches serde and the leftover check works. The Neon boundary
-/// is `JSON.stringify` → `serde_json`, which has always enumerated; it needs no
-/// help.
+/// no-op. `deserialize_map` enumerates, so every key reaches serde and the
+/// leftover check works. The Neon boundary is `JSON.stringify` → `serde_json`,
+/// which has always enumerated; it needs no help.
 ///
 /// Structs that already flatten — [`ClientOpts`](client_options::ClientOpts),
 /// [`EnsureKeysetOpts`] — are on the map path and don't carry this.
 ///
-/// Three consequences of the map path worth knowing:
+/// # What the map path costs
+///
+/// `deserialize_map` tries `js_sys::try_iter` FIRST and only falls back to
+/// `Object::entries` (serde-wasm-bindgen `de.rs`, `deserialize_map`) — unlike
+/// `deserialize_any`, which guards the iterator arm on `Map`. So:
+///
+/// - An options object carrying `Symbol.iterator`, own or inherited, is read
+///   through the iterator and its own properties are ignored entirely. A
+///   `lockContext` present as a property but not yielded is silently dropped —
+///   the class of bug this marker exists to close, reopened on a shape almost
+///   nobody passes. `Object::assign` in `wasm::new_client` does not close it
+///   either: an own enumerable `[Symbol.iterator]` survives the copy.
+/// - An array of `[k, v]` pairs, and a JS `Map`, are now ACCEPTED where
+///   `deserialize_struct` rejected them. The array form also bypasses
+///   `encode_plaintext`, so a `bigint` plaintext reaches `JsPlaintext::Number`
+///   and loses precision above 2^53.
+///
+/// Two diagnostics regressions, both from serde's flatten path buffering the
+/// map and reporting at its closing brace:
+///
+/// - A misspelled REQUIRED field reports `missing field \`indexType\`` and
+///   never names `indexTyp`. Without the marker it read `unknown field
+///   \`indexTyp\`, expected \`indexType\``, which said both.
+/// - The `expected one of ...` list is gone from every rejection.
+///
+/// Per-key cost on wasm, for valid input: `deserialize_struct` handed serde
+/// `&'static str` field names with no Rust allocation. The map path allocates a
+/// JS array of pair-arrays per object plus a fresh `String` per key, known keys
+/// included — roughly 5N `String`s on an N-payload `encryptBulk`. Small against
+/// the crypto, but it is not nothing.
+///
+/// `has_flatten` also suppresses `visit_seq` and emits no `FIELDS` const, so
+/// these structs no longer accept the JSON-array form of a struct.
+///
+/// # What the map path changes for valid input
 ///
 /// - An unknown key's *value* is buffered into serde's `Content` before the
 ///   rejection. A key holding something serde can't represent (a function)
 ///   reports that instead of `unknown field`. Rejected either way.
-/// - `Object::entries` includes keys whose value is `undefined`, so
+/// - Enumeration includes keys whose value is `undefined`, so
 ///   `{...opts, typo: undefined}` is rejected here and accepted on Neon, where
 ///   `JSON.stringify` drops the key before serde sees it. The targets differ in
 ///   strictness about a mistake; they agree on every correct input.
-/// - It reads own enumerable properties, where `Reflect::get` walked the
-///   prototype chain. An options *bag* — an object literal, or a spread of one
-///   — is unaffected; a class instance passed as options would no longer have
-///   its inherited fields seen. Neon has always been `JSON.stringify`, which is
-///   own-enumerable too, so this closes a gap rather than opening one.
+/// - It reads own ENUMERABLE properties, where `obj[key]` also walked the
+///   prototype chain and saw non-enumerable ones. An options *bag* — an object
+///   literal, or a spread of one — is unaffected; a class instance passed as
+///   options loses its inherited fields, and a field hidden behind
+///   `Object.defineProperty` is dropped. Neon has always been `JSON.stringify`,
+///   which is own-enumerable too, so this closes a gap rather than opening one.
+///
+///   The narrowing reaches further than the entry points that hand serde the
+///   caller's object directly: the clones in `wasm.rs` are shallow, so a nested
+///   [`LockContext`] — which carries this marker — is read from the caller's own
+///   object on every path. `encode_plaintext_list` also returns `opts`
+///   untouched when nothing needed encoding, which includes a legitimate empty
+///   `plaintexts`, so the bulk entries' top-level bag is narrowed too.
 #[derive(Debug, Deserialize)]
 pub(crate) struct DenyUnknown {}
 
