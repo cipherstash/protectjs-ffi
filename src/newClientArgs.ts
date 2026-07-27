@@ -20,6 +20,44 @@ export type NativeNewClientOptions = {
 }
 
 /**
+ * Throw naming the option key `JSON.stringify` chokes on, before neon does it
+ * anonymously.
+ *
+ * Forwarding what this layer doesn't handle is what lets Rust reject an unknown
+ * key by name (#144) — but it also means an unknown key now reaches neon's
+ * `Json` extractor, which is `JSON.stringify`. A circular value or a `bigint`
+ * throws there, before serde runs, and the `TypeError` says only `Converting
+ * circular structure to JSON`. `newClient({...appConfig, logger})` is the shape
+ * that hits it, and on a change whose point is naming the offender that is the
+ * wrong failure.
+ *
+ * Only the forwarded keys are checked. `clientOpts` and the auth strategy are
+ * handled above and never reach here, and a circular `encryptConfig` fails the
+ * same way it always has — this covers exactly what forwarding newly exposed,
+ * for the cost of one `JSON.stringify` of the config at client construction.
+ *
+ * A key whose value is a function or a symbol is NOT caught: `JSON.stringify`
+ * drops those without throwing, so they stay a silent drop on this binding
+ * while wasm rejects them. That asymmetry is in the CHANGELOG.
+ *
+ * Interim. #150 replaces this whole error layer with codes derived in Rust.
+ */
+function nameTheKeyJsonCannotCarry(rest: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(rest)) {
+    try {
+      JSON.stringify(value)
+    } catch (cause) {
+      throw new Error(
+        `newClient option \`${key}\` cannot be sent to the addon: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+        { cause },
+      )
+    }
+  }
+}
+
+/**
  * Split `newClient`'s options into the two arguments the addon takes.
  *
  * The strategy cannot ride along inside the options object: neon's `Json`
@@ -41,6 +79,7 @@ export function newClientArgs(
   // quietly dropped on the way through. The wasm entry rejects the same input
   // the same way.
   const { authStrategy, strategy, clientOpts, ...rest } = opts
+  nameTheKeyJsonCannotCarry(rest)
   return [
     { ...rest, clientOpts: withEnvCredentials(clientOpts) },
     // `strategy` is the old name for `authStrategy`, kept working while it is

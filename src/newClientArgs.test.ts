@@ -104,6 +104,38 @@ describe('newClientArgs', () => {
       })
     })
 
+    it('forwards a key the Rust does not declare, for serde to reject', () => {
+      // The point of #144 on this binding: `newClient` used to rebuild the
+      // native options field by field, which dropped anything it didn't name
+      // before the Rust could complain.
+      const [opts] = newClientArgs({
+        encryptConfig,
+        eqlVerison: 3,
+      } as unknown as Parameters<typeof newClientArgs>[0])
+      expect(opts).toMatchObject({ eqlVerison: 3 })
+    })
+
+    it('names the forwarded key JSON.stringify cannot carry', () => {
+      // Forwarding means an unknown key now reaches neon's `Json` extractor,
+      // and a circular value throws there before serde can name it. Left
+      // alone the caller gets a bare "Converting circular structure to JSON".
+      const logger: Record<string, unknown> = {}
+      logger.self = logger
+      expect(() =>
+        newClientArgs({
+          encryptConfig,
+          logger,
+        } as unknown as Parameters<typeof newClientArgs>[0]),
+      ).toThrow(/newClient option `logger` cannot be sent to the addon/)
+
+      expect(() =>
+        newClientArgs({
+          encryptConfig,
+          requestId: 1n,
+        } as unknown as Parameters<typeof newClientArgs>[0]),
+      ).toThrow(/newClient option `requestId` cannot be sent to the addon/)
+    })
+
     it('keeps keyset alongside the credentials', () => {
       // `keyset` moved under `clientOpts` on the wasm entry in #142; this is
       // the Neon side of the same shape, and the env merge must not drop it.
