@@ -14,7 +14,7 @@ Common issues, error messages, and solutions for JSONB operations in protectjs-f
 
 ## Common Error Messages
 
-Note: async API errors include a stable `code` on the thrown `ProtectError`, so you can avoid string matching.
+Note: async API errors carry a stable `code` on the thrown `Error`, so you can branch on that instead of matching these messages.
 
 ### "Unsupported conversion from X to Y"
 

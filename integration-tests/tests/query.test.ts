@@ -4,7 +4,6 @@ import { describe, expect, test } from 'vitest'
 import {
   type EncryptConfig,
   type Identifier,
-  ProtectError,
   type QueryPayload,
   encryptQuery,
   encryptQueryBulk,
@@ -421,10 +420,8 @@ describe('encryptQuery error handling', () => {
       })
       throw new Error('expected encryptQuery to throw')
     } catch (err) {
-      expect(err).toBeInstanceOf(ProtectError)
-      if (err instanceof ProtectError) {
-        expect(err.code).toBe('UNKNOWN_COLUMN')
-      }
+      expect(err).toBeInstanceOf(Error)
+      expect((err as { code?: unknown }).code).toBe('UNKNOWN_COLUMN')
     }
   })
 
@@ -441,7 +438,7 @@ describe('encryptQuery error handling', () => {
     ).rejects.toThrowError()
   })
 
-  test('should error for unknown queryOp', async () => {
+  test('should preserve the error code for an unknown queryOp', async () => {
     const client = await newClient({ encryptConfig })
 
     await expect(
@@ -452,7 +449,10 @@ describe('encryptQuery error handling', () => {
         // biome-ignore lint/suspicious/noExplicitAny: testing invalid input
         queryOp: 'invalid_op' as any,
       }),
-    ).rejects.toThrowError()
+    ).rejects.toMatchObject({
+      code: 'UNKNOWN_QUERY_OP',
+      message: expect.stringContaining("Unknown query operation: 'invalid_op'"),
+    })
   })
 })
 
@@ -476,6 +476,27 @@ describe('encryptQueryBulk error handling', () => {
 
     // Bulk operations should fail if any query is invalid
     await expect(encryptQueryBulk(client, { queries })).rejects.toThrowError()
+  })
+
+  test('should preserve the error code for an unknown queryOp', async () => {
+    const client = await newClient({ encryptConfig })
+
+    await expect(
+      encryptQueryBulk(client, {
+        queries: [
+          {
+            plaintext: 'test',
+            ...profileColumn,
+            indexType: 'ste_vec',
+            // biome-ignore lint/suspicious/noExplicitAny: testing invalid input
+            queryOp: 'invalid_op' as any,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 'UNKNOWN_QUERY_OP',
+      message: expect.stringContaining("Unknown query operation: 'invalid_op'"),
+    })
   })
 })
 

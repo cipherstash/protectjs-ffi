@@ -214,10 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_value_keeps_the_prefix_errors_ts_matches() {
-        // src/errors.ts:41 does `message.startsWith('Unknown query operation:')`
-        // to infer the public UNKNOWN_QUERY_OP code. If this assertion fails,
-        // that code has silently become unreachable.
+    fn an_unknown_value_keeps_the_prefix_the_error_routing_matches() {
+        // `Error::unknown_query_op` matches this prefix to route the failure to
+        // the variant carrying UNKNOWN_QUERY_OP — serde's `de::Error::custom`
+        // takes a `Display`, so the message is all that survives. If this
+        // assertion fails, that code has silently become unreachable.
+        //
+        // Was `src/errors.ts` doing the match until #146 moved it into Rust.
         let err = parse(serde_json::json!("frobnicate"))
             .expect_err("an unknown op is an error")
             .to_string();

@@ -36,7 +36,7 @@
     "version": "neon bump --binaries platforms && node scripts/changelog-release.mjs && git add .",
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
     "dryrun": "gh workflow run release.yml -f dryrun=true -f version=patch",
-    "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack",
+    "build:wasm": "wasm-pack build crates/protect-ffi --target bundler --out-dir ../../dist/wasm --no-pack && tsc -p tsconfig.wasm-errors.json",
     "postbuild:wasm": "node scripts/inline-wasm.mjs"
   },
   "author": "CipherStash <humans@cipherstash.com>",
@@ -73,7 +73,9 @@
     "dist/wasm/protect_ffi_bg.wasm",
     "dist/wasm/protect_ffi.d.ts",
     "dist/wasm/protect_ffi_bg.wasm.d.ts",
-    "dist/wasm/protect_ffi_inline.js"
+    "dist/wasm/protect_ffi_inline.js",
+    "dist/wasm/errors.js",
+    "dist/wasm/errors.d.ts"
   ],
   "neon": {
     "type": "library",

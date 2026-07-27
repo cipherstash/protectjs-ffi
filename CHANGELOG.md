@@ -127,6 +127,43 @@ uses the promoted section as the GitHub release notes.
     key itself rather than let a bare `TypeError: Converting circular
     structure to JSON` out; the other entries do not.
 
+- **`ProtectError` and `normalizeError` are gone. Both entries throw an
+  ordinary `Error` with a `code` property.** ([#146])
+
+  ```ts
+  // before — Node entry only, and only for errors the message table matched
+  if (err instanceof ProtectError && err.code === 'INVALID_JSON_PATH') { }
+
+  // after — both entries, nothing to import
+  if (err instanceof Error && 'code' in err && err.code === 'INVALID_JSON_PATH') { }
+
+  // after, when you want the code as a typed value
+  import { isProtectErrorCode } from '@cipherstash/protect-ffi'
+  const { code } = err as { code?: unknown }
+  if (isProtectErrorCode(code)) { /* code narrows to ProtectErrorCode */ }
+  ```
+
+  Every export used to run through a try/catch that re-threw the failure as a
+  `ProtectError`. Once Rust set `code` on the error it builds, that layer had
+  nothing left to add and three costs left to pay: the two bindings threw
+  different things, the stack trace was re-based onto the wrapper with the real
+  one demoted to `cause`, and `instanceof` is false across duplicate copies of
+  a package — so the check it existed to provide was the unreliable one.
+
+  Nothing is lost with it. `message` and `code` are what callers read, and both
+  come straight from Rust. A `RangeError` for an out-of-range bigint is still a
+  `RangeError` — before, it survived because the inference table happened not
+  to match it.
+
+- **A failed `decryptBulkFallible` item with no code omits the field instead of
+  setting `'UNKNOWN'`.** The declared type has always been
+  `code?: ProtectErrorCode`, but on the Neon entry the field was in practice
+  always present, because the JS wrapper ran every failed item's message
+  through the inference table and stored whatever came back — `'UNKNOWN'`
+  included. Rust sets the field now, and only when there is a code to set, so
+  `item.code === 'UNKNOWN'` no longer matches. Test for absence instead.
+  ([#146])
+
 ### Added
 
 - **The wasm build declares the real option types**, emitted by wasm-bindgen
@@ -156,14 +193,37 @@ uses the promoted section as the GitHub release notes.
   The shared types moved to `src/types.ts` and are re-exported by the Neon
   entry, so **its public surface is unchanged**.
 
-- **One wasm-only type, for the one place the bindings genuinely differ.**
-  `WasmDecryptResult` omits `code`, which Rust never emits — the Neon wrapper
-  infers it in JS from the error message, so on this entry the field is absent
-  rather than optional-and-never-set.
+  There is now no wasm-only type: both entries name exactly the same set.
+  Two exceptions existed while this work was in progress and both are resolved
+  below — `newClient` took a different options shape and a pre-canonicalised
+  config, and `WasmDecryptResult` omitted `code` because Rust did not emit one.
+  The bindings share one `NewClientOptions` and one `DecryptResult` ([#146]).
 
-  `newClient` was the other exception while this work was in progress: it took
-  a different options shape and a pre-canonicalised config. Both are resolved
-  below — the bindings now share one `NewClientOptions`.
+- **`PROTECT_ERROR_CODES` and `isProtectErrorCode`.** The codes are now a
+  runtime list with the `ProtectErrorCode` union derived from it, plus a
+  predicate over that list. Together they are the whole of the error API.
+  ([#146])
+
+  Branching on a code needs neither — `err instanceof Error && 'code' in err &&
+  err.code === 'MISSING_INDEX'` compiles under `strict` on its own.
+  `isProtectErrorCode` earns its place when you want the code as a *typed*
+  value, since it narrows `unknown` to `ProtectErrorCode`:
+
+  ```ts
+  import {
+    isProtectErrorCode,
+    type ProtectErrorCode,
+  } from '@cipherstash/protect-ffi'
+
+  function errorCode(err: unknown): ProtectErrorCode | undefined {
+    const { code } = err as { code?: unknown }
+    return isProtectErrorCode(code) ? code : undefined
+  }
+  ```
+
+  It checks the value rather than the field's presence because `code` is not
+  ours alone: Node sets one on its own errors, so an `ECONNRESET` would
+  otherwise pass for one of these.
 
 - `CanonicalCastAs`, `CanonicalColumn`, and `CanonicalEncryptConfig` are now
   public, in `types.ts`. They were `NativeCastAs` / `NativeColumn` /
@@ -205,6 +265,49 @@ uses the promoted section as the GitHub release notes.
   both are set. No caller breaks today, but move over — the old name will be
   removed.
 
+- **Error codes come from Rust now, rather than from parsing the error message
+  in JavaScript.** `err.code` is set at the FFI boundary from the error's
+  variant. The values are unchanged. ([#146])
+
+  What it replaces: the same process serialised structure to prose and then
+  parsed the prose back. Rust threw away the variant, and `src/errors.ts`
+  recovered a code by matching the message against fourteen prefixes and
+  substrings. Three of them matched wording owned by **cipherstash-config**,
+  not this repo —
+
+  ```ts
+  if (message.includes('requires plaintext_type: json'))
+    return 'STE_VEC_REQUIRES_JSON_CAST_AS'
+  ```
+
+  — so an upstream reword would have silently downgraded a caller's error to
+  `UNKNOWN`: the call still fails, just less usefully, and nothing here would
+  have failed to say so. Nor could you tell which three by reading the table:
+  `' index configured'` looks like an upstream phrase and is this repo's own.
+
+  Those three (`STE_VEC_REQUIRES_JSON_CAST_AS`, `MATCH_REQUIRES_TEXT`,
+  `UNSUPPORTED_CONFIG_VERSION`) still have to be told apart from one upstream
+  type. They are decided by matching the `ConfigError` variant now, so a
+  rename upstream is a compile error rather than a silent downgrade.
+
+  One code is still recovered from a message: `UNKNOWN_QUERY_OP`. `queryOp` is
+  rejected inside `Deserialize` — which is what makes the failure name the
+  field, rather than surfacing later from query preparation — and serde's
+  `de::Error::custom` takes a `Display`, so nothing typed survives for the
+  boundary to read. The match moved into Rust beside the constant that defines
+  the message, where the prefix is pinned by tests on both sides; it is a
+  smaller and louder version of the same coupling, not its removal.
+
+  Two consequences worth knowing:
+
+  - **The wasm entry carries codes too**, for the first time. The reconstruction
+    lived in the Neon entry's JS wrapper, and the wasm build has no such
+    wrapper — every error it threw was uncoded.
+  - **An error with no code no longer gets a guessed one.** The
+    `#[error(transparent)]` variants wrap a cipherstash-client failure whose
+    text this repo does not own; claiming a code for those is exactly the guess
+    being removed. They arrive without the field.
+
 ### Fixed
 
 - **`match.include_original` no longer reaches query-term generation**
@@ -217,8 +320,17 @@ uses the promoted section as the GitHub release notes.
   `encryptQuery` / `encryptQueryBulk` path (native and wasm, v2 and v3) uses
   it. The config remains accepted as-is for storage encryption.
 
+### Removed
+
+- **`ProtectErrorCode` values are no longer restated in
+  `docs/jsonb-api-reference.md`.** The copy there had already drifted — it was
+  missing `SHORT_MATCH_NEEDLE`. The values live in `src/errors.ts` as
+  `PROTECT_ERROR_CODES`, checked against the Rust attributes by
+  `src/errorCodes.test.ts`. ([#146])
+
 [#142]: https://github.com/cipherstash/protectjs-ffi/issues/142
 [#144]: https://github.com/cipherstash/protectjs-ffi/issues/144
+[#146]: https://github.com/cipherstash/protectjs-ffi/issues/146
 [#147]: https://github.com/cipherstash/protectjs-ffi/issues/147
 
 ## [0.30.0] - 2026-07-20

@@ -134,10 +134,11 @@ Encrypted `cast_as: 'bigint'` columns store signed 64-bit integers
 
 - `bigint` inputs are exact and bounds-checked against the full i64 range:
   **-9223372036854775808 to 9223372036854775807** (-2^63 to 2^63 - 1).
-  Values outside that range throw a `RangeError` (a plain `RangeError`, not
-  a `ProtectError`) naming the bounds and the offending direction. Search
-  index terms (`hm`, `ob`, `op`) are derived from the same value, so the
-  boundary check covers index-term generation too.
+  Values outside that range throw a `RangeError` naming the bounds and the
+  offending direction. It carries no `code` — this is a boundary check in JS,
+  not one of the Rust errors described under [Errors](#errors). Search index
+  terms (`hm`, `ob`, `op`) are derived from the same value, so the boundary
+  check covers index-term generation too.
 - `number` inputs keep the existing exact-integer guard: fractional,
   non-finite, or out-of-range values error instead of being silently
   truncated.
@@ -176,18 +177,48 @@ const decrypted = await addon.decrypt(client, { ciphertext })
 
 ## Errors
 
-Async API calls throw `ProtectError` with a stable `code` for programmatic handling.
+Both entries throw an ordinary JS `Error` with a stable `code`, set in Rust
+from the error variant. There is no wrapper class and nothing to unwrap.
+
+Not every failure has a code — the ones wrapping a cipherstash-client error
+arrive without the field. `'UNKNOWN'` is the name for that case, not a value
+Rust emits.
+
+TypeScript types a `catch` variable as `unknown`, so you narrow once. That
+needs nothing from this package:
 
 ```typescript
 try {
   await addon.encryptQuery(client, opts)
 } catch (err) {
-  if (err?.code === 'INVALID_JSON_PATH') {
+  if (err instanceof Error && 'code' in err && err.code === 'INVALID_JSON_PATH') {
     // handle JSON path mistakes
   }
   throw err
 }
 ```
+
+To carry the code around as a typed value, use `isProtectErrorCode`. Checking
+the value rather than the field's presence matters: Node sets `code` on its own
+errors, so a bare `err?.code` read would let an `ECONNRESET` pass for one of
+these.
+
+```typescript
+import {
+  isProtectErrorCode,
+  type ProtectErrorCode,
+} from '@cipherstash/protect-ffi'
+
+function errorCode(err: unknown): ProtectErrorCode | undefined {
+  const { code } = err as { code?: unknown }
+  return isProtectErrorCode(code) ? code : undefined
+}
+```
+
+The codes themselves are `PROTECT_ERROR_CODES` in `src/errors.ts`, which
+`src/errorCodes.test.ts` checks against the `#[diagnostic(code(..))]`
+attributes on `Error` in `crates/protect-ffi/src/lib.rs` — the one place a code
+is decided.
 
 ## Available Scripts
 

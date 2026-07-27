@@ -83,8 +83,9 @@ changed.
 
 **Error codes are preserved and extended** — `STE_VEC_REQUIRES_JSON_CAST_AS`
 retains the same code. Two new codes are added: `MATCH_REQUIRES_TEXT` and
-`UNSUPPORTED_CONFIG_VERSION`. Consumers that branch on `ProtectError.code` are
-unaffected.
+`UNSUPPORTED_CONFIG_VERSION`. Consumers that branch on the error's `code` are
+unaffected. (#146 later moved that `code` onto the thrown `Error` itself and
+removed the `ProtectError` wrapper class; the values did not change.)
 
 **Consumers that string-match on `err.message` for config-validation errors
 must update their match strings** to align with the new `ConfigError` message
@@ -110,10 +111,13 @@ behaviour.
 
 The following items were identified during the migration but are not blocking:
 
-- **Unit tests for `inferErrorCode`** — the substring matches that map
+- ~~**Unit tests for `inferErrorCode`** — the substring matches that map
   `ConfigError` message text to `ProtectErrorCode` values are currently
   untested. Adding tests would guard against future upstream wording changes
-  causing silent code mismatches.
+  causing silent code mismatches.~~ Done in #146, though not by testing the
+  substrings: they are gone. The three config codes are decided by matching the
+  `ConfigError` variant in `From<ConfigError> for Error`, so an upstream
+  rewording cannot change them and an upstream rename is a compile error.
 - **`Error::Credentials` display message** — the message text for this variant
   still reads "Configuration error" while the variant itself was renamed during
   the Rust refactor. Tightening the display template would improve clarity for
