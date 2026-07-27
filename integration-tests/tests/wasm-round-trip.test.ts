@@ -490,6 +490,22 @@ describe('wasm newClient validation', () => {
     ).rejects.toThrow(/unknown field `region`/)
   })
 
+  test('reports a throwing getter instead of unwinding out of wasm', async () => {
+    // The strip copies the options with `Object.assign`, which reads every own
+    // enumerable property — so a getter among them runs inside the copy. js-sys
+    // declares `assign` without `catch`, and that throw would travel straight
+    // through the wasm frames, skipping the destructors of the zeroizing values
+    // this call goes on to build. `try_assign` makes it an ordinary rejection.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        get encryptConfig(): unknown {
+          throw new Error('getter boom')
+        },
+      }),
+    ).rejects.toThrow(/opts could not be copied/)
+  })
+
   test('still accepts the deprecated `strategy` name', async () => {
     // Both auth keys are lifted off the object with `Reflect` and stripped
     // before serde, since a struct that denies unknown fields would otherwise
