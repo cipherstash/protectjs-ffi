@@ -440,6 +440,12 @@ type Column = {
 }
 ```
 
+`match.include_original` is a storage-only option: it adds the whole
+(filtered, untokenized) value as an extra bloom term so the stored filter can
+also answer whole-value equality. It is never applied when generating query
+terms — `encryptQuery` / `encryptQueryBulk` always emit token-only blooms, so
+substring matching keeps working for columns that store whole-value terms.
+
 ### JSONB Column Configuration
 
 For searchable JSONB columns, use:

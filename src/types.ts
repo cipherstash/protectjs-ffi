@@ -10,8 +10,10 @@
  * They live in their own module, rather than in `index.cts`, so that BOTH
  * entries can name them. `index.cts` re-exports every one of them, so the
  * Node-API surface is unchanged; the wasm `.d.ts` imports them by relative
- * path in `scripts/type-wasm-dts.mjs`. Before that split they existed only in
- * the Node-API declarations, which meant the wasm build typed every `opts` as
+ * path from the `typescript_custom_section` in
+ * `crates/protect-ffi/src/wasm.rs`, which wasm-bindgen emits verbatim into
+ * `dist/wasm/protect_ffi.d.ts`. Before that split they existed only in the
+ * Node-API declarations, which meant the wasm build typed every `opts` as
  * `any` — no checking on that path at all — and any consumer wanting the real
  * shapes had to import from the entry that loads a native binary.
  * See #142.
@@ -277,6 +279,13 @@ export type MatchIndexOpts = {
   token_filters?: TokenFilter[]
   k?: number
   m?: number
+  /**
+   * Storage-only option: adds the whole (filtered, untokenized) value as an
+   * extra bloom term so the stored filter can also answer whole-value
+   * equality. It never shapes query terms — `encryptQuery` /
+   * `encryptQueryBulk` always emit token-only blooms, otherwise a substring
+   * query's bloom could never be a subset of a row's bits.
+   */
   include_original?: boolean
 }
 

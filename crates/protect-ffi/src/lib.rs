@@ -1,8 +1,13 @@
+mod client_options;
 mod encrypt_config;
 mod eql_v3;
 mod js_plaintext;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+
+use client_options::NewClientOptions;
+#[cfg(not(target_arch = "wasm32"))]
+use client_options::{EnsureKeysetOpts, EnsureKeysetResult};
 
 use cipherstash_client::{
     encryption::{
@@ -19,12 +24,11 @@ use cipherstash_client::{
         ColumnConfig, Identifier,
     },
     zerokms::{
-        self, FallbackKeyProvider, KeyProvider, RecordDecryptError, SecretKey, WithContext,
-        ZeroKMSBuilder, ZeroKMSBuilderError, ZeroKMSWithClientKey,
+        self, KeyProvider, RecordDecryptError, WithContext, ZeroKMSBuilder, ZeroKMSBuilderError,
+        ZeroKMSWithClientKey,
     },
-    AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
+    AuthError, AutoStrategy, UnverifiedContext,
 };
-use cts_common::Crn;
 // Shared by the Neon exports below and the wasm module (which imports these
 // via `crate::`), so both targets resolve them through this one re-export.
 pub(crate) use eql_v3::{
@@ -51,8 +55,6 @@ use std::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::Runtime;
-use uuid::Uuid;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(test)]
 extern crate quickcheck;
@@ -66,6 +68,10 @@ struct Client {
     cipher: Arc<ScopedZeroKMS>,
     zerokms: Arc<ZeroKMSWithClientKey<NodeAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// `encrypt_config` with `include_original` forced off on every match
+    /// index — what the encrypt-query entry points use, so query blooms stay
+    /// token-only. See [`query_config_map`].
+    query_config: Arc<HashMap<Identifier, ColumnConfig>>,
     /// EQL wire version this client emits. Decryption accepts both formats
     /// regardless of this setting.
     eql_version: EqlVersion,
@@ -703,142 +709,6 @@ impl AuthStrategy for &NodeAuthStrategy {
 #[cfg(not(target_arch = "wasm32"))]
 type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 
-/// A hex-encoded secret that wipes its buffer on drop.
-///
-/// `#[serde(transparent)]` means a bare JS string deserializes straight into
-/// it, so this costs nothing at the boundary. Without it the raw hex sits in a
-/// plain `String` until the allocator happens to reuse the page — including on
-/// every early error path between deserialization and the point the bytes are
-/// consumed into a [`SecretKey`].
-///
-/// Originally wasm-only. It applies to both targets for the same reason, so it
-/// lives here now and the Neon path gets the same guarantee.
-#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
-#[serde(transparent)]
-pub(crate) struct HexSecret(pub(crate) String);
-
-/// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CredentialOpts {
-    workspace_crn: Option<Crn>,
-    access_key: Option<String>,
-    /// UUID identifying the client key. Typed as [`Uuid`] rather than `String`
-    /// so a malformed value fails at deserialization, naming the field, rather
-    /// than surfacing later from inside the key provider.
-    client_id: Option<Uuid>,
-    client_key: Option<HexSecret>,
-}
-
-impl CredentialOpts {
-    /// Build an [`AutoStrategy`] from optional workspace CRN and access key,
-    /// falling back to env vars and profile store for unset fields.
-    pub(crate) fn build_strategy(&self) -> Result<AutoStrategy, Error> {
-        let mut builder = AutoStrategy::builder();
-        if let Some(key) = self.access_key.as_ref() {
-            builder = builder.with_access_key(key);
-        }
-        if let Some(crn) = self.workspace_crn.as_ref() {
-            builder = builder.with_workspace_crn(crn.clone());
-        }
-        Ok(builder.detect()?)
-    }
-
-    /// Build an `Option<SecretKey>` from the `client_id` + `client_key` pair.
-    ///
-    /// Returns `None` if either field is missing — on the Neon target that
-    /// triggers `FallbackKeyProvider` to try the profile store; on wasm it is
-    /// an error, since there is no store to fall back to. Returns `Err` if the
-    /// values are present but invalid.
-    ///
-    /// Decodes the hex in place rather than via `SecretKey::from_hex`.
-    /// `from_hex` takes owned `String`s, which would mean cloning the key out
-    /// of [`HexSecret`] into an allocation nothing wipes — defeating the point
-    /// of the wrapper. Going through `ViturKeyMaterial` keeps the only
-    /// long-lived copy of the hex inside the zeroizing buffer.
-    fn secret_key(&self) -> Result<Option<SecretKey>, Error> {
-        let (Some(client_id), Some(client_key)) = (self.client_id, self.client_key.as_ref()) else {
-            return Ok(None);
-        };
-        let bytes = hex::decode(client_key.0.as_bytes())
-            .map_err(|e| Error::Credentials(format!("invalid clientKey: invalid hex: {e}")))?;
-        Ok(Some(SecretKey::new(
-            client_id,
-            zerokms::ViturKeyMaterial::from(bytes),
-        )))
-    }
-
-    /// Build a key provider that resolves the client key from explicit fields,
-    /// falling back to the profile store (`~/.cipherstash/secretkey.json`).
-    ///
-    /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
-    /// and passed through as explicit fields to support Bun.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn build_key_provider(
-        &self,
-    ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
-        Ok(FallbackKeyProvider::new(
-            self.secret_key()?,
-            stack_profile::ProfileStore::default(),
-        ))
-    }
-
-    /// Build a key provider for wasm: the explicit client key, and nothing
-    /// else.
-    ///
-    /// Same name and same call shape as the Neon version above, so
-    /// `new_client` reads identically on both targets and the divergence stays
-    /// confined to this one function. What differs is only what wasm cannot
-    /// have: there is no filesystem, so no `~/.cipherstash/secretkey.json` to
-    /// fall back to, which makes the credentials required rather than
-    /// optional. Erroring here names the missing fields; letting `None` through
-    /// would fail later inside ZeroKMS with something far less useful.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn build_key_provider(&self) -> Result<SecretKey, Error> {
-        self.secret_key()?.ok_or_else(|| {
-            Error::Credentials(
-                "clientOpts.clientId and clientOpts.clientKey are required — this build has no \
-                 profile store to fall back to"
-                    .to_string(),
-            )
-        })
-    }
-}
-
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ClientOpts {
-    #[serde(flatten)]
-    pub(crate) creds: CredentialOpts,
-    pub(crate) keyset: Option<IdentifiedBy>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnsureKeysetOpts {
-    name: String,
-    #[serde(flatten)]
-    creds: CredentialOpts,
-}
-
-#[derive(Serialize)]
-struct EnsureKeysetResult {
-    id: String,
-    name: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct NewClientOptions {
-    pub(crate) encrypt_config: crate::encrypt_config::EncryptConfigInput,
-    pub(crate) client_opts: Option<ClientOpts>,
-    /// EQL wire version to emit: 2 or 3. When omitted, SteVec configurations
-    /// use v3 and scalar-only configurations retain the v2 default. Sits alongside
-    /// `encrypt_config` (not in `client_opts`, which carries credentials +
-    /// keyset) because it configures the encryption output format.
-    pub(crate) eql_version: Option<u8>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum DecryptResult {
@@ -1305,6 +1175,41 @@ fn to_query_plaintext(
     }
 }
 
+/// Build the column-config map the encrypt-query entry points use:
+/// `encrypt_config` with `include_original` forced off on every match index.
+///
+/// `include_original: true` is a STORAGE option — it asks the indexer to add
+/// the whole (filtered, untokenized) value as an extra bloom term so the
+/// stored filter can also answer whole-value equality. A query bloom must
+/// stay token-only: EQL matches by bit-subset (query bits ⊆ row bits), so a
+/// whole-needle term in a substring query's bloom is never covered by the
+/// row's per-token bits and the query matches nothing (#134). The flag would
+/// otherwise reach query-term generation on two paths: v3 scalar Default
+/// operands run in Store mode (see [`to_query_plaintext`]), and query-mode
+/// terms are produced by the same match indexer that honours storage options.
+///
+/// Built once at client construction from a copy of the storage config.
+fn query_config_map(
+    encrypt_config: HashMap<Identifier, ColumnConfig>,
+) -> Arc<HashMap<Identifier, ColumnConfig>> {
+    Arc::new(
+        encrypt_config
+            .into_iter()
+            .map(|(ident, mut config)| {
+                for index in &mut config.indexes {
+                    if let IndexType::Match {
+                        include_original, ..
+                    } = &mut index.index_type
+                    {
+                        *include_original = false;
+                    }
+                }
+                (ident, config)
+            })
+            .collect(),
+    )
+}
+
 /// Resolve a query payload's column config and build its [`PreparedPlaintext`]:
 /// column lookup, index resolution, query-op parsing, plaintext conversion +
 /// mode inference ([`to_query_plaintext`]), and `EqlOperation` selection.
@@ -1314,8 +1219,12 @@ fn to_query_plaintext(
 /// diverge between builds. Returns the resolved `&ColumnConfig` alongside the
 /// prepared plaintext — the caller needs it again for [`query_output`], and
 /// returning the borrow avoids a second map lookup after encryption.
+///
+/// Callers pass the client's `query_config` (see [`query_config_map`]), not
+/// its `encrypt_config`, so storage-only index options never shape query
+/// terms.
 fn prepare_query_plaintext<'a>(
-    encrypt_config: &'a HashMap<Identifier, ColumnConfig>,
+    query_config: &'a HashMap<Identifier, ColumnConfig>,
     table: &str,
     column: &str,
     js_plaintext: &JsPlaintext,
@@ -1324,7 +1233,7 @@ fn prepare_query_plaintext<'a>(
     eql_version: EqlVersion,
 ) -> Result<(PreparedPlaintext<'a>, &'a ColumnConfig), Error> {
     let ident = Identifier::new(table.to_string(), column.to_string());
-    let column_config = encrypt_config
+    let column_config = query_config
         .get(&ident)
         .ok_or(Error::UnknownColumn(ident))?;
 
@@ -1410,10 +1319,13 @@ pub async fn new_client(
     let zerokms = Arc::new(zerokms);
     let cipher = ScopedZeroKMS::init(zerokms.clone(), client_opts.keyset).await?;
 
+    let query_config = query_config_map(encrypt_config.clone());
+    let encrypt_config = Arc::new(encrypt_config);
     let client = Client {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(encrypt_config),
+        encrypt_config,
+        query_config,
         eql_version,
     };
 
@@ -1645,7 +1557,7 @@ async fn encrypt_query(
     Json(opts): Json<EncryptQueryOptions>,
 ) -> Result<Json<QueryOutput>, neon::types::extract::Error> {
     let (prepared, column_config) = prepare_query_plaintext(
-        &client.encrypt_config,
+        &client.query_config,
         &opts.table,
         &opts.column,
         &opts.plaintext,
@@ -1708,7 +1620,7 @@ async fn encrypt_query_bulk(
 
         for (original_idx, payload) in &payloads {
             let (prepared, column_config) = prepare_query_plaintext(
-                &client.encrypt_config,
+                &client.query_config,
                 &payload.table,
                 &payload.column,
                 &payload.plaintext,
@@ -3194,6 +3106,100 @@ mod tests {
                 result,
                 Ok((Plaintext::Json(Some(_)), InferredQueryMode::StoreMode))
             ));
+        }
+    }
+
+    mod query_config_map {
+        use super::*;
+        use cipherstash_client::schema::column::{TokenFilter, Tokenizer};
+
+        fn match_index(include_original: bool) -> Index {
+            Index::new(IndexType::Match {
+                tokenizer: Tokenizer::Ngram { token_length: 3 },
+                token_filters: vec![TokenFilter::Downcase],
+                k: 6,
+                m: 2048,
+                include_original,
+            })
+        }
+
+        fn config_map(columns: Vec<(&str, &str, Vec<Index>)>) -> HashMap<Identifier, ColumnConfig> {
+            columns
+                .into_iter()
+                .map(|(table, column, indexes)| {
+                    let config = indexes
+                        .into_iter()
+                        .fold(ColumnConfig::build(column), ColumnConfig::add_index);
+                    (
+                        Identifier::new(table.to_string(), column.to_string()),
+                        config,
+                    )
+                })
+                .collect()
+        }
+
+        fn include_original_flags(
+            map: &HashMap<Identifier, ColumnConfig>,
+            table: &str,
+            column: &str,
+        ) -> Vec<bool> {
+            map[&Identifier::new(table.to_string(), column.to_string())]
+                .indexes
+                .iter()
+                .filter_map(|index| match &index.index_type {
+                    IndexType::Match {
+                        include_original, ..
+                    } => Some(*include_original),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn strips_include_original_from_every_match_index() {
+            let encrypt_config = config_map(vec![
+                (
+                    "users",
+                    "email",
+                    vec![match_index(true), Index::new(IndexType::Ore)],
+                ),
+                ("users", "name", vec![match_index(false)]),
+            ]);
+
+            let query_config = query_config_map(encrypt_config);
+
+            assert_eq!(
+                include_original_flags(&query_config, "users", "email"),
+                vec![false]
+            );
+            assert_eq!(
+                include_original_flags(&query_config, "users", "name"),
+                vec![false]
+            );
+        }
+
+        #[test]
+        fn leaves_the_storage_config_and_other_indexes_untouched() {
+            let encrypt_config = config_map(vec![(
+                "users",
+                "email",
+                vec![match_index(true), Index::new(IndexType::Ore)],
+            )]);
+
+            let query_config = query_config_map(encrypt_config.clone());
+
+            // The storage map keeps the flag: include_original stays honoured
+            // for stored blooms.
+            assert_eq!(
+                include_original_flags(&encrypt_config, "users", "email"),
+                vec![true]
+            );
+            // Non-match indexes survive the copy.
+            let ident = Identifier::new("users".to_string(), "email".to_string());
+            assert!(query_config[&ident]
+                .indexes
+                .iter()
+                .any(|index| matches!(index.index_type, IndexType::Ore)));
         }
     }
 }

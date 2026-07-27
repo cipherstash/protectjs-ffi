@@ -6,19 +6,25 @@
 //! `AccessKeyStrategy.getToken()` shape) into a [`stack_auth::AuthStrategy`]
 //! via a small adapter struct.
 //!
-//! Unlike the Neon path which uses `AutoStrategy` + env vars + the
-//! filesystem-backed `stack-profile`, the wasm path is fully inline: the
-//! client key is passed as a constructor option, and auth is delegated to
-//! the JS-supplied strategy on every ZeroKMS request.
+//! What differs from the Neon path is not the options shape — both entries
+//! deserialize the same [`crate::NewClientOptions`] — but what the host can
+//! supply. There is no filesystem and no readable environment here, so the
+//! client key is always passed as an explicit option: no
+//! `~/.cipherstash/secretkey.json` to fall back to.
+//!
+//! Authentication has two arms, [`WasmAuthStrategy`]: a JS-supplied
+//! `authStrategy`, or — when none is given — `AutoStrategy`'s wasm arm,
+//! which resolves an `AccessKeyStrategy` from `clientOpts.accessKey` +
+//! `clientOpts.workspaceCrn`.
 //!
 //! # Auth caching
 //!
-//! [`JsAuthStrategy::get_token`] is invoked on every ZeroKMS request —
-//! there is no Rust-side equivalent of [`stack_auth::AutoRefresh`] in the
-//! wasm path. Caching is the JS strategy's responsibility (cookies,
-//! `localStorage`, or whatever the embedding runtime provides). The
-//! adapter is intentionally a thin shim so the host environment owns the
-//! refresh / persistence policy.
+//! On the JS-backed arm, [`JsAuthStrategy::get_token`] is invoked on every
+//! ZeroKMS request — there is no Rust-side equivalent of
+//! [`stack_auth::AutoRefresh`] in the wasm path. Caching is the JS strategy's
+//! responsibility (cookies, `localStorage`, or whatever the embedding runtime
+//! provides). The adapter is intentionally a thin shim so the host environment
+//! owns the refresh / persistence policy.
 //!
 //! # Surface omissions
 //!
@@ -48,10 +54,11 @@ use wasm_bindgen_futures::JsFuture;
 use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
     auth_failure_message, encrypted_record_from_value, into_store_ciphertext,
-    into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_output,
-    query_output_v3, resolve_eql_version, storage_output, storage_output_v3, DecryptBulkOptions,
-    DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions, EncryptQueryBulkOptions,
-    EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, NewClientOptions, QueryOutput,
+    into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_config_map,
+    query_output, query_output_v3, resolve_eql_version, storage_output, storage_output_v3,
+    DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error,
+    NewClientOptions, QueryOutput,
 };
 use cipherstash_client::AutoStrategy;
 
@@ -87,7 +94,61 @@ import type {
 } from "../../lib/types.js";
 import type { EncryptedV3Query } from "../../lib/eql-v3.js";
 
-export type * from "../../lib/types.js";
+// Enumerated rather than `export type *`, for two reasons. It keeps the entry
+// honest: three names in `types.ts` do not belong on this build — `DecryptResult`
+// (it carries `code`, which Rust never emits; `WasmDecryptResult` below is what
+// this entry returns) and `EnsureKeysetOpts` / `EnsureKeysetResult` (an
+// operation this build deliberately does not export — see the module header).
+// And `export type *` is TypeScript 5.0+, which this package has no reason to
+// require of a consumer; the explicit form works from 3.8.
+export type {
+  ArrayIndexMode,
+  AuthStrategy,
+  BulkDecryptPayload,
+  CanonicalCastAs,
+  CanonicalColumn,
+  CanonicalEncryptConfig,
+  CastAs,
+  ClientOpts,
+  Column,
+  Context,
+  DecryptBulkOptions,
+  DecryptOptions,
+  Encrypted,
+  EncryptedPayload,
+  EncryptedQuery,
+  EncryptedScalar,
+  EncryptedScalarQuery,
+  EncryptedSteVec,
+  EncryptedSteVecQuery,
+  EncryptedSteVecSelector,
+  EncryptBulkOptions,
+  EncryptConfig,
+  EncryptOptions,
+  EncryptPayload,
+  EncryptQueryBulkOptions,
+  EncryptQueryOptions,
+  EqlCiphertextBody,
+  Identifier,
+  Indexes,
+  IndexTypeName,
+  JsPlaintext,
+  KeysetIdentifier,
+  MatchIndexOpts,
+  NewClientOptions,
+  OpeIndexOpts,
+  OreIndexOpts,
+  QueryOpName,
+  QueryPayload,
+  SteVecEntry,
+  SteVecIndexOpts,
+  SteVecMode,
+  TokenFilter,
+  Tokenizer,
+  TokenResult,
+  TokenResultEnvelope,
+  UniqueIndexOpts,
+} from "../../lib/types.js";
 export type { EncryptedV3, EncryptedV3Query } from "../../lib/eql-v3.js";
 
 /**
@@ -300,9 +361,6 @@ fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
 // Client
 // ---------------------------------------------------------------------------
 
-/// Wasm-side client handle. Wraps the same `ScopedCipher` +
-/// `ZeroKMSWithClientKey` pair the Neon side does, parameterised by
-/// [`JsAuthStrategy`] instead of `AutoStrategy`.
 /// The two ways this build can authenticate.
 ///
 /// Mirrors the Neon side's `NodeAuthStrategy` so `new_client` has the same
@@ -335,11 +393,19 @@ impl AuthStrategy for &WasmAuthStrategy {
     }
 }
 
+/// Wasm-side client handle. Wraps the same `ScopedCipher` +
+/// `ZeroKMSWithClientKey` pair the Neon side does, parameterised by
+/// [`WasmAuthStrategy`] — whose two arms are the wasm counterpart of the Neon
+/// side's `NodeAuthStrategy`.
 #[wasm_bindgen]
 pub struct WasmClient {
     cipher: Arc<ScopedCipher<WasmAuthStrategy>>,
     zerokms: Arc<ZeroKMSWithClientKey<WasmAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
+    /// `encrypt_config` with `include_original` forced off on every match
+    /// index — what the encrypt-query entry points use, so query blooms stay
+    /// token-only. See [`query_config_map`].
+    query_config: Arc<HashMap<Identifier, ColumnConfig>>,
     /// EQL wire version this client emits. Decryption accepts both formats
     /// regardless of this setting.
     eql_version: EqlVersion,
@@ -397,6 +463,16 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
     let js_strategy = if strategy.is_undefined() || strategy.is_null() {
         None
     } else {
+        // `Reflect::get` throws on a non-object receiver, so a bare string here
+        // would surface as "opts.authStrategy.getToken not found: TypeError:
+        // Reflect.get called on non-object" plus a stack trace — blaming
+        // `getToken` for a problem one level up. Mirrors the guards in
+        // `JsAuthStrategy::get_token` and `js_failure_to_auth_error`.
+        if !strategy.is_object() {
+            return Err(js_error(&format!(
+                "opts.{key} must be an object with a getToken() method"
+            )));
+        }
         let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
             .map_err(|e| js_error(&format!("opts.{key}.getToken not found: {e:?}")))?;
         let get_token: js_sys::Function = get_token
@@ -425,7 +501,12 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
         )),
     };
     let zerokms = ZeroKMSBuilder::new(auth)
-        .with_key_provider(client_opts.creds.build_key_provider().map_err(error_to_js)?)
+        .with_key_provider(
+            client_opts
+                .creds
+                .build_key_provider()
+                .map_err(error_to_js)?,
+        )
         .build()
         .await
         .map_err(|e| js_error(&e.to_string()))?;
@@ -435,10 +516,13 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
         .await
         .map_err(|e| js_error(&e.to_string()))?;
 
+    let query_config = query_config_map(encrypt_config.clone());
+    let encrypt_config = Arc::new(encrypt_config);
     Ok(WasmClient {
         cipher: Arc::new(cipher),
         zerokms,
-        encrypt_config: Arc::new(encrypt_config),
+        encrypt_config,
+        query_config,
         eql_version,
     })
 }
@@ -713,7 +797,7 @@ async fn do_encrypt_query(
     opts: EncryptQueryOptions,
 ) -> Result<QueryOutput, Error> {
     let (prepared, column_config) = prepare_query_plaintext(
-        &client.encrypt_config,
+        &client.query_config,
         &opts.table,
         &opts.column,
         &opts.plaintext,
@@ -768,7 +852,7 @@ async fn do_encrypt_query_bulk(
 
         for (original_idx, payload) in &payloads {
             let (prepared, column_config) = prepare_query_plaintext(
-                &client.encrypt_config,
+                &client.query_config,
                 &payload.table,
                 &payload.column,
                 &payload.plaintext,

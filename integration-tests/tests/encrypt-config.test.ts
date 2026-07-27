@@ -28,6 +28,23 @@ describe('newClient encrypt config', () => {
     expect(client).toBeDefined()
   })
 
+  test('accepts match include_original: true (storage-only; stripped from query generation)', async () => {
+    const encryptConfig: EncryptConfig = {
+      v: 1,
+      tables: {
+        users: {
+          email: {
+            cast_as: 'text',
+            indexes: { match: { include_original: true } },
+          },
+        },
+      },
+    }
+
+    const client = await newClient({ encryptConfig })
+    expect(client).toBeDefined()
+  })
+
   test('rejects match index on a non-text column with MATCH_REQUIRES_TEXT', async () => {
     const encryptConfig: EncryptConfig = {
       v: 1,

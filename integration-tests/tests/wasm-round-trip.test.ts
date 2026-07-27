@@ -171,6 +171,39 @@ describe('wasm round-trip', () => {
     expect(decrypted).toBe(plaintext)
   })
 
+  test('encrypts and decrypts with no authStrategy, via the AutoStrategy arm', async () => {
+    // The largest new runtime behaviour in #142, and the only path here that
+    // does not hand the Rust a JS strategy object: with `authStrategy` absent,
+    // `CredentialOpts::build_strategy()` resolves an `AccessKeyStrategy` from
+    // `clientOpts.accessKey` + `workspaceCrn` — `AutoStrategy`'s wasm arm,
+    // which is access-key-only because there is no profile store to fall back
+    // to. Everything else in this suite goes through `JsAuthStrategy`, so
+    // without this case the arm is asserted only at the type level.
+    const env = requireEnv()
+
+    const client = await wasm.newClient({
+      encryptConfig: {
+        v: 1,
+        tables: { users: { email: { cast_as: 'text', indexes: {} } } },
+      },
+      clientOpts: {
+        clientId: env.clientId,
+        clientKey: env.clientKey,
+        workspaceCrn: env.workspaceCrn,
+        accessKey: env.accessKey,
+      },
+    })
+
+    const plaintext = 'auto@example.com'
+    const ciphertext = await wasm.encrypt(client, {
+      plaintext,
+      table: 'users',
+      column: 'email',
+    })
+    expect(wasm.isEncrypted(ciphertext)).toBe(true)
+    expect(await wasm.decrypt(client, { ciphertext })).toBe(plaintext)
+  })
+
   test('round-trips a bigint plaintext exactly and rejects out-of-range values', async () => {
     const env = requireEnv()
 
@@ -400,6 +433,18 @@ describe('wasm newClient validation', () => {
         encryptConfig: minimalConfig,
       }),
     ).rejects.toThrow(/opts\.authStrategy\.getToken is not a function/)
+  })
+
+  test('rejects a non-object authStrategy without blaming getToken', async () => {
+    // `Reflect::get` throws on a non-object receiver, so without a guard this
+    // surfaced as "opts.authStrategy.getToken not found: TypeError: Reflect.get
+    // called on non-object", plus a stack trace — pointing at the wrong thing.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({ authStrategy: 'oops', encryptConfig: minimalConfig }),
+    ).rejects.toThrow(
+      /opts\.authStrategy must be an object with a getToken\(\) method/,
+    )
   })
 
   test('names the deprecated key when that is the one the caller used', async () => {

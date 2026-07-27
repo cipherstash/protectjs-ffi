@@ -19,11 +19,14 @@
  */
 
 import {
+  decrypt,
+  decryptBulk,
   decryptBulkFallible,
   encrypt,
   encryptBulk,
   encryptQuery,
   encryptQueryBulk,
+  isEncrypted,
   newClient,
 } from '../dist/wasm/protect_ffi.js'
 import type {
@@ -149,17 +152,17 @@ export async function noCodeField(): Promise<void> {
 // filesystem to fall back to.
 
 export const client_: Promise<WasmClient> = newClient({
-  encryptConfig: { v: 2, tables: { users: { email: { cast_as: 'text' } } } },
+  encryptConfig: { v: 1, tables: { users: { email: { cast_as: 'text' } } } },
   clientOpts: {
     clientId: '00000000-0000-0000-0000-000000000000',
     clientKey: 'deadbeef',
-    workspaceCrn: 'crn:ap-southeast-2.aws:ABC',
+    workspaceCrn: 'crn:ap-southeast-2.aws:ZVATKW3VHMFG27DY',
     accessKey: 'CSAK.test',
   },
 })
 
 export const withStrategy: Promise<WasmClient> = newClient({
-  encryptConfig: { v: 2, tables: {} },
+  encryptConfig: { v: 1, tables: {} },
   clientOpts: {
     clientId: '00000000-0000-0000-0000-000000000000',
     clientKey: 'deadbeef',
@@ -173,12 +176,12 @@ export const withStrategy: Promise<WasmClient> = newClient({
 // it, because whether credentials resolve is a runtime question on both
 // bindings.
 export const bare: Promise<WasmClient> = newClient({
-  encryptConfig: { v: 2, tables: {} },
+  encryptConfig: { v: 1, tables: {} },
 })
 
 // The deprecated alias still type-checks.
 export const deprecatedName: Promise<WasmClient> = newClient({
-  encryptConfig: { v: 2, tables: {} },
+  encryptConfig: { v: 1, tables: {} },
   strategy: authStrategy,
 })
 
@@ -186,12 +189,62 @@ export const deprecatedName: Promise<WasmClient> = newClient({
 // into the Rust, so this binding takes the same config the Neon entry does
 // rather than requiring a pre-canonicalised one.
 export const publicVocabulary: Promise<WasmClient> = newClient({
-  encryptConfig: { v: 2, tables: { users: { email: { cast_as: 'string' } } } },
+  encryptConfig: { v: 1, tables: { users: { email: { cast_as: 'string' } } } },
 })
 
 export const flatCredentials = newClient({
-  encryptConfig: { v: 2, tables: {} },
+  encryptConfig: { v: 1, tables: {} },
   // @ts-expect-error credentials live under `clientOpts` on both bindings now;
   // the flat top-level form this build used to take is gone.
   clientId: '00000000-0000-0000-0000-000000000000',
 })
+
+export const flatKeyset = newClient({
+  encryptConfig: { v: 1, tables: {} },
+  // @ts-expect-error `keyset` moved under `clientOpts` with the credentials.
+  // This is the one the Rust cannot catch: unknown keys are dropped rather
+  // than rejected (#147), so at runtime it binds to the DEFAULT keyset and
+  // encrypts under the wrong keys. Here, it is a compile error.
+  keyset: { Name: 'prod' },
+})
+
+// --- decrypt ---------------------------------------------------------------
+
+export const plaintext: Promise<JsPlaintext> = decrypt(client, {
+  ciphertext: {} as EncryptedPayload,
+  lockContext: { identityClaim: ['sub'] } satisfies Context,
+})
+
+export const plaintexts: Promise<JsPlaintext[]> = decryptBulk(client, {
+  ciphertexts: [
+    {
+      ciphertext: {} as EncryptedPayload,
+      lockContext: { identityClaim: ['sub'] } satisfies Context,
+    },
+  ],
+})
+
+export const bulkLockContextPlacement = decryptBulk(client, {
+  ciphertexts: [{ ciphertext: {} as EncryptedPayload }],
+  // @ts-expect-error same trap as the encrypt side: `lockContext` is per item.
+  // At the top level serde drops it and the values decrypt UNBOUND — the
+  // identity claim the caller believes is being enforced is never checked.
+  lockContext: { identityClaim: ['sub'] },
+})
+
+// --- isEncrypted -----------------------------------------------------------
+// The one export declared `unknown` rather than a named type (`wasm.rs`'s
+// `typescript_type` list), so it is the one place a wrong declaration would go
+// unnoticed. Pin both ends: it takes anything, and it narrows nothing.
+
+export const encryptedCheck: boolean = isEncrypted({ k: 'ct', v: 1 })
+export const encryptedCheckOfGarbage: boolean = isEncrypted('not a payload')
+
+export function isEncryptedDoesNotNarrow(value: unknown): void {
+  if (isEncrypted(value)) {
+    // @ts-expect-error the declaration returns `boolean`, not a type predicate.
+    // Rust checks the wire shape at runtime; claiming a predicate here would
+    // hand the caller a compile-time guarantee nothing backs.
+    const _: EncryptedPayload = value
+  }
+}
