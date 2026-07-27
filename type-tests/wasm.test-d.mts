@@ -19,6 +19,7 @@
  */
 
 import {
+  PROTECT_ERROR_CODES,
   decrypt,
   decryptBulk,
   decryptBulkFallible,
@@ -27,6 +28,7 @@ import {
   encryptQuery,
   encryptQueryBulk,
   isEncrypted,
+  isProtectErrorCode,
   newClient,
 } from '../dist/wasm/protect_ffi.js'
 import type {
@@ -43,6 +45,10 @@ import type {
 
 declare const client: WasmClient
 declare const authStrategy: NewClientOptions['authStrategy']
+
+// Runtime error helpers are part of the wasm surface, not type-only exports.
+export const knownErrorCode: ProtectErrorCode = PROTECT_ERROR_CODES[0]
+export const narrowsErrorCode: boolean = isProtectErrorCode(knownErrorCode)
 
 // --- the shared option types are reachable from this entry at all ----------
 // Before #142 none of these names existed here, and every `opts` was `any`.

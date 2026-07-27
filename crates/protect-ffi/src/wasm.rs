@@ -168,7 +168,11 @@ export type {
   UniqueIndexOpts,
 } from "../../lib/types.js";
 export type { EncryptedV3, EncryptedV3Query } from "../../lib/eql-v3.js";
-export type { ProtectErrorCode } from "../../lib/errors.js";
+export {
+  PROTECT_ERROR_CODES,
+  isProtectErrorCode,
+  type ProtectErrorCode,
+} from "./errors.js";
 "#;
 
 /// Newtypes over `JsValue` that carry a TypeScript type into the generated
@@ -1080,8 +1084,9 @@ fn js_error(msg: &str) -> JsValue {
 /// `src/errors.ts` used to do — and could only do for the Neon entry, since
 /// this build's thrown errors never reached that wrapper (#146).
 fn error_to_js(e: Error) -> JsValue {
-    let err = js_sys::Error::new(&e.to_string());
-    if let Some(code) = e.error_code() {
+    let (message, code) = e.diagnostic_parts();
+    let err = js_sys::Error::new(&message);
+    if let Some(code) = code {
         // Infallible in practice: `err` is a fresh, extensible JS object. A
         // failure here still yields a correct error, just without the code,
         // which beats masking the original failure with a `Reflect` one.

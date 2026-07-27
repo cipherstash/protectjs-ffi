@@ -458,6 +458,17 @@ impl From<ConfigError> for Error {
 }
 
 impl Error {
+    /// The human-readable diagnostic message and stable machine-readable code
+    /// carried across either JavaScript boundary.
+    ///
+    /// `miette::Diagnostic` uses this error's [`Display`](std::fmt::Display)
+    /// implementation as its primary message; the code comes from the
+    /// variant's `#[diagnostic(code(..))]`. Keeping the extraction together
+    /// makes the Neon, wasm, and fallible-bulk representations agree.
+    pub(crate) fn diagnostic_parts(&self) -> (String, Option<String>) {
+        (self.to_string(), self.error_code())
+    }
+
     /// The `ProtectErrorCode` this error crosses the boundary with, if it has
     /// one. `None` becomes `UNKNOWN` on the JS side.
     ///
@@ -936,9 +947,10 @@ impl DecryptResult {
     /// step — the two are read off the same value here rather than one being
     /// re-derived from the other later.
     fn from_error(err: &Error) -> Self {
+        let (message, code) = err.diagnostic_parts();
         Self::Error {
-            error: err.to_string(),
-            code: err.error_code(),
+            error: message,
+            code,
         }
     }
 }
@@ -1979,8 +1991,7 @@ async fn do_encrypt_query_bulk(
 /// shape `wasm.rs` already uses — and maps once on the way out.
 #[cfg(not(target_arch = "wasm32"))]
 fn into_js_error(err: Error) -> impl for<'cx> TryIntoJs<'cx, Value = JsError> {
-    let message = err.to_string();
-    let code = err.error_code();
+    let (message, code) = err.diagnostic_parts();
     extract::with(move |cx: &mut Cx| -> JsResult<JsError> {
         let error = cx.error(message)?;
         // Left unset rather than set to null when absent, so `'code' in err`

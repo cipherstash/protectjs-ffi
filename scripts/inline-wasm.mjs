@@ -27,6 +27,18 @@ if (!exportMatch) {
   )
 }
 const exportList = exportMatch[1].trim()
+const errorHelperExport =
+  'export { PROTECT_ERROR_CODES, isProtectErrorCode } from "./errors.js";'
+
+// wasm-bindgen owns the main stub and cannot re-export arbitrary JavaScript
+// values from a TypeScript custom section. Add the runtime half of the error
+// helper API after wasm-pack has generated the file. `errors.js` is compiled
+// as ESM from the same `src/errors.ts` the native entry uses, so edge runtimes
+// do not have to load CommonJS and the code list still has one source.
+await writeFile(
+  resolve(wasmDir, 'protect_ffi.js'),
+  `${bundlerStub.trimEnd()}\n${errorHelperExport}\n`,
+)
 
 // NOTE: we deliberately omit wasm-bindgen's `@ts-self-types` directive here.
 // Supabase Edge's module-graph resolver treats it as a hard external import
@@ -50,6 +62,8 @@ instance.exports.__wbindgen_start();
 export {
 ${exportList}
 } from "./protect_ffi_bg.js";
+
+${errorHelperExport}
 `
 
 const outPath = resolve(wasmDir, 'protect_ffi_inline.js')

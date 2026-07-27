@@ -31,6 +31,8 @@ const WASM_INLINE_PATH = resolve(
 )
 
 type WasmModule = {
+  PROTECT_ERROR_CODES: readonly string[]
+  isProtectErrorCode: (value: unknown) => boolean
   newClient: (opts: unknown) => Promise<unknown>
 }
 
@@ -59,6 +61,14 @@ async function newClientError(opts: unknown): Promise<{
 }
 
 describe('wasm error codes', () => {
+  test('exports the runtime error helpers', async () => {
+    const { PROTECT_ERROR_CODES, isProtectErrorCode } = await loadWasm()
+
+    expect(PROTECT_ERROR_CODES).toContain('UNSUPPORTED_CONFIG_VERSION')
+    expect(isProtectErrorCode('UNSUPPORTED_CONFIG_VERSION')).toBe(true)
+    expect(isProtectErrorCode('ECONNRESET')).toBe(false)
+  })
+
   test('a match index on a non-text column', async () => {
     const err = await newClientError({
       encryptConfig: {

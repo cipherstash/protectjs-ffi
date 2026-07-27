@@ -84,36 +84,84 @@ declare module './load.cjs' {
   function ensureKeyset(opts: EnsureKeysetOpts): Promise<EnsureKeysetResult>
 }
 
-// Errors are not touched on the way out. Rust builds the JS `Error` and sets
-// `code` on it (#146), so there is nothing left for this layer to add — it used
-// to re-wrap every failure in a `ProtectError` carrying a code inferred from the
-// message, which is the thing that went.
+// Rust builds the JS `Error` and sets its diagnostic `message` and `code`
+// (#146); this layer never replaces that object or infers anything from prose.
+// It does have to preserve one piece of JavaScript-only context. Neon creates
+// an asynchronous failure while settling the promise, after the original call
+// stack has unwound, so V8 otherwise gives the error a header and no frames.
+// Capture the call site before entering Neon and graft those frames onto only a
+// stackless error when the promise rejects.
 //
-// Every promise-returning export below is `async` for one reason worth stating,
-// because it looks like a redundant keyword on a function whose body is a
-// single `return`: neon extracts arguments SYNCHRONOUSLY. A bad `client` handle,
-// or an options object serde rejects — including every unknown-key rejection
-// from #144 — throws from the call itself rather than rejecting the promise it
-// would otherwise have returned. So does `withEncodedPlaintext` on an
-// out-of-range bigint. `async` is what keeps those as rejections now that the
-// try/catch wrapper is gone; drop it and `.catch()` stops seeing them.
+// `withCallSite` also invokes `fn` inside an async try/catch. That keeps Neon's
+// synchronous argument-extraction failures, and JS-side encoding failures such
+// as an out-of-range bigint, observable as promise rejections.
+
+type StackBoundary = (...args: never[]) => unknown
+
+function hasStackFrames(stack: unknown): boolean {
+  return typeof stack === 'string' && /\n\s+at(?:\s|$)/.test(stack)
+}
+
+function captureCallSite(boundary: StackBoundary): string | undefined {
+  const callSite = new Error()
+  Error.captureStackTrace?.(callSite, boundary)
+  return callSite.stack
+}
+
+function restoreCallSite(error: Error, callSite: string | undefined): void {
+  if (
+    hasStackFrames(error.stack) ||
+    typeof callSite !== 'string' ||
+    !hasStackFrames(callSite)
+  )
+    return
+
+  const header =
+    typeof error.stack === 'string' && error.stack.length > 0
+      ? error.stack.split('\n', 1)[0]
+      : `${error.name}: ${error.message}`
+  const frames = callSite.slice(callSite.indexOf('\n'))
+
+  // A native error is extensible, but stack is non-standard and a foreign
+  // Error could make it read-only. Never mask the original failure if so.
+  try {
+    error.stack = `${header}${frames}`
+  } catch {
+    // Preserve the original error unchanged.
+  }
+}
+
+async function withCallSite<T>(
+  boundary: StackBoundary,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const callSite = captureCallSite(boundary)
+  try {
+    return await fn()
+  } catch (error) {
+    if (error instanceof Error) restoreCallSite(error, callSite)
+    throw error
+  }
+}
 
 export async function newClient(opts: NewClientOptions): Promise<Client> {
-  return native.newClient(...newClientArgs(opts))
+  return withCallSite(newClient, () => native.newClient(...newClientArgs(opts)))
 }
 
 export async function encrypt(
   client: Client,
   opts: EncryptOptions,
 ): Promise<EncryptedPayload> {
-  return native.encrypt(client, withEncodedPlaintext(opts))
+  return withCallSite(encrypt, () =>
+    native.encrypt(client, withEncodedPlaintext(opts)),
+  )
 }
 
 export async function decrypt(
   client: Client,
   opts: DecryptOptions,
 ): Promise<JsPlaintext> {
-  return native.decrypt(client, opts)
+  return withCallSite(decrypt, () => native.decrypt(client, opts))
 }
 
 /**
@@ -131,18 +179,20 @@ export async function encryptBulk(
   client: Client,
   opts: EncryptBulkOptions,
 ): Promise<EncryptedPayload[]> {
-  const plaintexts = withEncodedPlaintexts(opts.plaintexts)
-  return native.encryptBulk(
-    client,
-    plaintexts === opts.plaintexts ? opts : { ...opts, plaintexts },
-  )
+  return withCallSite(encryptBulk, () => {
+    const plaintexts = withEncodedPlaintexts(opts.plaintexts)
+    return native.encryptBulk(
+      client,
+      plaintexts === opts.plaintexts ? opts : { ...opts, plaintexts },
+    )
+  })
 }
 
 export async function decryptBulk(
   client: Client,
   opts: DecryptBulkOptions,
 ): Promise<JsPlaintext[]> {
-  return native.decryptBulk(client, opts)
+  return withCallSite(decryptBulk, () => native.decryptBulk(client, opts))
 }
 
 /**
@@ -157,7 +207,9 @@ export async function decryptBulkFallible(
   client: Client,
   opts: DecryptBulkOptions,
 ): Promise<DecryptResult[]> {
-  return native.decryptBulkFallible(client, opts)
+  return withCallSite(decryptBulkFallible, () =>
+    native.decryptBulkFallible(client, opts),
+  )
 }
 
 /**
@@ -185,7 +237,9 @@ export async function encryptQuery(
   client: Client,
   opts: EncryptQueryOptions,
 ): Promise<Encrypted | EncryptedQuery | EncryptedV3Query> {
-  return native.encryptQuery(client, withEncodedPlaintext(opts))
+  return withCallSite(encryptQuery, () =>
+    native.encryptQuery(client, withEncodedPlaintext(opts)),
+  )
 }
 
 /** Bulk variant of {@link encryptQuery} — same EQL v3 shapes apply. */
@@ -193,11 +247,13 @@ export async function encryptQueryBulk(
   client: Client,
   opts: EncryptQueryBulkOptions,
 ): Promise<(Encrypted | EncryptedQuery | EncryptedV3Query)[]> {
-  const queries = withEncodedPlaintexts(opts.queries)
-  return native.encryptQueryBulk(
-    client,
-    queries === opts.queries ? opts : { ...opts, queries },
-  )
+  return withCallSite(encryptQueryBulk, () => {
+    const queries = withEncodedPlaintexts(opts.queries)
+    return native.encryptQueryBulk(
+      client,
+      queries === opts.queries ? opts : { ...opts, queries },
+    )
+  })
 }
 
 /**
@@ -208,5 +264,7 @@ export async function encryptQueryBulk(
 export async function ensureKeyset(
   opts: EnsureKeysetOpts,
 ): Promise<EnsureKeysetResult> {
-  return native.ensureKeyset(withEnvCredentials(opts))
+  return withCallSite(ensureKeyset, () =>
+    native.ensureKeyset(withEnvCredentials(opts)),
+  )
 }
