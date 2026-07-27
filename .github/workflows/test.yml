@@ -83,13 +83,10 @@ jobs:
         shell: bash
         run: npm run debug
 
+      # Required by the `lint:rust:wasm` arm of the Rust Lint step below.
       - name: Add wasm32 target
         shell: bash
         run: rustup target add wasm32-unknown-unknown
-
-      - name: Cargo check (wasm32)
-        shell: bash
-        run: cargo check --target wasm32-unknown-unknown -p protect-ffi
 
       # The `mise run test:integration:all` step below builds wasm artifacts
       # because `tests/wasm-round-trip.test.ts` loads
@@ -101,8 +98,11 @@ jobs:
           crate: wasm-pack
           version: '0.13.1'
 
+      # Clippy for the host and for wasm32, plus `cargo fmt --check`. Subsumes
+      # the `cargo check --target wasm32-unknown-unknown` this step used to sit
+      # next to — clippy checks as it lints.
       - name: Rust Lint
-        run: mise lint:rust
+        run: mise run lint:rust
 
       - name: Test (typecheck, lint, & Rust)
         shell: bash

@@ -221,10 +221,22 @@ Initiate a dry run of a patch release of this library via GitHub Actions. This p
 
 #### `npm test`
 
-Typechecks the TypeScript and runs the unit tests (tsc + vitest), formats and lints Rust and TypeScript code, and runs Rust tests.
+Typechecks the TypeScript and runs the unit tests (tsc + vitest), checks formatting for both languages, lints the TypeScript, and runs the Rust tests.
 
 Note: `npm test` at project root does not run integration tests.
 For integration tests, see [below](#integration-tests).
+
+#### `mise run lint:rust`
+
+Every Rust check CI gates on: clippy against the host target, clippy against `wasm32-unknown-unknown`, and `cargo fmt --check`. `npm test` deliberately leaves clippy out to keep the inner loop fast, so run this before pushing.
+
+The wasm arm needs the target installed once:
+
+```sh
+rustup target add wasm32-unknown-unknown
+```
+
+`mise run fmt` fixes what the formatting check reports.
 
 ## Project Layout
 

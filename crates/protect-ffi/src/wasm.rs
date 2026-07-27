@@ -28,11 +28,25 @@
 //!
 //! # Surface omissions
 //!
-//! Admin-shape operations (`ensureKeyset`, workspace management) are
-//! intentionally not exported on the wasm surface — provisioning belongs
-//! in your server, not in browser / edge code.
-
-#![cfg(target_arch = "wasm32")]
+//! `ensureKeyset` is exported on the Neon entry only. Read that as a gap, not
+//! a boundary: this doc used to call it deliberate — provisioning belongs on
+//! your server, not in browser code — but wasm ships to servers too, and
+//! nothing about the operation makes it unsuited to this target.
+//!
+//! It went unnoticed for a structural reason worth naming, because it will
+//! hide the next one too. `ensureKeyset`'s only caller in this repo is
+//! `integration-tests/tests/keyset.test.ts`, and the wasm suite has no
+//! equivalent: one of the eighteen files under `integration-tests/tests`
+//! loads this build, covering round-trips and `newClient` validation and
+//! nothing else — `encryptQuery` and `encryptQueryBulk` have no wasm test at
+//! all, nor do `eqlVersion`, `keyset`, or lock contexts. A missing export is
+//! invisible when no test on that target would have called it, so the
+//! omission is the symptom and the coverage is the cause. Tracked in #149.
+//!
+//! The `mod wasm;` declaration in `lib.rs` carries the
+//! `#[cfg(target_arch = "wasm32")]`. Repeating it here as an inner attribute is
+//! what `clippy::duplicated_attributes` flags, so this module has no cfg of its
+//! own.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
