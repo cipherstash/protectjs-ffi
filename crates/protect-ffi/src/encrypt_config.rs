@@ -99,6 +99,22 @@ fn normalize(config: &mut Value) {
 /// config — `indexes`, `match.m`, `ste_vec.mode` — not just the two this module
 /// otherwise touches. Array elements are recursed into but never removed;
 /// dropping one would shift the rest.
+///
+/// # The cost, stated plainly
+///
+/// A non-finite number reaches this function as `null` too: `serde_json::Value`
+/// cannot represent NaN or ±Infinity, and `JSON.stringify(Infinity)` is
+/// literally `null`, so both bindings lose the distinction before the config
+/// gets here. `{match: {m: Infinity}}` therefore no longer errors — the key is
+/// dropped and `m` takes its default.
+///
+/// That is a real regression for that input, and it is not fixable at this
+/// layer: by the time the config is a `Value`, `undefined` and `Infinity` are
+/// the same thing. It is accepted because the two cases are not comparable in
+/// frequency — `{cast_as: cfg.castAs}` with an undefined `castAs` is ordinary
+/// JavaScript that used to hard-error on wasm, while a non-finite bloom filter
+/// parameter is a typo nobody has written. Rejecting non-finite numbers needs
+/// to happen before the hop, on the JS side, if it is worth doing at all.
 fn prune_nulls(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -364,6 +380,28 @@ mod tests {
             "email": {"cast_as": "text", "indexes": {"match": {"m": null}}},
         }}}));
         assert!(parsed.is_ok(), "{:?}", parsed.err());
+    }
+
+    #[test]
+    fn a_non_finite_number_is_indistinguishable_from_undefined() {
+        // Pins the cost documented on `prune_nulls`, so it is a known trade
+        // rather than a surprise. `{match: {m: Infinity}}` arrives here as
+        // `{"m": null}` on BOTH bindings — `serde_json::Value` cannot hold a
+        // non-finite float, and `JSON.stringify(Infinity)` is `null` — so the
+        // key is dropped and `m` takes its default instead of erroring.
+        //
+        // If this ever needs to fail loudly, it has to be caught before the
+        // `Value` hop; there is nothing left to distinguish at this layer.
+        let mut config = json!({"v": 1, "tables": {"users": {
+            "email": {"cast_as": "text", "indexes": {"match": {"m": null, "k": 6}}},
+        }}});
+        normalize(&mut config);
+        let m = &config["tables"]["users"]["email"]["indexes"]["match"];
+        assert!(
+            m.get("m").is_none(),
+            "the key is dropped, not defaulted here"
+        );
+        assert_eq!(m["k"], 6, "its siblings survive");
     }
 
     #[test]
