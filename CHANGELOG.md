@@ -15,6 +15,140 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The wasm `newClient` takes credentials and `keyset` under `clientOpts`.**
+  It used to read `clientId`, `clientKey`, and `keyset` from the top level of
+  the options object; they now live where the Neon entry has always had them,
+  because both entries deserialize the same `NewClientOptions`. ([#142])
+
+  ```js
+  // before
+  await newClient({ encryptConfig, strategy, clientId, clientKey, keyset })
+  // after
+  await newClient({
+    encryptConfig,
+    authStrategy,
+    clientOpts: { clientId, clientKey, keyset },
+  })
+  ```
+
+  **Move `keyset` with the rest.** Unknown option keys are still dropped
+  rather than rejected (tracked in [#147]), so a `keyset` left at the top
+  level is silently ignored and the client binds to the **default keyset** —
+  it will encrypt, under the wrong keys. The credential fields fail loudly if
+  you miss them; this one does not.
+
+  `clientOpts` also carries `workspaceCrn` and `accessKey`, which the wasm
+  `newClient` did not accept before. Top-level `eqlVersion` is unchanged — it
+  worked on this entry already.
+
+  Otherwise: `strategy` still works under its old name, and `encryptConfig`
+  accepts strictly more than it did (see normalisation, below).
+
+- **`clientOpts.clientKey` must be hex.** It was decoded by
+  `SecretKey::from_hex`, which falls back to standard padded base64 — the
+  encoding `~/.cipherstash/secretkey.json` uses on disk — so a base64 value
+  passed as `clientKey`, or set in `CS_CLIENT_KEY` (which the Neon entry
+  forwards as `clientKey`), used to work. It is now rejected with `invalid
+  clientKey: expected a hex-encoded key`. Re-encode as hex, or read the key
+  from the profile store instead of pasting it.
+
+  The decode error deliberately says nothing more: `hex`'s own message names
+  the offending character and its offset, which would put part of a live key
+  into logs.
+
+- **A malformed `clientOpts.clientId` now fails even without a `clientKey`.**
+  It used to be parsed only as half of the `clientId` + `clientKey` pair, so
+  `newClient({ encryptConfig, clientOpts: { clientId: '<malformed>' } })` fell
+  through to the profile store and succeeded on the Neon entry. It now throws
+  `invalid clientId: ...` at the options boundary. Fail-closed, and the error
+  names the field, but it is a call that used to work.
+
+- **The wasm entry's declarations are types now, not `any`.** Every export was
+  `(client: WasmClient, opts: any) => Promise<any>`, which type-checked
+  anything. A TypeScript consumer whose calls were wrong all along will now
+  see those errors at build time. That is the feature, but it lands as a build
+  failure on upgrade, so budget for it.
+
+### Added
+
+- **The wasm build declares the real option types**, emitted by wasm-bindgen
+  from `typescript_type` / `typescript_custom_section` attributes on the Rust.
+  Previously it typed every export as `(client: WasmClient, opts: any):
+  Promise<any>`, so the
+  `./wasm` and `./wasm-inline` entries checked nothing and exported no option
+  or payload types at all — while the Neon entry declared fourteen. Both
+  entries now name the same types.
+
+  This was not cosmetic. A consumer writing one interface over both bindings
+  had to import the option types from the Neon entry, since that was the only
+  place they existed — which put a `@cipherstash/protect-ffi` specifier into
+  the published types of a bundle whose entire purpose is to avoid loading a
+  native binary. ([#142])
+
+  Mistakes the wasm entry now catches at compile time, all of which previously
+  reached the Rust:
+
+  - `lockContext` at the top level of a bulk call. It belongs on each payload
+    item; at the top level serde drops it, and the values are encrypted
+    **unbound** while the caller believes they are identity-bound.
+  - A misspelled or unknown option key.
+  - A closed-set value typo such as `indexType: 'matsh'`.
+  - A plaintext that is not a `JsPlaintext`.
+
+  The shared types moved to `src/types.ts` and are re-exported by the Neon
+  entry, so **its public surface is unchanged**.
+
+- **One wasm-only type, for the one place the bindings genuinely differ.**
+  `WasmDecryptResult` omits `code`, which Rust never emits — the Neon wrapper
+  infers it in JS from the error message, so on this entry the field is absent
+  rather than optional-and-never-set.
+
+  `newClient` was the other exception while this work was in progress: it took
+  a different options shape and a pre-canonicalised config. Both are resolved
+  below — the bindings now share one `NewClientOptions`.
+
+- `CanonicalCastAs`, `CanonicalColumn`, and `CanonicalEncryptConfig` are now
+  public, in `types.ts`. They were `NativeCastAs` / `NativeColumn` /
+  `NativeEncryptConfig`, internal to `normalizeEncryptConfig.ts` — never
+  exported from any entry point, so nothing depended on the old names.
+  Renamed because the vocabulary is the Rust core's, not the Node addon's —
+  the wasm build requires it too, and now says so in its types.
+
+### Changed
+
+- **`encryptConfig` normalisation moved into Rust.** `cast_as: 'string' |
+  'number' | 'bigint'` → `'text' | 'float' | 'big_int'`, and the `ste_vec`
+  `array_index_mode` default of `'none'`, now happen at the deserialization
+  boundary rather than in the Neon entry's JS wrapper.
+
+  Both bindings therefore accept the same config. Previously only the Neon
+  entry normalised, so a wasm caller had to pre-canonicalise by hand or be
+  rejected with an opaque variant error — and `@cipherstash/stack` had
+  reimplemented the `cast_as` half for its own wasm path. One implementation
+  now, in `crates/protect-ffi/src/encrypt_config.rs`, with the JS
+  `normalizeEncryptConfig` module removed and its cases ported to Rust tests.
+
+  Normalisation stays tolerant: an unrecognised shape passes through untouched
+  so `CanonicalEncryptionConfig` still produces the error, which is more
+  specific than anything the normaliser could invent.
+
+  It also drops `undefined`-valued keys, which is new behaviour on the wasm
+  entry. `{ cast_as: cfg.castAs }` with an undefined `castAs` is ordinary
+  JavaScript and has always worked on the Neon entry, whose extractor is
+  `JSON.stringify`-based; on wasm those keys survive as `null` and every
+  non-optional field rejected them (`invalid type: null, expected string or
+  map`). One config now works on both.
+
+- **`newClient`'s `strategy` option is now `authStrategy`**, matching
+  `@cipherstash/stack`'s `config.authStrategy` so one concept has one name
+  across the stack. Both entries accept it.
+
+  `strategy` still works and is marked `@deprecated`; `authStrategy` wins if
+  both are set. No caller breaks today, but move over — the old name will be
+  removed.
+
 ### Fixed
 
 - **`match.include_original` no longer reaches query-term generation**
@@ -26,6 +160,9 @@ uses the promoted section as the GitHub release notes.
   copy of the config with `include_original` forced off and every
   `encryptQuery` / `encryptQueryBulk` path (native and wasm, v2 and v3) uses
   it. The config remains accepted as-is for storage encryption.
+
+[#142]: https://github.com/cipherstash/protectjs-ffi/issues/142
+[#147]: https://github.com/cipherstash/protectjs-ffi/issues/147
 
 ## [0.30.0] - 2026-07-20
 

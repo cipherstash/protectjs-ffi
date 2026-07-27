@@ -3,9 +3,9 @@ import { describe, expect, test } from 'vitest'
 
 import {
   type CastAs,
+  type EncryptConfig,
   decrypt,
   encrypt,
-  type EncryptConfig,
   newClient,
 } from '@cipherstash/protect-ffi'
 

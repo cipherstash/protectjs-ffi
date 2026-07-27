@@ -1,7 +1,16 @@
 export type CredentialOpts = {
+  /** Full workspace CRN, e.g. `crn:ap-southeast-2.aws:<workspace-id>`. */
   workspaceCrn?: string
   accessKey?: string
+  /** UUID. A malformed value is rejected at the options boundary. */
   clientId?: string
+  /**
+   * Hex-encoded client key.
+   *
+   * Hex only. The base64 form `~/.cipherstash/secretkey.json` stores on disk
+   * used to be accepted here too, and is not any more — see the CHANGELOG.
+   * This is also what `CS_CLIENT_KEY` is forwarded as.
+   */
   clientKey?: string
 }
 

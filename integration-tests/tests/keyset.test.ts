@@ -2,12 +2,12 @@ import 'dotenv/config'
 import { beforeAll, describe, expect, test } from 'vitest'
 
 import {
+  type Identifier,
   decrypt,
   encrypt,
-  type Identifier,
-  newClient,
-  isEncrypted,
   ensureKeyset,
+  isEncrypted,
+  newClient,
 } from '@cipherstash/protect-ffi'
 
 import { encryptConfig } from './common.js'

@@ -6,7 +6,7 @@
 // Ported from cipherstash-suite/packages/stack-auth/node/scripts/inline-wasm.mjs.
 
 import { readFile, writeFile } from 'node:fs/promises'
-import { resolve, dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))

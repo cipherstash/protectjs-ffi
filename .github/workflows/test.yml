@@ -113,3 +113,11 @@ jobs:
 
       - name: Test (integration)
         run: mise run test:integration:all
+
+      # Only runnable after the step above: it is what builds `dist/wasm/`
+      # (integration-tests/tasks.toml), and the generated .d.ts imports
+      # `../../lib/types.js`, emitted by the `npm run debug` / `npm test` steps
+      # earlier in this job. Release runs it too (build.yml's Wasm job) — this
+      # is the copy that runs on a PR.
+      - name: Typecheck wasm declarations
+        run: npm run test:typecheck:wasm

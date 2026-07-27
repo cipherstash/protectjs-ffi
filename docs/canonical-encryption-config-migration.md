@@ -9,9 +9,13 @@ The FFI now deserializes the encrypt config directly into
 `cipherstash-config::CanonicalEncryptionConfig` rather than the previously
 hand-rolled types in `encrypt_config.rs`. The public TypeScript types —
 `EncryptConfig`, `CastAs`, `Indexes`, `SteVecIndexOpts`, `SteVecMode` — are
-unchanged. A thin TypeScript translation layer at the `newClient` boundary
-remaps three JS-specific `cast_as` values to the library's vocabulary before
-the config crosses into native code.
+unchanged. Three JS-specific `cast_as` values are remapped to the library's
+vocabulary before the config reaches the canonical type.
+
+> **Since #142** that remap runs in Rust, at the deserialization boundary
+> (`crates/protect-ffi/src/encrypt_config.rs`), not in a TypeScript layer at
+> `newClient`. It applied only to the Neon entry while it was in JS; both
+> bindings get it now. Nothing a caller writes changes.
 
 ---
 
@@ -91,9 +95,14 @@ text.
 ## Explicitly not changed
 
 `array_index_mode` still defaults to `'none'` for `ste_vec` indexes. The
-underlying library defaults to `'all'`, but the TypeScript layer injects
-`array_index_mode: 'none'` for any `ste_vec` index that omits the field,
-preserving the previous behaviour.
+underlying library defaults to `'all'`, but `array_index_mode: 'none'` is
+injected for any `ste_vec` index that omits the field, preserving the previous
+behaviour.
+
+> **Since #142** that injection also runs in
+> `crates/protect-ffi/src/encrypt_config.rs` rather than in TypeScript, so the
+> wasm build gets the same default. Previously it required a wasm caller to set
+> the field by hand, or silently indexed under `'all'`.
 
 ---
 

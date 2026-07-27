@@ -2,19 +2,19 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
+  type Identifier,
   decrypt,
   encrypt,
-  type Identifier,
-  newClient,
   isEncrypted,
+  newClient,
 } from '@cipherstash/protect-ffi'
 
 // Import shared configs from common.js
 import {
   assertScalar,
   assertSteVec,
-  jsonSteVec,
   scalarConfig as encryptConfig,
+  jsonSteVec,
 } from './common.js'
 
 type UserColumn = Identifier<typeof encryptConfig>

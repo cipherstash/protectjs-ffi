@@ -1,7 +1,15 @@
+mod client_options;
+mod encrypt_config;
 mod eql_v3;
 mod js_plaintext;
+mod query_op;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+
+use client_options::NewClientOptions;
+#[cfg(not(target_arch = "wasm32"))]
+use client_options::{EnsureKeysetOpts, EnsureKeysetResult};
+use query_op::{QueryOpName, SteVecQueryOpKind};
 
 use cipherstash_client::{
     encryption::{
@@ -15,15 +23,14 @@ use cipherstash_client::{
     schema::{
         column::{Index, IndexType},
         errors::ConfigError,
-        CanonicalEncryptionConfig, ColumnConfig, Identifier,
+        ColumnConfig, Identifier,
     },
     zerokms::{
-        self, FallbackKeyProvider, KeyProvider, RecordDecryptError, SecretKey, WithContext,
-        ZeroKMSBuilder, ZeroKMSBuilderError, ZeroKMSWithClientKey,
+        self, KeyProvider, RecordDecryptError, WithContext, ZeroKMSBuilder, ZeroKMSBuilderError,
+        ZeroKMSWithClientKey,
     },
-    AuthError, AutoStrategy, IdentifiedBy, UnverifiedContext,
+    AuthError, AutoStrategy, UnverifiedContext,
 };
-use cts_common::Crn;
 // Shared by the Neon exports below and the wasm module (which imports these
 // via `crate::`), so both targets resolve them through this one re-export.
 pub(crate) use eql_v3::{
@@ -150,24 +157,6 @@ impl std::fmt::Display for ExpectedKind {
     }
 }
 
-/// Query operation context for errors
-#[derive(Debug, Clone, Copy)]
-pub enum QueryOpKind {
-    SteVecTerm,
-    SteVecValueSelector,
-    SteVecDefault,
-}
-
-impl std::fmt::Display for QueryOpKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SteVecTerm => write!(f, "ste_vec_term"),
-            Self::SteVecValueSelector => write!(f, "ste_vec_value_selector"),
-            Self::SteVecDefault => write!(f, "ste_vec (default)"),
-        }
-    }
-}
-
 /// Wrapper for bounded display of potentially large strings
 #[derive(Debug, Clone)]
 pub struct Truncated<'a> {
@@ -275,8 +264,6 @@ pub enum Error {
     Eql(#[from] EqlError),
     #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs-ffi/issues.")]
     InvariantViolation(String),
-    #[error("Unknown query operation: '{0}'")]
-    UnknownQueryOp(String),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
@@ -293,7 +280,7 @@ pub enum Error {
         "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
     )]
     InvalidQueryInput {
-        query_op: QueryOpKind,
+        query_op: SteVecQueryOpKind,
         received: ReceivedKind,
         expected: ExpectedKind,
         hint: QueryInputHint,
@@ -704,96 +691,6 @@ impl AuthStrategy for &NodeAuthStrategy {
 #[cfg(not(target_arch = "wasm32"))]
 type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 
-/// Credential fields shared by [`ClientOpts`] and [`EnsureKeysetOpts`].
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct CredentialOpts {
-    workspace_crn: Option<Crn>,
-    access_key: Option<String>,
-    client_id: Option<String>,
-    client_key: Option<String>,
-}
-
-impl CredentialOpts {
-    /// Build an [`AutoStrategy`] from optional workspace CRN and access key,
-    /// falling back to env vars and profile store for unset fields.
-    fn build_strategy(&self) -> Result<AutoStrategy, Error> {
-        let mut builder = AutoStrategy::builder();
-        if let Some(key) = self.access_key.as_ref() {
-            builder = builder.with_access_key(key);
-        }
-        if let Some(crn) = self.workspace_crn.as_ref() {
-            builder = builder.with_workspace_crn(crn.clone());
-        }
-        Ok(builder.detect()?)
-    }
-
-    /// Build an `Option<SecretKey>` from the `client_id` + `client_key` pair.
-    ///
-    /// Returns `None` if either field is missing (triggers `FallbackKeyProvider` to try the
-    /// profile store). Returns `Err` if the values are present but invalid.
-    fn secret_key(&self) -> Result<Option<SecretKey>, Error> {
-        match (self.client_id.as_ref(), self.client_key.as_ref()) {
-            (Some(id), Some(key)) => SecretKey::from_hex(id.clone(), key.clone())
-                .map(Some)
-                .map_err(|e| Error::Credentials(e.to_string())),
-            _ => Ok(None),
-        }
-    }
-
-    /// Build a key provider that resolves the client key from explicit fields,
-    /// falling back to the profile store (`~/.cipherstash/secretkey.json`).
-    ///
-    /// Note: env vars (`CS_CLIENT_ID`/`CS_CLIENT_KEY`) are read on the JS side
-    /// and passed through as explicit fields to support Bun.
-    ///
-    /// Wasm32 has no filesystem — the wasm binding will pass the client key
-    /// inline instead and skip the fallback path entirely.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn build_key_provider(
-        &self,
-    ) -> Result<FallbackKeyProvider<Option<SecretKey>, stack_profile::ProfileStore>, Error> {
-        Ok(FallbackKeyProvider::new(
-            self.secret_key()?,
-            stack_profile::ProfileStore::default(),
-        ))
-    }
-}
-
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct ClientOpts {
-    #[serde(flatten)]
-    creds: CredentialOpts,
-    keyset: Option<IdentifiedBy>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnsureKeysetOpts {
-    name: String,
-    #[serde(flatten)]
-    creds: CredentialOpts,
-}
-
-#[derive(Serialize)]
-struct EnsureKeysetResult {
-    id: String,
-    name: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NewClientOptions {
-    encrypt_config: CanonicalEncryptionConfig,
-    client_opts: Option<ClientOpts>,
-    /// EQL wire version to emit: 2 or 3. When omitted, SteVec configurations
-    /// use v3 and scalar-only configurations retain the v2 default. Sits alongside
-    /// `encrypt_config` (not in `client_opts`, which carries credentials +
-    /// keyset) because it configures the encryption output format.
-    eql_version: Option<u8>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum DecryptResult {
@@ -838,16 +735,12 @@ struct EncryptQueryOptions {
     table: String,
     /// The index type to use: "ste_vec", "match", "ore", "unique"
     index_type: String,
-    /// The query operation: "default", "ste_vec_selector",
-    /// "ste_vec_value_selector", or "ste_vec_term"
-    #[serde(default = "default_query_op")]
-    query_op: String,
+    /// Which query operation to perform. Rejected at this boundary if it is
+    /// not one of the four accepted spellings — see [`QueryOpName`].
+    #[serde(default)]
+    query_op: QueryOpName,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
-}
-
-fn default_query_op() -> String {
-    "default".to_string()
 }
 
 fn resolve_eql_version(
@@ -885,8 +778,8 @@ struct QueryPayload {
     column: String,
     table: String,
     index_type: String,
-    #[serde(default = "default_query_op")]
-    query_op: String,
+    #[serde(default)]
+    query_op: QueryOpName,
     lock_context: Option<LockContext>,
 }
 
@@ -1034,17 +927,6 @@ fn find_index_for_type<'a>(
         })
 }
 
-/// Parse query operation string to QueryOp enum
-fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
-    match query_op {
-        "default" => Ok(QueryOp::Default),
-        "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
-        "ste_vec_value_selector" => Ok(QueryOp::SteVecValueSelector),
-        "ste_vec_term" => Ok(QueryOp::SteVecTerm),
-        _ => Err(Error::UnknownQueryOp(query_op.to_string())),
-    }
-}
-
 /// Inferred operation mode for query encryption.
 ///
 /// This determines which EqlOperation to use:
@@ -1103,7 +985,7 @@ fn to_query_plaintext(
                 JsPlaintext::JsonB(value) => value,
                 JsPlaintext::String(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::String(value.clone()),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1111,7 +993,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::Number(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::Number(*value),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1119,7 +1001,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::Boolean(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::Boolean(*value),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1127,7 +1009,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::BigInt(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::BigInt(*value),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1135,7 +1017,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::Date(_) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::Date,
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1153,7 +1035,7 @@ fn to_query_plaintext(
                 });
             let Some(path) = valid else {
                 return Err(Error::InvalidQueryInput {
-                    query_op: QueryOpKind::SteVecValueSelector,
+                    query_op: SteVecQueryOpKind::ValueSelector,
                     received: ReceivedKind::from_json(value),
                     expected: ExpectedKind::ValueSelectorObject,
                     hint: QueryInputHint::UseValueSelectorObject,
@@ -1177,25 +1059,25 @@ fn to_query_plaintext(
                 Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecTerm)))
             }
             JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::Boolean(*b),
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
             }),
             JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::BigInt(*v),
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
             }),
             JsPlaintext::JsonB(value) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::from_json(value),
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
             }),
             JsPlaintext::Date(_) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::Date,
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
@@ -1221,25 +1103,25 @@ fn to_query_plaintext(
                         Ok((plaintext, InferredQueryMode::StoreMode))
                     }
                     JsPlaintext::Number(n) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::Number(*n),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
                     }),
                     JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::BigInt(*v),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::BigIntNotJson,
                     }),
                     JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::Boolean(*b),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
                     }),
                     JsPlaintext::Date(_) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::Date,
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
@@ -1314,7 +1196,7 @@ fn prepare_query_plaintext<'a>(
     column: &str,
     js_plaintext: &JsPlaintext,
     index_type_name: &str,
-    query_op_name: &str,
+    query_op: QueryOpName,
     eql_version: EqlVersion,
 ) -> Result<(PreparedPlaintext<'a>, &'a ColumnConfig), Error> {
     let ident = Identifier::new(table.to_string(), column.to_string());
@@ -1323,7 +1205,6 @@ fn prepare_query_plaintext<'a>(
         .ok_or(Error::UnknownColumn(ident))?;
 
     let index = find_index_for_type(column_config, column, index_type_name)?;
-    let query_op = parse_query_op(query_op_name)?;
 
     // Infer type and operation mode from plaintext
     // - String on SteVec → QueryMode with SteVecSelector (path queries)
@@ -1331,7 +1212,7 @@ fn prepare_query_plaintext<'a>(
     // - Scalar Default under eqlVersion 3 → StoreMode (term-only operands)
     let (plaintext, inferred_mode) = to_query_plaintext(
         js_plaintext,
-        query_op,
+        query_op.to_query_op(),
         &index.index_type,
         column_config.cast_type,
         eql_version,
@@ -1388,7 +1269,7 @@ pub async fn new_client(
     // Parse the config and resolve the version before any network I/O. Client
     // 0.42's SteVec key-header envelope is v3-only; scalar-only clients retain
     // the historical v2 default.
-    let encrypt_config = opts.encrypt_config.into_config_map()?;
+    let encrypt_config = opts.encrypt_config.0.into_config_map()?;
     let eql_version = resolve_eql_version(opts.eql_version, &encrypt_config)?;
     let client_opts = opts.client_opts.unwrap_or_default();
 
@@ -1647,7 +1528,7 @@ async fn encrypt_query(
         &opts.column,
         &opts.plaintext,
         &opts.index_type,
-        &opts.query_op,
+        opts.query_op,
         client.eql_version,
     )?;
 
@@ -1710,7 +1591,7 @@ async fn encrypt_query_bulk(
                 &payload.column,
                 &payload.plaintext,
                 &payload.index_type,
-                &payload.query_op,
+                payload.query_op,
                 client.eql_version,
             )?;
 
@@ -2190,42 +2071,6 @@ mod tests {
         }
     }
 
-    mod query_op_parsing {
-        use super::*;
-
-        #[test]
-        fn parse_query_op_default() {
-            let result = parse_query_op("default");
-            assert!(matches!(result, Ok(QueryOp::Default)));
-        }
-
-        #[test]
-        fn parse_query_op_ste_vec_selector() {
-            let result = parse_query_op("ste_vec_selector");
-            assert!(matches!(result, Ok(QueryOp::SteVecSelector)));
-        }
-
-        #[test]
-        fn parse_query_op_ste_vec_value_selector() {
-            let result = parse_query_op("ste_vec_value_selector");
-            assert!(matches!(result, Ok(QueryOp::SteVecValueSelector)));
-        }
-
-        #[test]
-        fn parse_query_op_ste_vec_term() {
-            let result = parse_query_op("ste_vec_term");
-            assert!(matches!(result, Ok(QueryOp::SteVecTerm)));
-        }
-
-        #[test]
-        fn parse_query_op_unknown_returns_error() {
-            let result = parse_query_op("unknown");
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(err.to_string().contains("Unknown query operation"));
-        }
-    }
-
     mod eql_version_resolution {
         use super::*;
         use cipherstash_client::schema::column::{ColumnMode, ColumnType, Index};
@@ -2459,7 +2304,7 @@ mod tests {
                 "email",
                 &JsPlaintext::String(needle.to_string()),
                 "match",
-                "default",
+                QueryOpName::Default,
                 eql_version,
             )
             .map(|_| ())
@@ -2700,7 +2545,7 @@ mod tests {
                 assert!(matches!(
                     err,
                     Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
+                        query_op: SteVecQueryOpKind::Term,
                         ..
                     }
                 ));
@@ -2987,7 +2832,7 @@ mod tests {
                     matches!(
                         &err,
                         Error::InvalidQueryInput {
-                            query_op: QueryOpKind::SteVecValueSelector,
+                            query_op: SteVecQueryOpKind::ValueSelector,
                             ..
                         }
                     ),
@@ -3047,7 +2892,7 @@ mod tests {
                 assert!(matches!(
                     err,
                     Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
                         ..
@@ -3208,9 +3053,7 @@ mod tests {
             })
         }
 
-        fn config_map(
-            columns: Vec<(&str, &str, Vec<Index>)>,
-        ) -> HashMap<Identifier, ColumnConfig> {
+        fn config_map(columns: Vec<(&str, &str, Vec<Index>)>) -> HashMap<Identifier, ColumnConfig> {
             columns
                 .into_iter()
                 .map(|(table, column, indexes)| {

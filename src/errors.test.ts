@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferErrorCode, normalizeError, ProtectError } from './errors.js'
+import { ProtectError, inferErrorCode, normalizeError } from './errors.js'
 
 describe('inferErrorCode', () => {
   it('maps invariant violations', () => {
@@ -12,6 +12,22 @@ describe('inferErrorCode', () => {
     expect(inferErrorCode('Unknown query operation: frobnicate')).toBe(
       'UNKNOWN_QUERY_OP',
     )
+  })
+
+  it('still maps unknown query operations now that they are rejected by serde', () => {
+    // `queryOp` is a typed enum in the Rust (`crates/protect-ffi/src/query_op.rs`),
+    // so the rejection happens while deserializing the options and the message
+    // arrives through neon's `Json` extractor — which Displays the serde error
+    // verbatim, trailing position suffix and all. The Rust side keeps the
+    // prefix deliberately, and pins it in `an_unknown_value_keeps_the_prefix_
+    // errors_ts_matches`. This is the same contract from this end.
+    expect(
+      inferErrorCode(
+        "Unknown query operation: 'frobnicate'. Expected one of: " +
+          "'default', 'ste_vec_selector', 'ste_vec_value_selector', " +
+          "'ste_vec_term'. at line 1 column 96",
+      ),
+    ).toBe('UNKNOWN_QUERY_OP')
   })
 
   it('maps invalid eqlVersion errors', () => {

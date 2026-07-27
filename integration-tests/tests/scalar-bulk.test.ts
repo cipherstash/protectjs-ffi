@@ -2,11 +2,11 @@ import 'dotenv/config'
 import { describe, expect, test } from 'vitest'
 
 import {
+  type EncryptPayload,
+  type Identifier,
   decryptBulk,
   decryptBulkFallible,
   encryptBulk,
-  type EncryptPayload,
-  type Identifier,
   newClient,
 } from '@cipherstash/protect-ffi'
 

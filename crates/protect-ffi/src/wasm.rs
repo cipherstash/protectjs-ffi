@@ -6,19 +6,25 @@
 //! `AccessKeyStrategy.getToken()` shape) into a [`stack_auth::AuthStrategy`]
 //! via a small adapter struct.
 //!
-//! Unlike the Neon path which uses `AutoStrategy` + env vars + the
-//! filesystem-backed `stack-profile`, the wasm path is fully inline: the
-//! client key is passed as a constructor option, and auth is delegated to
-//! the JS-supplied strategy on every ZeroKMS request.
+//! What differs from the Neon path is not the options shape — both entries
+//! deserialize the same [`crate::NewClientOptions`] — but what the host can
+//! supply. There is no filesystem and no readable environment here, so the
+//! client key is always passed as an explicit option: no
+//! `~/.cipherstash/secretkey.json` to fall back to.
+//!
+//! Authentication has two arms, [`WasmAuthStrategy`]: a JS-supplied
+//! `authStrategy`, or — when none is given — `AutoStrategy`'s wasm arm,
+//! which resolves an `AccessKeyStrategy` from `clientOpts.accessKey` +
+//! `clientOpts.workspaceCrn`.
 //!
 //! # Auth caching
 //!
-//! [`JsAuthStrategy::get_token`] is invoked on every ZeroKMS request —
-//! there is no Rust-side equivalent of [`stack_auth::AutoRefresh`] in the
-//! wasm path. Caching is the JS strategy's responsibility (cookies,
-//! `localStorage`, or whatever the embedding runtime provides). The
-//! adapter is intentionally a thin shim so the host environment owns the
-//! refresh / persistence policy.
+//! On the JS-backed arm, [`JsAuthStrategy::get_token`] is invoked on every
+//! ZeroKMS request — there is no Rust-side equivalent of
+//! [`stack_auth::AutoRefresh`] in the wasm path. Caching is the JS strategy's
+//! responsibility (cookies, `localStorage`, or whatever the embedding runtime
+//! provides). The adapter is intentionally a thin shim so the host environment
+//! owns the refresh / persistence policy.
 //!
 //! # Surface omissions
 //!
@@ -38,17 +44,12 @@ use cipherstash_client::eql::{
     encrypt_eql, encrypt_eql_v3, EqlEncryptOpts, EqlOperation, Identifier as EqlIdentifier,
     PreparedPlaintext,
 };
-use cipherstash_client::schema::{CanonicalEncryptionConfig, ColumnConfig, Identifier};
-use cipherstash_client::zerokms::{
-    self, SecretKey, ViturKeyMaterial, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey,
-};
-use cipherstash_client::IdentifiedBy;
-use serde::{Deserialize, Serialize};
+use cipherstash_client::schema::{ColumnConfig, Identifier};
+use cipherstash_client::zerokms::{self, WithContext, ZeroKMSBuilder, ZeroKMSWithClientKey};
+use serde::Serialize;
 use stack_auth::{AuthError, AuthStrategy, SecretToken, ServerError, ServiceToken};
-use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::js_plaintext::{JsPlaintext, BIGINT_WIRE_KEY};
 use crate::{
@@ -56,8 +57,157 @@ use crate::{
     into_store_ciphertext_v3, is_encrypted_value, prepare_query_plaintext, query_config_map,
     query_output, query_output_v3, resolve_eql_version, storage_output, storage_output_v3,
     DecryptBulkOptions, DecryptOptions, DecryptResult, EncryptBulkOptions, EncryptOptions,
-    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error, QueryOutput,
+    EncryptQueryBulkOptions, EncryptQueryOptions, EncryptedOutput, EqlVersion, Error,
+    NewClientOptions, QueryOutput,
 };
+use cipherstash_client::AutoStrategy;
+
+// ---------------------------------------------------------------------------
+// TypeScript declarations
+// ---------------------------------------------------------------------------
+
+/// TypeScript emitted verbatim into `dist/wasm/protect_ffi.d.ts`.
+///
+/// wasm-bindgen appends `typescript_custom_section` content to the generated
+/// `.d.ts`, and `typescript_type` below names these types in the signatures.
+/// Together that means the declarations are produced by the build rather than
+/// patched on afterwards, so they cannot drift from the Rust and there is no
+/// post-processing step to keep in sync with wasm-bindgen's output format.
+///
+/// `../../lib/` is a relative path inside the package, so it resolves for every
+/// consumer without naming the Neon entry — which matters, because this is the
+/// bundle whose whole purpose is to avoid loading a native binary (#142).
+#[wasm_bindgen(typescript_custom_section)]
+const TYPESCRIPT_DECLARATIONS: &'static str = r#"
+import type {
+  DecryptBulkOptions,
+  DecryptOptions,
+  Encrypted,
+  EncryptedPayload,
+  EncryptedQuery,
+  EncryptBulkOptions,
+  EncryptOptions,
+  EncryptQueryBulkOptions,
+  EncryptQueryOptions,
+  JsPlaintext,
+  NewClientOptions,
+} from "../../lib/types.js";
+import type { EncryptedV3Query } from "../../lib/eql-v3.js";
+
+// Enumerated rather than `export type *`, for two reasons. It keeps the entry
+// honest: three names in `types.ts` do not belong on this build — `DecryptResult`
+// (it carries `code`, which Rust never emits; `WasmDecryptResult` below is what
+// this entry returns) and `EnsureKeysetOpts` / `EnsureKeysetResult` (an
+// operation this build deliberately does not export — see the module header).
+// And `export type *` is TypeScript 5.0+, which this package has no reason to
+// require of a consumer; the explicit form works from 3.8.
+export type {
+  ArrayIndexMode,
+  AuthStrategy,
+  BulkDecryptPayload,
+  CanonicalCastAs,
+  CanonicalColumn,
+  CanonicalEncryptConfig,
+  CastAs,
+  ClientOpts,
+  Column,
+  Context,
+  DecryptBulkOptions,
+  DecryptOptions,
+  Encrypted,
+  EncryptedPayload,
+  EncryptedQuery,
+  EncryptedScalar,
+  EncryptedScalarQuery,
+  EncryptedSteVec,
+  EncryptedSteVecQuery,
+  EncryptedSteVecSelector,
+  EncryptBulkOptions,
+  EncryptConfig,
+  EncryptOptions,
+  EncryptPayload,
+  EncryptQueryBulkOptions,
+  EncryptQueryOptions,
+  EqlCiphertextBody,
+  Identifier,
+  Indexes,
+  IndexTypeName,
+  JsPlaintext,
+  KeysetIdentifier,
+  MatchIndexOpts,
+  NewClientOptions,
+  OpeIndexOpts,
+  OreIndexOpts,
+  QueryOpName,
+  QueryPayload,
+  SteVecEntry,
+  SteVecIndexOpts,
+  SteVecMode,
+  TokenFilter,
+  Tokenizer,
+  TokenResult,
+  TokenResultEnvelope,
+  UniqueIndexOpts,
+} from "../../lib/types.js";
+export type { EncryptedV3, EncryptedV3Query } from "../../lib/eql-v3.js";
+
+/**
+ * Per-item result from `decryptBulkFallible`.
+ *
+ * Narrower than the Neon entry's `DecryptResult`, which also carries
+ * `code?: ProtectErrorCode`. That field is not produced by Rust — the Neon
+ * wrapper adds it in JS by running `inferErrorCode(item.error)` over the
+ * message. This build returns what Rust serializes, so the field is absent
+ * rather than optional-and-never-set.
+ */
+export type WasmDecryptResult =
+  | { data: JsPlaintext }
+  | { error: string };
+"#;
+
+/// Newtypes over `JsValue` that carry a TypeScript type into the generated
+/// signatures.
+///
+/// Without these every export is `(client: WasmClient, opts: any) =>
+/// Promise<any>`, because wasm-bindgen only sees `JsValue`. The names on the
+/// right are resolved against the declarations above.
+///
+/// They are safe to assert because `wasm.rs` deserializes each `opts` into the
+/// SAME Rust struct the Neon entry does and calls the same `do_*` helper — the
+/// accepted shape is identical by construction, not by convention.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(typescript_type = "NewClientOptions")]
+    pub type NewClientOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptOptions")]
+    pub type EncryptOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptBulkOptions")]
+    pub type EncryptBulkOptionsJs;
+    #[wasm_bindgen(typescript_type = "DecryptOptions")]
+    pub type DecryptOptionsJs;
+    #[wasm_bindgen(typescript_type = "DecryptBulkOptions")]
+    pub type DecryptBulkOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptQueryOptions")]
+    pub type EncryptQueryOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptQueryBulkOptions")]
+    pub type EncryptQueryBulkOptionsJs;
+    #[wasm_bindgen(typescript_type = "EncryptedPayload")]
+    pub type EncryptedPayloadJs;
+    #[wasm_bindgen(typescript_type = "EncryptedPayload[]")]
+    pub type EncryptedPayloadArrayJs;
+    #[wasm_bindgen(typescript_type = "JsPlaintext")]
+    pub type JsPlaintextJs;
+    #[wasm_bindgen(typescript_type = "JsPlaintext[]")]
+    pub type JsPlaintextArrayJs;
+    #[wasm_bindgen(typescript_type = "WasmDecryptResult[]")]
+    pub type WasmDecryptResultArrayJs;
+    #[wasm_bindgen(typescript_type = "Encrypted | EncryptedQuery | EncryptedV3Query")]
+    pub type QueryTermJs;
+    #[wasm_bindgen(typescript_type = "(Encrypted | EncryptedQuery | EncryptedV3Query)[]")]
+    pub type QueryTermArrayJs;
+    #[wasm_bindgen(typescript_type = "unknown")]
+    pub type UnknownJs;
+}
 
 // ---------------------------------------------------------------------------
 // Module init
@@ -211,13 +361,46 @@ fn js_failure_to_auth_error(failure: JsValue) -> AuthError {
 // Client
 // ---------------------------------------------------------------------------
 
+/// The two ways this build can authenticate.
+///
+/// Mirrors the Neon side's `NodeAuthStrategy` so `new_client` has the same
+/// shape on both targets: a caller-supplied JS strategy, or — when none is
+/// given — whatever `CredentialOpts::build_strategy()` resolves.
+///
+/// On wasm that resolution is `AutoStrategy`'s `target_arch = "wasm32"` arm,
+/// which is access-key-only: `stack-auth` compiles out the profile-store
+/// fallback because there is no filesystem to read. So "auto" here means
+/// exactly "build an `AccessKeyStrategy` from the supplied workspace CRN and
+/// access key", which is the wasm equivalent of the Neon default.
+///
+/// Note that `AutoStrategy`'s own environment lookup never fires here:
+/// `std::env::var` on `wasm32-unknown-unknown` always returns `Err`, since std
+/// falls back to its `unsupported` env backend. That costs nothing, because
+/// the builder consults explicit values first and the JS layer already reads
+/// env and passes credentials through as explicit fields — the same
+/// arrangement the Neon path uses for Bun.
+enum WasmAuthStrategy {
+    Auto(Box<AutoStrategy>),
+    JsBacked(JsAuthStrategy),
+}
+
+impl AuthStrategy for &WasmAuthStrategy {
+    async fn get_token(self) -> Result<ServiceToken, AuthError> {
+        match self {
+            WasmAuthStrategy::Auto(s) => (&**s).get_token().await,
+            WasmAuthStrategy::JsBacked(s) => s.get_token().await,
+        }
+    }
+}
+
 /// Wasm-side client handle. Wraps the same `ScopedCipher` +
 /// `ZeroKMSWithClientKey` pair the Neon side does, parameterised by
-/// [`JsAuthStrategy`] instead of `AutoStrategy`.
+/// [`WasmAuthStrategy`] — whose two arms are the wasm counterpart of the Neon
+/// side's `NodeAuthStrategy`.
 #[wasm_bindgen]
 pub struct WasmClient {
-    cipher: Arc<ScopedCipher<JsAuthStrategy>>,
-    zerokms: Arc<ZeroKMSWithClientKey<JsAuthStrategy>>,
+    cipher: Arc<ScopedCipher<WasmAuthStrategy>>,
+    zerokms: Arc<ZeroKMSWithClientKey<WasmAuthStrategy>>,
     encrypt_config: Arc<HashMap<Identifier, ColumnConfig>>,
     /// `encrypt_config` with `include_original` forced off on every match
     /// index — what the encrypt-query entry points use, so query blooms stay
@@ -228,96 +411,108 @@ pub struct WasmClient {
     eql_version: EqlVersion,
 }
 
-/// Hex-encoded secret material that zeroizes its buffer on drop.
-///
-/// Used as the deserialization target for the client key so the raw hex
-/// material lives only inside a zeroize-on-drop wrapper from the moment
-/// serde produces it — even if `new_client` panics or returns early before
-/// the key is consumed into `SecretKey`. `#[serde(transparent)]` makes a
-/// bare JS string deserialize into it without any schema change.
-#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
-#[serde(transparent)]
-struct HexSecret(String);
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NewClientOpts {
-    encrypt_config: CanonicalEncryptionConfig,
-    /// UUID identifying the client key (workspace's data-encryption keyset).
-    /// Typed as `Uuid` so a malformed value fails at deserialization rather
-    /// than later inside `from_hex`.
-    client_id: Uuid,
-    /// Hex-encoded v1 client key. Required — wasm has no
-    /// `~/.cipherstash/secretkey.json` fallback. Wrapped in [`HexSecret`]
-    /// so the raw hex buffer is zeroized on drop, including on any early
-    /// error path before the bytes are moved into `SecretKey`.
-    client_key: HexSecret,
-    /// Optional keyset identifier (id or name). `None` uses the default
-    /// keyset granted to the client.
-    keyset: Option<IdentifiedBy>,
-    /// EQL wire version to emit: 2 (default) or 3.
-    eql_version: Option<u8>,
-}
-
 /// Construct a [`WasmClient`].
 ///
-/// `opts.strategy` must be an `@cipherstash/auth`-shaped object — anything with
-/// a `getToken()` method returning a `Promise` works. A non-`Promise` return is
-/// rejected with `strategy.getToken() did not return a Promise`.
+/// `opts.authStrategy` must be an `@cipherstash/auth`-shaped object — anything
+/// with a `getToken()` method returning a `Promise` works. A non-`Promise`
+/// return is rejected with `strategy.getToken() did not return a Promise`.
 ///
 /// The promise may resolve either the bare `{ token: string, ... }` payload
 /// (`@cipherstash/auth` <= 0.40 and custom strategies) or a `@byteslice/result`
 /// envelope — `{ data: { token, ... } }` on success, `{ failure }` on error
 /// (`@cipherstash/auth` >= 0.41). Both are accepted.
 ///
-/// `strategy` is required: wasm has no env / filesystem fallback path.
+/// `opts.strategy` is the former name, still accepted while it is deprecated;
+/// `authStrategy` wins when both are present. The new name matches
+/// `@cipherstash/stack`'s `config.authStrategy`.
+///
+/// Omitting it is fine: `clientOpts.accessKey` + `clientOpts.workspaceCrn`
+/// then resolve an `AccessKeyStrategy` through the same
+/// `CredentialOpts::build_strategy()` the Neon entry uses.
+///
+/// Takes the SAME [`NewClientOptions`] as the Neon `newClient`, and the body
+/// below is deliberately the same sequence. Everything that genuinely differs
+/// between the targets is confined to `CredentialOpts::build_key_provider`
+/// (no profile store here) and `AutoStrategy`'s own wasm arm (no filesystem
+/// fallback). Nothing about the options shape differs, so callers write one
+/// config for both entries.
 #[wasm_bindgen(js_name = newClient)]
-pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
-    // Extract `strategy` before serde — the JS function on it can't survive
+pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue> {
+    let opts: JsValue = opts.into();
+    // Extract the strategy before serde — the JS function on it can't survive
     // serde_wasm_bindgen, and the rest of the opts has no JS-callable fields.
-    let strategy = js_sys::Reflect::get(&opts, &JsValue::from_str("strategy"))
-        .map_err(|e| js_error(&format!("opts.strategy lookup failed: {e:?}")))?;
-    if strategy.is_undefined() || strategy.is_null() {
-        return Err(js_error("opts.strategy is required"));
-    }
-    let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
-        .map_err(|e| js_error(&format!("opts.strategy.getToken not found: {e:?}")))?;
-    let get_token: js_sys::Function = get_token
-        .dyn_into()
-        .map_err(|_| js_error("opts.strategy.getToken is not a function"))?;
-    let auth = JsAuthStrategy::new(strategy.clone(), get_token);
+    // (The Neon entry gets it as a separate argument for the same reason: its
+    // `Json` extractor is JSON.stringify-based, which would drop a function.)
+    //
+    // `authStrategy` first, then the deprecated `strategy`. Read both rather
+    // than either/or so a caller mid-migration, or one passing an object that
+    // still carries the old key, keeps working.
+    //
+    // `key` is the name the caller actually used, and every error below quotes
+    // it: someone still on `strategy` should not be told to look at a property
+    // they did not write.
+    let new_name = js_sys::Reflect::get(&opts, &JsValue::from_str("authStrategy"))
+        .map_err(|e| js_error(&format!("opts.authStrategy lookup failed: {e:?}")))?;
+    let (key, strategy) = if new_name.is_undefined() || new_name.is_null() {
+        let old_name = js_sys::Reflect::get(&opts, &JsValue::from_str("strategy"))
+            .map_err(|e| js_error(&format!("opts.strategy lookup failed: {e:?}")))?;
+        ("strategy", old_name)
+    } else {
+        ("authStrategy", new_name)
+    };
+    let js_strategy = if strategy.is_undefined() || strategy.is_null() {
+        None
+    } else {
+        // `Reflect::get` throws on a non-object receiver, so a bare string here
+        // would surface as "opts.authStrategy.getToken not found: TypeError:
+        // Reflect.get called on non-object" plus a stack trace — blaming
+        // `getToken` for a problem one level up. Mirrors the guards in
+        // `JsAuthStrategy::get_token` and `js_failure_to_auth_error`.
+        if !strategy.is_object() {
+            return Err(js_error(&format!(
+                "opts.{key} must be an object with a getToken() method"
+            )));
+        }
+        let get_token = js_sys::Reflect::get(&strategy, &JsValue::from_str("getToken"))
+            .map_err(|e| js_error(&format!("opts.{key}.getToken not found: {e:?}")))?;
+        let get_token: js_sys::Function = get_token
+            .dyn_into()
+            .map_err(|_| js_error(&format!("opts.{key}.getToken is not a function")))?;
+        Some(JsAuthStrategy::new(strategy.clone(), get_token))
+    };
 
-    let mut opts: NewClientOpts =
+    let opts: NewClientOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
-    // Resolve before any network I/O. Client 0.42's SteVec envelope is
-    // v3-only; scalar-only configurations keep the historical v2 default.
+    // From here down this mirrors the Neon `new_client` line for line.
     let encrypt_config = opts
         .encrypt_config
+        .0
         .into_config_map()
         .map_err(|e| js_error(&e.to_string()))?;
     let eql_version =
         resolve_eql_version(opts.eql_version, &encrypt_config).map_err(error_to_js)?;
+    let client_opts = opts.client_opts.unwrap_or_default();
 
-    // Decode the hex buffer in place rather than via `SecretKey::from_hex`:
-    // `from_hex` takes a `String` for the UUID, which would force an
-    // `opts.client_id.to_string()` allocation that the round-trip parses back
-    // to `Uuid` — and that allocation is never zeroized. By decoding here we
-    // (a) keep the already-parsed `Uuid` and (b) keep the hex bytes inside
-    // `HexSecret`, which zeroizes on drop even on the error path.
-    let bytes_result = hex::decode(opts.client_key.0.as_bytes());
-    opts.client_key.0.zeroize();
-    let bytes =
-        bytes_result.map_err(|e| js_error(&format!("invalid clientKey: invalid hex: {e}")))?;
-    let secret_key = SecretKey::new(opts.client_id, ViturKeyMaterial::from(bytes));
-
+    let auth = match js_strategy {
+        Some(s) => WasmAuthStrategy::JsBacked(s),
+        None => WasmAuthStrategy::Auto(Box::new(
+            client_opts.creds.build_strategy().map_err(error_to_js)?,
+        )),
+    };
     let zerokms = ZeroKMSBuilder::new(auth)
-        .with_key_provider(secret_key)
+        .with_key_provider(
+            client_opts
+                .creds
+                .build_key_provider()
+                .map_err(error_to_js)?,
+        )
         .build()
         .await
         .map_err(|e| js_error(&e.to_string()))?;
+
     let zerokms = Arc::new(zerokms);
-    let cipher = ScopedCipher::init(zerokms.clone(), opts.keyset)
+    let cipher = ScopedCipher::init(zerokms.clone(), client_opts.keyset)
         .await
         .map_err(|e| js_error(&e.to_string()))?;
 
@@ -343,67 +538,88 @@ pub async fn new_client(opts: JsValue) -> Result<WasmClient, JsValue> {
 // sites between native and Edge runtimes.
 
 #[wasm_bindgen]
-pub async fn encrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext(&opts)?;
+pub async fn encrypt(
+    client: &WasmClient,
+    opts: EncryptOptionsJs,
+) -> Result<EncryptedPayloadJs, JsValue> {
+    let opts = encode_plaintext(&opts.into())?;
     let opts: EncryptOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = encryptBulk)]
-pub async fn encrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext_list(&opts, "plaintexts")?;
+pub async fn encrypt_bulk(
+    client: &WasmClient,
+    opts: EncryptBulkOptionsJs,
+) -> Result<EncryptedPayloadArrayJs, JsValue> {
+    let opts = encode_plaintext_list(&opts.into(), "plaintexts")?;
     let opts: EncryptBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_bulk(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = encryptQuery)]
-pub async fn encrypt_query(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext(&opts)?;
+pub async fn encrypt_query(
+    client: &WasmClient,
+    opts: EncryptQueryOptionsJs,
+) -> Result<QueryTermJs, JsValue> {
+    let opts = encode_plaintext(&opts.into())?;
     let opts: EncryptQueryOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query(client, opts).await.map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = encryptQueryBulk)]
-pub async fn encrypt_query_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
-    let opts = encode_plaintext_list(&opts, "queries")?;
+pub async fn encrypt_query_bulk(
+    client: &WasmClient,
+    opts: EncryptQueryBulkOptionsJs,
+) -> Result<QueryTermArrayJs, JsValue> {
+    let opts = encode_plaintext_list(&opts.into(), "queries")?;
     let opts: EncryptQueryBulkOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
     let out = do_encrypt_query_bulk(client, opts)
         .await
         .map_err(error_to_js)?;
-    to_js(&out)
+    to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen]
-pub async fn decrypt(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+pub async fn decrypt(
+    client: &WasmClient,
+    opts: DecryptOptionsJs,
+) -> Result<JsPlaintextJs, JsValue> {
     let opts: DecryptOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt(client, opts).await.map_err(error_to_js)?;
-    plaintext_to_js(&out)
+    plaintext_to_js(&out).map(JsCast::unchecked_into)
 }
 
 #[wasm_bindgen(js_name = decryptBulk)]
-pub async fn decrypt_bulk(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+pub async fn decrypt_bulk(
+    client: &WasmClient,
+    opts: DecryptBulkOptionsJs,
+) -> Result<JsPlaintextArrayJs, JsValue> {
     let opts: DecryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt_bulk(client, opts).await.map_err(error_to_js)?;
     let arr = js_sys::Array::new();
     for plaintext in &out {
         arr.push(&plaintext_to_js(plaintext)?);
     }
-    Ok(arr.into())
+    Ok(arr.unchecked_into())
 }
 
 #[wasm_bindgen(js_name = decryptBulkFallible)]
-pub async fn decrypt_bulk_fallible(client: &WasmClient, opts: JsValue) -> Result<JsValue, JsValue> {
+pub async fn decrypt_bulk_fallible(
+    client: &WasmClient,
+    opts: DecryptBulkOptionsJs,
+) -> Result<WasmDecryptResultArrayJs, JsValue> {
     let opts: DecryptBulkOptions =
-        serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
+        serde_wasm_bindgen::from_value(opts.into()).map_err(|e| js_error(&e.to_string()))?;
     let out = do_decrypt_bulk_fallible(client, opts)
         .await
         .map_err(error_to_js)?;
@@ -420,12 +636,12 @@ pub async fn decrypt_bulk_fallible(client: &WasmClient, opts: JsValue) -> Result
         }
         arr.push(&obj);
     }
-    Ok(arr.into())
+    Ok(arr.unchecked_into())
 }
 
 #[wasm_bindgen(js_name = isEncrypted)]
-pub fn is_encrypted(raw: JsValue) -> bool {
-    let Ok(v) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw) else {
+pub fn is_encrypted(raw: UnknownJs) -> bool {
+    let Ok(v) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw.into()) else {
         return false;
     };
     is_encrypted_value(&v)
@@ -586,7 +802,7 @@ async fn do_encrypt_query(
         &opts.column,
         &opts.plaintext,
         &opts.index_type,
-        &opts.query_op,
+        opts.query_op,
         client.eql_version,
     )?;
     let eql_opts = EqlEncryptOpts {
@@ -641,7 +857,7 @@ async fn do_encrypt_query_bulk(
                 &payload.column,
                 &payload.plaintext,
                 &payload.index_type,
-                &payload.query_op,
+                payload.query_op,
                 client.eql_version,
             )?;
             prepared_plaintexts.push(prepared);
