@@ -2,12 +2,14 @@ mod client_options;
 mod encrypt_config;
 mod eql_v3;
 mod js_plaintext;
+mod query_op;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
 use client_options::NewClientOptions;
 #[cfg(not(target_arch = "wasm32"))]
 use client_options::{EnsureKeysetOpts, EnsureKeysetResult};
+use query_op::{QueryOpName, SteVecQueryOpKind};
 
 use cipherstash_client::{
     encryption::{
@@ -155,24 +157,6 @@ impl std::fmt::Display for ExpectedKind {
     }
 }
 
-/// Query operation context for errors
-#[derive(Debug, Clone, Copy)]
-pub enum QueryOpKind {
-    SteVecTerm,
-    SteVecValueSelector,
-    SteVecDefault,
-}
-
-impl std::fmt::Display for QueryOpKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SteVecTerm => write!(f, "ste_vec_term"),
-            Self::SteVecValueSelector => write!(f, "ste_vec_value_selector"),
-            Self::SteVecDefault => write!(f, "ste_vec (default)"),
-        }
-    }
-}
-
 /// Wrapper for bounded display of potentially large strings
 #[derive(Debug, Clone)]
 pub struct Truncated<'a> {
@@ -280,8 +264,6 @@ pub enum Error {
     Eql(#[from] EqlError),
     #[error("protect-ffi invariant violation: {0}. This is a bug in protect-ffi. Please file an issue at https://github.com/cipherstash/protectjs-ffi/issues.")]
     InvariantViolation(String),
-    #[error("Unknown query operation: '{0}'")]
-    UnknownQueryOp(String),
     #[error(transparent)]
     Parse(#[from] serde_json::Error),
     #[error("column {}.{} not found in Encrypt config", _0.table, _0.column)]
@@ -298,7 +280,7 @@ pub enum Error {
         "Invalid query input for '{query_op}': received {received}, expected {expected}. {hint}"
     )]
     InvalidQueryInput {
-        query_op: QueryOpKind,
+        query_op: SteVecQueryOpKind,
         received: ReceivedKind,
         expected: ExpectedKind,
         hint: QueryInputHint,
@@ -753,16 +735,12 @@ struct EncryptQueryOptions {
     table: String,
     /// The index type to use: "ste_vec", "match", "ore", "unique"
     index_type: String,
-    /// The query operation: "default", "ste_vec_selector",
-    /// "ste_vec_value_selector", or "ste_vec_term"
-    #[serde(default = "default_query_op")]
-    query_op: String,
+    /// Which query operation to perform. Rejected at this boundary if it is
+    /// not one of the four accepted spellings — see [`QueryOpName`].
+    #[serde(default)]
+    query_op: QueryOpName,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
-}
-
-fn default_query_op() -> String {
-    "default".to_string()
 }
 
 fn resolve_eql_version(
@@ -800,8 +778,8 @@ struct QueryPayload {
     column: String,
     table: String,
     index_type: String,
-    #[serde(default = "default_query_op")]
-    query_op: String,
+    #[serde(default)]
+    query_op: QueryOpName,
     lock_context: Option<LockContext>,
 }
 
@@ -949,17 +927,6 @@ fn find_index_for_type<'a>(
         })
 }
 
-/// Parse query operation string to QueryOp enum
-fn parse_query_op(query_op: &str) -> Result<QueryOp, Error> {
-    match query_op {
-        "default" => Ok(QueryOp::Default),
-        "ste_vec_selector" => Ok(QueryOp::SteVecSelector),
-        "ste_vec_value_selector" => Ok(QueryOp::SteVecValueSelector),
-        "ste_vec_term" => Ok(QueryOp::SteVecTerm),
-        _ => Err(Error::UnknownQueryOp(query_op.to_string())),
-    }
-}
-
 /// Inferred operation mode for query encryption.
 ///
 /// This determines which EqlOperation to use:
@@ -1018,7 +985,7 @@ fn to_query_plaintext(
                 JsPlaintext::JsonB(value) => value,
                 JsPlaintext::String(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::String(value.clone()),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1026,7 +993,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::Number(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::Number(*value),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1034,7 +1001,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::Boolean(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::Boolean(*value),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1042,7 +1009,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::BigInt(value) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::BigInt(*value),
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1050,7 +1017,7 @@ fn to_query_plaintext(
                 }
                 JsPlaintext::Date(_) => {
                     return Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         received: ReceivedKind::Date,
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
@@ -1068,7 +1035,7 @@ fn to_query_plaintext(
                 });
             let Some(path) = valid else {
                 return Err(Error::InvalidQueryInput {
-                    query_op: QueryOpKind::SteVecValueSelector,
+                    query_op: SteVecQueryOpKind::ValueSelector,
                     received: ReceivedKind::from_json(value),
                     expected: ExpectedKind::ValueSelectorObject,
                     hint: QueryInputHint::UseValueSelectorObject,
@@ -1092,25 +1059,25 @@ fn to_query_plaintext(
                 Ok((plaintext, InferredQueryMode::QueryMode(QueryOp::SteVecTerm)))
             }
             JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::Boolean(*b),
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
             }),
             JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::BigInt(*v),
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
             }),
             JsPlaintext::JsonB(value) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::from_json(value),
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
             }),
             JsPlaintext::Date(_) => Err(Error::InvalidQueryInput {
-                query_op: QueryOpKind::SteVecTerm,
+                query_op: SteVecQueryOpKind::Term,
                 received: ReceivedKind::Date,
                 expected: ExpectedKind::StringOrNumber,
                 hint: QueryInputHint::UseOrderingScalar,
@@ -1136,25 +1103,25 @@ fn to_query_plaintext(
                         Ok((plaintext, InferredQueryMode::StoreMode))
                     }
                     JsPlaintext::Number(n) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::Number(*n),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
                     }),
                     JsPlaintext::BigInt(v) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::BigInt(*v),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::BigIntNotJson,
                     }),
                     JsPlaintext::Boolean(b) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::Boolean(*b),
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
                     }),
                     JsPlaintext::Date(_) => Err(Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecDefault,
+                        query_op: SteVecQueryOpKind::Default,
                         received: ReceivedKind::Date,
                         expected: ExpectedKind::StringPathOrJsonObjectOrArray,
                         hint: QueryInputHint::UsePathOrObject,
@@ -1229,7 +1196,7 @@ fn prepare_query_plaintext<'a>(
     column: &str,
     js_plaintext: &JsPlaintext,
     index_type_name: &str,
-    query_op_name: &str,
+    query_op: QueryOpName,
     eql_version: EqlVersion,
 ) -> Result<(PreparedPlaintext<'a>, &'a ColumnConfig), Error> {
     let ident = Identifier::new(table.to_string(), column.to_string());
@@ -1238,7 +1205,6 @@ fn prepare_query_plaintext<'a>(
         .ok_or(Error::UnknownColumn(ident))?;
 
     let index = find_index_for_type(column_config, column, index_type_name)?;
-    let query_op = parse_query_op(query_op_name)?;
 
     // Infer type and operation mode from plaintext
     // - String on SteVec → QueryMode with SteVecSelector (path queries)
@@ -1246,7 +1212,7 @@ fn prepare_query_plaintext<'a>(
     // - Scalar Default under eqlVersion 3 → StoreMode (term-only operands)
     let (plaintext, inferred_mode) = to_query_plaintext(
         js_plaintext,
-        query_op,
+        query_op.to_query_op(),
         &index.index_type,
         column_config.cast_type,
         eql_version,
@@ -1562,7 +1528,7 @@ async fn encrypt_query(
         &opts.column,
         &opts.plaintext,
         &opts.index_type,
-        &opts.query_op,
+        opts.query_op,
         client.eql_version,
     )?;
 
@@ -1625,7 +1591,7 @@ async fn encrypt_query_bulk(
                 &payload.column,
                 &payload.plaintext,
                 &payload.index_type,
-                &payload.query_op,
+                payload.query_op,
                 client.eql_version,
             )?;
 
@@ -2105,42 +2071,6 @@ mod tests {
         }
     }
 
-    mod query_op_parsing {
-        use super::*;
-
-        #[test]
-        fn parse_query_op_default() {
-            let result = parse_query_op("default");
-            assert!(matches!(result, Ok(QueryOp::Default)));
-        }
-
-        #[test]
-        fn parse_query_op_ste_vec_selector() {
-            let result = parse_query_op("ste_vec_selector");
-            assert!(matches!(result, Ok(QueryOp::SteVecSelector)));
-        }
-
-        #[test]
-        fn parse_query_op_ste_vec_value_selector() {
-            let result = parse_query_op("ste_vec_value_selector");
-            assert!(matches!(result, Ok(QueryOp::SteVecValueSelector)));
-        }
-
-        #[test]
-        fn parse_query_op_ste_vec_term() {
-            let result = parse_query_op("ste_vec_term");
-            assert!(matches!(result, Ok(QueryOp::SteVecTerm)));
-        }
-
-        #[test]
-        fn parse_query_op_unknown_returns_error() {
-            let result = parse_query_op("unknown");
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(err.to_string().contains("Unknown query operation"));
-        }
-    }
-
     mod eql_version_resolution {
         use super::*;
         use cipherstash_client::schema::column::{ColumnMode, ColumnType, Index};
@@ -2374,7 +2304,7 @@ mod tests {
                 "email",
                 &JsPlaintext::String(needle.to_string()),
                 "match",
-                "default",
+                QueryOpName::Default,
                 eql_version,
             )
             .map(|_| ())
@@ -2615,7 +2545,7 @@ mod tests {
                 assert!(matches!(
                     err,
                     Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecTerm,
+                        query_op: SteVecQueryOpKind::Term,
                         ..
                     }
                 ));
@@ -2902,7 +2832,7 @@ mod tests {
                     matches!(
                         &err,
                         Error::InvalidQueryInput {
-                            query_op: QueryOpKind::SteVecValueSelector,
+                            query_op: SteVecQueryOpKind::ValueSelector,
                             ..
                         }
                     ),
@@ -2962,7 +2892,7 @@ mod tests {
                 assert!(matches!(
                     err,
                     Error::InvalidQueryInput {
-                        query_op: QueryOpKind::SteVecValueSelector,
+                        query_op: SteVecQueryOpKind::ValueSelector,
                         expected: ExpectedKind::ValueSelectorObject,
                         hint: QueryInputHint::UseValueSelectorObject,
                         ..

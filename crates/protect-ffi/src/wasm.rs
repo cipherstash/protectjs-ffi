@@ -802,7 +802,7 @@ async fn do_encrypt_query(
         &opts.column,
         &opts.plaintext,
         &opts.index_type,
-        &opts.query_op,
+        opts.query_op,
         client.eql_version,
     )?;
     let eql_opts = EqlEncryptOpts {
@@ -857,7 +857,7 @@ async fn do_encrypt_query_bulk(
                 &payload.column,
                 &payload.plaintext,
                 &payload.index_type,
-                &payload.query_op,
+                payload.query_op,
                 client.eql_version,
             )?;
             prepared_plaintexts.push(prepared);
