@@ -15,6 +15,8 @@ uses the promoted section as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-27
+
 ### Breaking
 
 - **The wasm `newClient` takes credentials and `keyset` under `clientOpts`.**
@@ -624,7 +626,8 @@ uses the promoted section as the GitHub release notes.
   changes).
 - Upgrade `cipherstash-client` to `0.35.0`.
 
-[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/cipherstash/protectjs-ffi/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/cipherstash/protectjs-ffi/compare/v0.26.0...v0.28.0
