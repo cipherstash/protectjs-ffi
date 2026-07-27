@@ -481,6 +481,47 @@ pub async fn new_client(opts: NewClientOptionsJs) -> Result<WasmClient, JsValue>
         Some(JsAuthStrategy::new(strategy.clone(), get_token))
     };
 
+    // Both auth keys are handled above, so neither is a field of
+    // `NewClientOptions` — and that struct denies unknown fields. Strip them
+    // before serde sees the object.
+    //
+    // Onto a shallow copy, never the caller's object: a config reused across
+    // calls would silently lose its strategy on the second one.
+    //
+    // The copy goes through [`shallow_clone`], which reports a throwing getter
+    // instead of letting it unwind out of wasm.
+    //
+    // The deletes cannot report failure on a property `Object::assign` copied.
+    // It writes through [[Set]] onto a fresh object, which produces plain
+    // configurable data properties — so a source property that was frozen or
+    // non-configurable arrives here deletable, and a non-enumerable one was
+    // never copied at all (the `Reflect::get` above still saw it on the
+    // original, so such a strategy is used, not lost). Keep that in mind if
+    // this ever stops going through `Object::assign`.
+    //
+    // [[Set]] cuts the other way too: a setter for a copied key on
+    // `Object.prototype` swallows the value, and the key does not arrive. That
+    // is a silent drop inside the function that exists to stop silent drops,
+    // but it needs a poisoned `Object.prototype` to reach, which breaks far
+    // more than this.
+    //
+    // The `dyn_ref` guard costs nothing but rarely decides anything: a caller
+    // passing a primitive has already been rejected by the `Reflect::get`
+    // above with "called on non-object". Arrays and functions do reach it, and
+    // `Object::assign` flattens them into an object serde then rejects for the
+    // fields it is missing.
+    let opts = match opts.dyn_ref::<js_sys::Object>() {
+        Some(obj) => {
+            let clone = shallow_clone(obj, "opts")?;
+            for key in ["authStrategy", "strategy"] {
+                js_sys::Reflect::delete_property(&clone, &JsValue::from_str(key))
+                    .map_err(|e| js_error(&format!("opts.{key} could not be removed: {e:?}")))?;
+            }
+            clone.into()
+        }
+        None => opts,
+    };
+
     let opts: NewClientOptions =
         serde_wasm_bindgen::from_value(opts).map_err(|e| js_error(&e.to_string()))?;
 
@@ -1023,6 +1064,23 @@ fn error_to_js(e: Error) -> JsValue {
     js_error(&e.to_string())
 }
 
+/// `Object.assign({}, source)` that reports a throwing getter rather than
+/// unwinding through the wasm frames.
+///
+/// Every clone in this module copies an object the *caller* built, and a copy
+/// reads each own enumerable property — so any of them can meet a getter that
+/// throws. js-sys declares `Object::assign` without `catch`, which would let
+/// that throw travel straight out of wasm, past the destructors of the
+/// zeroizing values these paths carry. `try_assign` is the same
+/// `Object.assign` with a `Result`, matching the `Reflect::*` calls around it.
+///
+/// `what` names the thing being copied, since the failure is the caller's
+/// object misbehaving and they have to be able to find it.
+fn shallow_clone(source: &js_sys::Object, what: &str) -> Result<js_sys::Object, JsValue> {
+    js_sys::Object::try_assign(&js_sys::Object::new(), source)
+        .map_err(|e| js_error(&format!("{what} could not be copied: {e:?}")))
+}
+
 fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(value).map_err(|e| js_error(&e.to_string()))
 }
@@ -1143,7 +1201,7 @@ fn encode_plaintext(opts: &JsValue) -> Result<JsValue, JsValue> {
     let Some(encoded) = boundary_plaintext(&plaintext)? else {
         return Ok(opts.clone());
     };
-    let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
+    let clone = shallow_clone(obj, "opts")?;
     set_prop(&clone, "plaintext", &encoded)?;
     Ok(clone.into())
 }
@@ -1171,7 +1229,7 @@ fn encode_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, JsValue> 
             item.dyn_ref::<js_sys::Object>(),
         ) {
             (Some(canonical), Some(item_obj)) => {
-                let item_clone = js_sys::Object::assign(&js_sys::Object::new(), item_obj);
+                let item_clone = shallow_clone(item_obj, "a payload item")?;
                 set_prop(&item_clone, "plaintext", &canonical)?;
                 encoded.push(&item_clone);
                 changed = true;
@@ -1184,7 +1242,7 @@ fn encode_plaintext_list(opts: &JsValue, key: &str) -> Result<JsValue, JsValue> 
     if !changed {
         return Ok(opts.clone());
     }
-    let clone = js_sys::Object::assign(&js_sys::Object::new(), obj);
+    let clone = shallow_clone(obj, "opts")?;
     set_prop(&clone, key, &encoded)?;
     Ok(clone.into())
 }

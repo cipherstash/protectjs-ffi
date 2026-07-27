@@ -71,6 +71,62 @@ uses the promoted section as the GitHub release notes.
   see those errors at build time. That is the feature, but it lands as a build
   failure on upgrade, so budget for it.
 
+- **A key an options object doesn't declare is now an error, not a silent
+  drop.** Every options struct rejects unrecognised fields, naming the
+  offender — ``unknown field `clientId` `` — instead of discarding them on the
+  way in. A misspelling, a stale key, or a value in the wrong place fails
+  loudly. ([#144])
+
+  This is how the wasm credential move was found: four integration tests
+  failed with "clientOpts.clientId and clientOpts.clientKey are required"
+  while passing exactly those, because the old top-level spelling was being
+  dropped in silence. The message described the symptom, not the cause.
+
+  `lockContext` is the case that mattered most. On a bulk call it belongs on
+  each payload item; at the top level it was dropped, and every value
+  encrypted **unbound** while the caller believed it was identity-bound.
+  Nothing in the output distinguished the two.
+
+  Two notes on how far this reaches:
+
+  - The wasm boundary needed more than the serde attribute.
+    `serde-wasm-bindgen` reads a struct by looking up the fields it expects
+    (`obj[key]`), never enumerating the object — an undeclared key was
+    invisible to serde, so `deny_unknown_fields` alone would have rejected
+    nothing there. A marker type puts every options struct on serde's flatten
+    path, which does enumerate. That boundary needed it most: it is the one
+    that dropped the credentials.
+  - The Neon entry's `newClient` rebuilt the native options object field by
+    field, dropping unrecognised top-level keys before the Rust could see
+    them. It now forwards them.
+  - **On wasm, a declared field is now read only if it is an own enumerable
+    property.** The lookup it replaces walked the prototype chain and saw
+    non-enumerable properties too. An options bag — an object literal, or a
+    spread of one — is unaffected; a class instance passed as options loses
+    its inherited fields, and a field defined through
+    `Object.defineProperty({enumerable: false})` is dropped. Neon has always
+    been `JSON.stringify`, which is own-enumerable too.
+  - **A misspelled *required* field now reports it as missing, not unknown.**
+    `encrypt(client, {plaintext, column, tabel: 'users'})` says ``missing
+    field `table` `` and never names `tabel`; it used to say both. Serde's
+    flatten path buffers the map and reports at its closing brace, which also
+    drops the `expected one of ...` list from every rejection. Neon-only —
+    the wasm path had no error to lose.
+
+  Three differences between the boundaries remain, all of them about how
+  strictly a *mistake* is reported. Correct input behaves identically on both.
+
+  - A key whose value is `undefined` (`{...opts, typo: undefined}`) is
+    rejected on wasm and accepted on Neon, where `JSON.stringify` drops it
+    before serde runs.
+  - A key whose value is a **function or a symbol** is reported on wasm — as a
+    *type* error, naming the wrong problem — and dropped in silence on Neon,
+    where `JSON.stringify` omits it.
+  - A key holding a **circular value or a `bigint`** throws in
+    `JSON.stringify` on Neon before serde can see it. `newClient` names the
+    key itself rather than let a bare `TypeError: Converting circular
+    structure to JSON` out; the other entries do not.
+
 ### Added
 
 - **The wasm build declares the real option types**, emitted by wasm-bindgen
@@ -162,6 +218,7 @@ uses the promoted section as the GitHub release notes.
   it. The config remains accepted as-is for storage encryption.
 
 [#142]: https://github.com/cipherstash/protectjs-ffi/issues/142
+[#144]: https://github.com/cipherstash/protectjs-ffi/issues/144
 [#147]: https://github.com/cipherstash/protectjs-ffi/issues/147
 
 ## [0.30.0] - 2026-07-20

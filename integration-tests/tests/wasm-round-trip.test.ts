@@ -386,6 +386,60 @@ describe('wasm round-trip', () => {
       score: null,
     })
   })
+
+  test('rejects unknown keys on the encrypt and decrypt options (#144)', async () => {
+    // This is the boundary the `DenyUnknown` marker exists for, and it needs a
+    // real client, so it sits here rather than in the credential-free suite
+    // below. serde-wasm-bindgen reads a struct by looking up the fields it
+    // expects — without the marker every assertion here would pass silently
+    // with the key dropped.
+    //
+    // `lokContext` on a bulk payload is the one that matters: dropped, the
+    // value encrypts UNBOUND while the caller believes it is identity-bound,
+    // and nothing in the output tells the two apart.
+    const env = requireEnv()
+    const strategy = AccessKeyStrategy.create(env.workspaceCrn, env.accessKey)
+
+    const client = await wasm.newClient({
+      authStrategy: strategy,
+      encryptConfig: {
+        v: 1,
+        tables: { users: { email: { cast_as: 'text', indexes: {} } } },
+      },
+      clientOpts: { clientId: env.clientId, clientKey: env.clientKey },
+    })
+
+    await expect(
+      wasm.encrypt(client, {
+        plaintext: 'alice@example.com',
+        table: 'users',
+        column: 'email',
+        unverifedContext: { sub: 'user-1' },
+      }),
+    ).rejects.toThrow(/unknown field `unverifedContext`/)
+
+    await expect(
+      wasm.encryptBulk(client, {
+        plaintexts: [
+          {
+            plaintext: 'alice@example.com',
+            table: 'users',
+            column: 'email',
+            lokContext: { identityClaim: ['sub'] },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/unknown field `lokContext`/)
+
+    const ciphertext = await wasm.encrypt(client, {
+      plaintext: 'alice@example.com',
+      table: 'users',
+      column: 'email',
+    })
+    await expect(
+      wasm.decrypt(client, { ciphertext, lockContexts: { identityClaim: [] } }),
+    ).rejects.toThrow(/unknown field `lockContexts`/)
+  })
 })
 
 // `newClient` validation that needs no credentials and no network. Since the
@@ -457,5 +511,129 @@ describe('wasm newClient validation', () => {
         encryptConfig: minimalConfig,
       }),
     ).rejects.toThrow(/opts\.strategy\.getToken is not a function/)
+  })
+
+  // Unknown keys (#144). This boundary is where it matters: serde-wasm-bindgen
+  // reads a struct by looking up the fields it expects, so an undeclared key is
+  // invisible to it and `deny_unknown_fields` alone rejects nothing. The
+  // `DenyUnknown` marker in `crates/protect-ffi/src/lib.rs` is what puts these
+  // objects on the path that enumerates them. The Neon half is
+  // `strict-options.test.ts`.
+  test('rejects credentials passed at the top level', async () => {
+    // Exactly how #144 was found: four integration tests in #143 failed with
+    // "clientOpts.clientId and clientOpts.clientKey are required" while
+    // passing both, because the credentials had moved under `clientOpts` and
+    // the old top-level spelling was being dropped in silence.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        encryptConfig: minimalConfig,
+        clientId: '8f7ae6de-6b6a-4f9e-9dd4-2b2e39bc3b52',
+        clientKey: 'ab',
+      }),
+    ).rejects.toThrow(/unknown field `clientId`/)
+  })
+
+  test('rejects an unknown key inside clientOpts', async () => {
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        encryptConfig: minimalConfig,
+        clientOpts: { region: 'ap-southeast-2' },
+      }),
+    ).rejects.toThrow(/unknown field `region`/)
+  })
+
+  // Neither case above needs `DenyUnknown`: `ClientOpts` reaches the map path
+  // through its own flattened credentials. `eqlVersion` is a `NewClientOptions`
+  // field, and that struct carries the marker for exactly this — without it
+  // serde would look up the fields it expects, never see the typo, and build a
+  // client with the default wire version.
+  test('rejects an unknown key that only the marker can catch', async () => {
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({ encryptConfig: minimalConfig, eqlVerison: 3 }),
+    ).rejects.toThrow(/unknown field `eqlVerison`/)
+  })
+
+  test('reports a throwing getter instead of unwinding out of wasm', async () => {
+    // The strip copies the options with `Object.assign`, which reads every own
+    // enumerable property — so a getter among them runs inside the copy. js-sys
+    // declares `assign` without `catch`, and that throw would travel straight
+    // through the wasm frames, skipping the destructors of the zeroizing values
+    // this call goes on to build. `try_assign` makes it an ordinary rejection.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        get encryptConfig(): unknown {
+          throw new Error('getter boom')
+        },
+      }),
+    ).rejects.toThrow(/opts could not be copied/)
+  })
+
+  test('still accepts the deprecated `strategy` name', async () => {
+    // Both auth keys are lifted off the object with `Reflect` and stripped
+    // before serde, since a struct that denies unknown fields would otherwise
+    // reject them. Reaching the credential error proves the whole round trip:
+    // the key was accepted, used as the strategy, and removed.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient({
+        strategy: { getToken: async () => ({ token: 'unused' }) },
+        encryptConfig: minimalConfig,
+      }),
+    ).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+  })
+
+  test('strips the auth strategy from a copy, not the caller object', async () => {
+    // A config reused across calls would otherwise lose its strategy on the
+    // second one.
+    const wasm = await loadWasm<WasmModule>()
+    const opts = {
+      authStrategy: { getToken: async () => ({ token: 'unused' }) },
+      encryptConfig: minimalConfig,
+    }
+    await expect(wasm.newClient(opts)).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+    expect('authStrategy' in opts).toBe(true)
+  })
+
+  // The two cases where the caller's property descriptors could plausibly
+  // defeat the strip. Reaching the credential error means deserialization
+  // succeeded, which means the key was gone by the time serde ran.
+  test('strips it from a frozen options object', async () => {
+    // The delete lands on the copy, and `Object.assign` writes plain
+    // configurable properties onto a fresh object — the caller's descriptors
+    // don't carry over to constrain it.
+    const wasm = await loadWasm<WasmModule>()
+    await expect(
+      wasm.newClient(
+        Object.freeze({
+          authStrategy: { getToken: async () => ({ token: 'unused' }) },
+          encryptConfig: minimalConfig,
+        }),
+      ),
+    ).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
+  })
+
+  test('still finds a non-enumerable auth strategy', async () => {
+    // `Object.assign` copies own ENUMERABLE properties, so this one never
+    // reaches the copy and there is nothing to strip. It is read off the
+    // original beforehand, so it is still used rather than lost.
+    const wasm = await loadWasm<WasmModule>()
+    const opts: Record<string, unknown> = { encryptConfig: minimalConfig }
+    Object.defineProperty(opts, 'authStrategy', {
+      value: { getToken: async () => ({ token: 'unused' }) },
+      enumerable: false,
+    })
+    await expect(wasm.newClient(opts)).rejects.toThrow(
+      /clientOpts\.clientId and clientOpts\.clientKey are required/,
+    )
   })
 })

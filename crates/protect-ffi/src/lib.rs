@@ -691,6 +691,83 @@ impl AuthStrategy for &NodeAuthStrategy {
 #[cfg(not(target_arch = "wasm32"))]
 type ScopedZeroKMS = ScopedCipher<NodeAuthStrategy>;
 
+/// Makes `#[serde(deny_unknown_fields)]` fire on the wasm boundary as well as
+/// the Neon one. Carried by every options struct that doesn't already flatten
+/// something; deserializes nothing and exists only for where it is placed.
+///
+/// A struct with a `#[serde(flatten)]` field reads itself through
+/// `Deserializer::deserialize_map` instead of `deserialize_struct`, and on wasm
+/// that is the whole difference. `serde_wasm_bindgen`'s `deserialize_struct`
+/// never enumerates the JS object: it looks up each *expected* field by name
+/// with `ObjectExt::get_with_ref_key` — a wasm-bindgen `indexing_getter`, i.e.
+/// plain `obj[key]`. A key the struct doesn't declare is invisible, so
+/// `deny_unknown_fields` has nothing to reject and the attribute is a silent
+/// no-op. `deserialize_map` enumerates, so every key reaches serde and the
+/// leftover check works. The Neon boundary is `JSON.stringify` → `serde_json`,
+/// which has always enumerated; it needs no help.
+///
+/// Structs that already flatten — [`ClientOpts`](client_options::ClientOpts),
+/// [`EnsureKeysetOpts`] — are on the map path and don't carry this.
+///
+/// # What the map path costs
+///
+/// `deserialize_map` tries `js_sys::try_iter` FIRST and only falls back to
+/// `Object::entries` (serde-wasm-bindgen `de.rs`, `deserialize_map`) — unlike
+/// `deserialize_any`, which guards the iterator arm on `Map`. So:
+///
+/// - An options object carrying `Symbol.iterator`, own or inherited, is read
+///   through the iterator and its own properties are ignored entirely. A
+///   `lockContext` present as a property but not yielded is silently dropped —
+///   the class of bug this marker exists to close, reopened on a shape almost
+///   nobody passes. `Object::assign` in `wasm::new_client` does not close it
+///   either: an own enumerable `[Symbol.iterator]` survives the copy.
+/// - An array of `[k, v]` pairs, and a JS `Map`, are now ACCEPTED where
+///   `deserialize_struct` rejected them. The array form also bypasses
+///   `encode_plaintext`, so a `bigint` plaintext reaches `JsPlaintext::Number`
+///   and loses precision above 2^53.
+///
+/// Two diagnostics regressions, both from serde's flatten path buffering the
+/// map and reporting at its closing brace:
+///
+/// - A misspelled REQUIRED field reports `missing field \`indexType\`` and
+///   never names `indexTyp`. Without the marker it read `unknown field
+///   \`indexTyp\`, expected \`indexType\``, which said both.
+/// - The `expected one of ...` list is gone from every rejection.
+///
+/// Per-key cost on wasm, for valid input: `deserialize_struct` handed serde
+/// `&'static str` field names with no Rust allocation. The map path allocates a
+/// JS array of pair-arrays per object plus a fresh `String` per key, known keys
+/// included — roughly 5N `String`s on an N-payload `encryptBulk`. Small against
+/// the crypto, but it is not nothing.
+///
+/// `has_flatten` also suppresses `visit_seq` and emits no `FIELDS` const, so
+/// these structs no longer accept the JSON-array form of a struct.
+///
+/// # What the map path changes for valid input
+///
+/// - An unknown key's *value* is buffered into serde's `Content` before the
+///   rejection. A key holding something serde can't represent (a function)
+///   reports that instead of `unknown field`. Rejected either way.
+/// - Enumeration includes keys whose value is `undefined`, so
+///   `{...opts, typo: undefined}` is rejected here and accepted on Neon, where
+///   `JSON.stringify` drops the key before serde sees it. The targets differ in
+///   strictness about a mistake; they agree on every correct input.
+/// - It reads own ENUMERABLE properties, where `obj[key]` also walked the
+///   prototype chain and saw non-enumerable ones. An options *bag* — an object
+///   literal, or a spread of one — is unaffected; a class instance passed as
+///   options loses its inherited fields, and a field hidden behind
+///   `Object.defineProperty` is dropped. Neon has always been `JSON.stringify`,
+///   which is own-enumerable too, so this closes a gap rather than opening one.
+///
+///   The narrowing reaches further than the entry points that hand serde the
+///   caller's object directly: the clones in `wasm.rs` are shallow, so a nested
+///   [`LockContext`] — which carries this marker — is read from the caller's own
+///   object on every path. `encode_plaintext_list` also returns `opts`
+///   untouched when nothing needed encoding, which includes a legitimate empty
+///   `plaintexts`, so the bulk entries' top-level bag is narrowed too.
+#[derive(Debug, Deserialize)]
+pub(crate) struct DenyUnknown {}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum DecryptResult {
@@ -699,24 +776,28 @@ enum DecryptResult {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EncryptOptions {
     plaintext: JsPlaintext,
     column: String,
     table: String,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EncryptBulkOptions {
     plaintexts: Vec<PlaintextPayload>,
     unverified_context: Option<UnverifiedContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlaintextPayload {
     plaintext: JsPlaintext,
     column: String,
@@ -724,11 +805,13 @@ struct PlaintextPayload {
     /// Lock context for this payload. Payloads with different lock_context values
     /// will be encrypted in separate batches to preserve per-payload context binding.
     lock_context: Option<LockContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 /// Options for encrypting a query term (search predicate)
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EncryptQueryOptions {
     plaintext: JsPlaintext,
     column: String,
@@ -741,6 +824,8 @@ struct EncryptQueryOptions {
     query_op: QueryOpName,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 fn resolve_eql_version(
@@ -764,15 +849,17 @@ fn resolve_eql_version(
 
 /// Options for bulk query encryption
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EncryptQueryBulkOptions {
     queries: Vec<QueryPayload>,
     unverified_context: Option<UnverifiedContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 /// Individual query payload for bulk operations
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct QueryPayload {
     plaintext: JsPlaintext,
     column: String,
@@ -781,37 +868,47 @@ struct QueryPayload {
     #[serde(default)]
     query_op: QueryOpName,
     lock_context: Option<LockContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DecryptOptions {
     /// Raw JSON payload — parsed internally so decrypt accepts BOTH the v2
     /// and v3 wire formats regardless of the client's `eqlVersion`.
     ciphertext: serde_json::Value,
     lock_context: Option<LockContext>,
     unverified_context: Option<UnverifiedContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DecryptBulkOptions {
     ciphertexts: Vec<BulkDecryptPayload>,
     unverified_context: Option<UnverifiedContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BulkDecryptPayload {
     /// Raw JSON payload — see [`DecryptOptions::ciphertext`].
     ciphertext: serde_json::Value,
     lock_context: Option<LockContext>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LockContext {
     identity_claim: Vec<String>,
+    #[serde(flatten)]
+    _deny_unknown: DenyUnknown,
 }
 
 impl From<LockContext> for Vec<zerokms::Context> {
@@ -3130,6 +3227,268 @@ mod tests {
                 .indexes
                 .iter()
                 .any(|index| matches!(index.index_type, IndexType::Ore)));
+        }
+    }
+
+    /// A key an options struct doesn't declare is an error, not a silent drop.
+    ///
+    /// These run through `serde_json`, which is the Neon boundary exactly:
+    /// neon's `Json` extractor is `JSON.stringify` on the JS side. The wasm
+    /// boundary is `serde_wasm_bindgen` and can't be driven from a native
+    /// test — `integration-tests/tests/strict-options.test.ts` covers it, and
+    /// covers it deliberately, because that boundary needs [`DenyUnknown`] to
+    /// reject anything at all.
+    mod deny_unknown_fields {
+        use super::*;
+        use crate::client_options::{EnsureKeysetOpts, NewClientOptions};
+        use serde_json::json;
+
+        fn rejection<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> String {
+            serde_json::from_value::<T>(value)
+                .err()
+                .expect("expected deserialization to fail")
+                .to_string()
+        }
+
+        fn accepts<T: serde::de::DeserializeOwned>(value: serde_json::Value) {
+            if let Err(e) = serde_json::from_value::<T>(value) {
+                panic!("expected deserialization to succeed, got: {e}");
+            }
+        }
+
+        fn encrypt_config() -> serde_json::Value {
+            json!({"v": 1, "tables": {}})
+        }
+
+        const CLIENT_ID: &str = "8f7ae6de-6b6a-4f9e-9dd4-2b2e39bc3b52";
+
+        #[test]
+        fn new_client_rejects_credentials_at_the_top_level() {
+            // The incident behind #144: credentials belong under `clientOpts`.
+            // Dropped silently, they surfaced later as "clientId and clientKey
+            // are required" — with the caller looking straight at them.
+            let msg = rejection::<NewClientOptions>(json!({
+                "encryptConfig": encrypt_config(),
+                "clientId": CLIENT_ID,
+                "clientKey": "ab",
+            }));
+            assert!(msg.contains("unknown field `clientId`"), "{msg}");
+        }
+
+        #[test]
+        fn new_client_accepts_the_documented_shape() {
+            accepts::<NewClientOptions>(json!({
+                "encryptConfig": encrypt_config(),
+                "clientOpts": {"clientId": CLIENT_ID, "clientKey": "ab"},
+                "eqlVersion": 3,
+            }));
+        }
+
+        #[test]
+        fn client_opts_rejects_an_unknown_key() {
+            let msg = rejection::<NewClientOptions>(json!({
+                "encryptConfig": encrypt_config(),
+                "clientOpts": {"clientId": CLIENT_ID, "region": "ap-southeast-2"},
+            }));
+            assert!(msg.contains("unknown field `region`"), "{msg}");
+        }
+
+        #[test]
+        fn ensure_keyset_rejects_an_unknown_key_but_keeps_the_flattened_credentials() {
+            accepts::<EnsureKeysetOpts>(json!({"name": "ks", "clientId": CLIENT_ID}));
+
+            let msg = rejection::<EnsureKeysetOpts>(json!({"name": "ks", "id": "ks-1"}));
+            assert!(msg.contains("unknown field `id`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_rejects_a_misspelled_unverified_context() {
+            let msg = rejection::<EncryptOptions>(json!({
+                "plaintext": "hello",
+                "column": "email",
+                "table": "users",
+                "unverifedContext": {"sub": "user-1"},
+            }));
+            assert!(msg.contains("unknown field `unverifedContext`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_bulk_rejects_a_lock_context_at_the_top_level() {
+            // The security case. `lockContext` is per-payload on a bulk call;
+            // at the top level it was dropped, and every value encrypted
+            // UNBOUND while the caller believed it was identity-bound. Nothing
+            // in the output distinguishes the two.
+            let msg = rejection::<EncryptBulkOptions>(json!({
+                "plaintexts": [{"plaintext": "hello", "column": "email", "table": "users"}],
+                "lockContext": {"identityClaim": ["sub"]},
+            }));
+            assert!(msg.contains("unknown field `lockContext`"), "{msg}");
+        }
+
+        #[test]
+        fn bulk_payloads_still_take_their_own_lock_context() {
+            accepts::<EncryptBulkOptions>(json!({
+                "plaintexts": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "lockContext": {"identityClaim": ["sub"]},
+                }],
+            }));
+        }
+
+        #[test]
+        fn decrypt_bulk_rejects_a_lock_context_at_the_top_level() {
+            let msg = rejection::<DecryptBulkOptions>(json!({
+                "ciphertexts": [{"ciphertext": {}}],
+                "lockContext": {"identityClaim": ["sub"]},
+            }));
+            assert!(msg.contains("unknown field `lockContext`"), "{msg}");
+        }
+
+        #[test]
+        fn lock_context_rejects_an_unknown_key() {
+            let msg = rejection::<LockContext>(json!({
+                "identityClaim": ["sub"],
+                "identityClaims": ["sub"],
+            }));
+            assert!(msg.contains("unknown field `identityClaims`"), "{msg}");
+        }
+
+        #[test]
+        fn a_bulk_payload_rejects_a_misspelled_lock_context() {
+            // The per-item form of the case above, and the likelier of the
+            // two: the container rejects `lockContext` because it belongs on
+            // the item, and the item silently dropped a misspelling of it.
+            // Both spellings encrypt UNBOUND.
+            let msg = rejection::<EncryptBulkOptions>(json!({
+                "plaintexts": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "lokContext": {"identityClaim": ["sub"]},
+                }],
+            }));
+            assert!(msg.contains("unknown field `lokContext`"), "{msg}");
+        }
+
+        #[test]
+        fn the_containers_and_the_payloads_do_not_share_a_vocabulary() {
+            // The mirror-image trap for anyone copying the scalar call shape:
+            // `unverifiedContext` is a container key and `lockContext` a
+            // payload one, and each is now rejected in the other's place
+            // rather than dropped.
+            let msg = rejection::<EncryptBulkOptions>(json!({
+                "plaintexts": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "unverifiedContext": {"sub": "user-1"},
+                }],
+            }));
+            assert!(msg.contains("unknown field `unverifiedContext`"), "{msg}");
+
+            let msg = rejection::<DecryptBulkOptions>(json!({
+                "ciphertexts": [{"ciphertext": {}, "unverifiedContext": {"sub": "u"}}],
+            }));
+            assert!(msg.contains("unknown field `unverifiedContext`"), "{msg}");
+        }
+
+        #[test]
+        fn a_decrypt_payload_rejects_a_misspelled_lock_context() {
+            let msg = rejection::<DecryptBulkOptions>(json!({
+                "ciphertexts": [{
+                    "ciphertext": {},
+                    "lokContext": {"identityClaim": ["sub"]},
+                }],
+            }));
+            assert!(msg.contains("unknown field `lokContext`"), "{msg}");
+        }
+
+        #[test]
+        fn decrypt_rejects_an_unknown_key() {
+            let msg = rejection::<DecryptOptions>(json!({
+                "ciphertext": {},
+                "lockContexts": {"identityClaim": ["sub"]},
+            }));
+            assert!(msg.contains("unknown field `lockContexts`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_rejects_a_misspelled_index_type() {
+            // `indexType` is required, so misspelling it reports the MISSING
+            // field rather than the unknown one — see the note on
+            // [`DenyUnknown`]. The key is still named, just not by this
+            // message.
+            let msg = rejection::<EncryptQueryOptions>(json!({
+                "plaintext": "hello",
+                "column": "email",
+                "table": "users",
+                "indexTyp": "unique",
+            }));
+            assert!(msg.contains("missing field `indexType`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_rejects_a_misspelled_query_op() {
+            let msg = rejection::<EncryptQueryOptions>(json!({
+                "plaintext": "hello",
+                "column": "email",
+                "table": "users",
+                "indexType": "unique",
+                "queryOpp": "match",
+            }));
+            assert!(msg.contains("unknown field `queryOpp`"), "{msg}");
+            // And nothing more. Serde's flatten path buffers the map and
+            // reports at its closing brace, so the `expected one of ...` list
+            // every other rejection used to carry is gone — see the note on
+            // [`DenyUnknown`]. Asserted so the cost stays visible.
+            assert!(!msg.contains("expected"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_bulk_rejects_an_unknown_key_on_either_level() {
+            let msg = rejection::<EncryptQueryBulkOptions>(json!({
+                "queries": [],
+                "lockContext": {"identityClaim": ["sub"]},
+            }));
+            assert!(msg.contains("unknown field `lockContext`"), "{msg}");
+
+            let msg = rejection::<EncryptQueryBulkOptions>(json!({
+                "queries": [{
+                    "plaintext": "hello",
+                    "column": "email",
+                    "table": "users",
+                    "indexType": "unique",
+                    "unverifiedContext": {"sub": "user-1"},
+                }],
+            }));
+            assert!(msg.contains("unknown field `unverifiedContext`"), "{msg}");
+        }
+
+        #[test]
+        fn encrypt_query_keeps_its_query_op_default() {
+            // `DenyUnknown` moves deserialization onto serde's flatten path.
+            // Field defaults have to survive that, and an absent `queryOp` is
+            // the one this crate relies on.
+            let opts: EncryptQueryOptions = serde_json::from_value(json!({
+                "plaintext": "hello",
+                "column": "email",
+                "table": "users",
+                "indexType": "unique",
+            }))
+            .expect("valid query options");
+            assert_eq!(opts.query_op, QueryOpName::Default);
+        }
+
+        #[test]
+        fn encrypt_query_still_reports_a_missing_required_field_as_missing() {
+            let msg = rejection::<EncryptQueryOptions>(json!({
+                "column": "email",
+                "table": "users",
+                "indexType": "unique",
+            }));
+            assert!(msg.contains("missing field `plaintext`"), "{msg}");
         }
     }
 }
