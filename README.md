@@ -232,7 +232,7 @@ Every Rust check CI gates on: clippy against the host target, clippy against `wa
 
 The wasm arm needs the target installed once:
 
-```
+```sh
 rustup target add wasm32-unknown-unknown
 ```
 

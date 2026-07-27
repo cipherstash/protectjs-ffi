@@ -84,8 +84,11 @@ describe('lint and format wiring', () => {
     ].map((match) => match[1])
     expect(defined.length).toBeGreaterThan(0)
 
-    const dependsOn =
-      /^\[tasks\."lint:rust"\]$[\s\S]*?^depends = \[(.*?)\]$/m.exec(miseToml)
+    // Isolate this task before looking for `depends`: a search over the whole
+    // remainder of the file could silently borrow a later task's list.
+    const lintRustBlock =
+      /^\[tasks\."lint:rust"\]$(?:\n(?!\[tasks\.)[^\n]*)*/m.exec(miseToml)?.[0]
+    const dependsOn = /^depends = \[(.*?)\]$/m.exec(lintRustBlock ?? '')
     expect(
       dependsOn,
       'lint:rust should be an aggregate with a depends list',
