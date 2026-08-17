@@ -103,6 +103,7 @@
     "@neon-rs/load": "^0.1.82"
   },
   "overrides": {
-    "vite": "^8.0.5"
+    "vite": "^8.0.5",
+    "postcss": ">=8.5.23"
   }
 }
