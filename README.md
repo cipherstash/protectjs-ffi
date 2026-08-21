@@ -1,7 +1,9 @@
 # CipherStash Client FFI (`@cipherstash/protect-ffi`)
 
 > [!IMPORTANT]
-> If you are looking to implement this package into your application please use the official [`@cipherstash/stack` package](https://github.com/cipherstash/stack).
+> **This repository has moved.** `protect-ffi` now lives inside [`cipherstash/stack`](https://github.com/cipherstash/stack), at `packages/protect-ffi`. This repo is no longer actively developed — please open issues and pull requests in `cipherstash/stack` instead.
+>
+> If you are looking to implement this package into your application, use the official [`@cipherstash/stack` package](https://github.com/cipherstash/stack) rather than depending on this one directly.
 
 This project provides the JS bindings for the CipherStash Client Rust SDK and is bootstrapped by [create-neon](https://www.npmjs.com/package/create-neon).
 
